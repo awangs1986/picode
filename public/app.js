@@ -1157,14 +1157,22 @@ async function switchSession(sessionFile, session = null, project = null) {
         return;
       }
 
-      // Check if this is the active session on the current instance
-      viewingActiveSession = sessionFile === mirrorActiveSessionFile;
-      updateMirrorInputState();
-
-      if (viewingActiveSession) {
-        // Re-request live state from the extension
-        wsClient.send({ type: 'mirror_sync_request' });
+      // Same instance: actually switch backend session so historical chats become writable
+      const res = await fetch('/api/sessions/switch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionFile }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        messageRenderer.renderError(`Failed to switch session: ${err.error || res.statusText}`);
+        return;
       }
+
+      mirrorActiveSessionFile = sessionFile;
+      viewingActiveSession = true;
+      updateMirrorInputState();
+      wsClient.send({ type: 'mirror_sync_request' });
     } else {
       const res = await fetch('/api/sessions/switch', {
         method: 'POST',

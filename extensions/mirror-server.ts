@@ -296,6 +296,24 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
+  // Switch to a specific saved session file (used by web UI).
+  // Must be a command so we can use ExtensionCommandContext.switchSession().
+  pi.registerCommand("tau-resume", {
+    description: "Switch to a specific session file path",
+    handler: async (args, ctx) => {
+      const target = (args || "").trim();
+      if (!target) {
+        ctx.ui.notify("tau-resume requires a session file path", "warning");
+        return;
+      }
+      await ctx.waitForIdle();
+      const result = await ctx.switchSession(target);
+      if (result.cancelled) {
+        ctx.ui.notify("Session switch cancelled", "warning");
+      }
+    },
+  });
+
   // ═══════════════════════════════════════
   // /qr command — show QR code to connect
   // ═══════════════════════════════════════
@@ -1027,10 +1045,38 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
       return;
     }
 
-    // Session switch — in mirror mode, this is a no-op (session is controlled by TUI)
+    // Session switch endpoint
     if (urlPath === "/api/sessions/switch" && req.method === "POST") {
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ success: true, mirror: true, note: "Session switching is controlled by the TUI in mirror mode" }));
+      let body = "";
+      req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
+      req.on("end", async () => {
+        try {
+          const payload = JSON.parse(body || "{}");
+          const targetSessionFile = typeof payload.sessionFile === "string" ? payload.sessionFile.trim() : "";
+
+          // Keep previous behavior for "new chat" requests (sessionFile: null).
+          if (!targetSessionFile) {
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ success: true, mirror: true, note: "No target session provided; treated as new chat request." }));
+            return;
+          }
+
+          if (!fs.existsSync(targetSessionFile)) {
+            res.writeHead(404, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Session file not found" }));
+            return;
+          }
+
+          // Trigger our command path so switchSession() runs in command context.
+          pi.sendUserMessage(`/tau-resume ${targetSessionFile}`);
+
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ success: true, mirror: true, switched: targetSessionFile }));
+        } catch (e: any) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: e.message }));
+        }
+      });
       return;
     }
 
