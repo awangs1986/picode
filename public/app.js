@@ -60,6 +60,7 @@ const sendBtn = document.getElementById('send-btn');
 const abortBtn = document.getElementById('abort-btn');
 const statusIndicator = document.getElementById('status-indicator');
 const statusText = document.getElementById('status-text');
+const openFolderBtn = document.getElementById('open-folder-btn');
 const sidebarEl = document.getElementById('sidebar');
 const sidebarToggle = document.getElementById('sidebar-toggle');
 const sidebarOverlay = document.getElementById('sidebar-overlay');
@@ -90,10 +91,60 @@ let lastUsage = null; // Full usage object for context visualiser
 let mirrorActiveSessionFile = null; // The live session file path from the TUI
 let viewingActiveSession = true; // Whether we're viewing the live session or a historical one
 let isMirrorMode = false; // Set when mirror_sync received
-let liveInstances = []; // All running Tau instances [{port, sessionFile, cwd}]
+let liveInstances = []; // All running Pi Studio instances [{port, sessionFile, cwd}]
+let workspaceLaunchInProgress = false;
 // When true, the next message_end should trigger a sidebar reload so a freshly
 // created (in-memory only) session shows up in the list as soon as it's persisted.
 let pendingNewSessionRefresh = false;
+let sessionsLoaded = false;
+let deferredMirrorSync = null;
+
+const workspaceIndicatorEl = document.createElement('div');
+workspaceIndicatorEl.id = 'workspace-indicator';
+workspaceIndicatorEl.className = 'pill workspace-indicator hidden';
+workspaceIndicatorEl.title = '';
+document.querySelector('.header-right')?.insertBefore(workspaceIndicatorEl, document.querySelector('.status'));
+
+function updateWorkspaceIndicator(path = '') {
+  const normalizedPath = typeof path === 'string' ? path.trim() : '';
+  if (!normalizedPath) {
+    workspaceIndicatorEl.classList.add('hidden');
+    workspaceIndicatorEl.textContent = '';
+    workspaceIndicatorEl.title = '';
+    return;
+  }
+  workspaceIndicatorEl.classList.remove('hidden');
+  workspaceIndicatorEl.textContent = normalizedPath;
+  workspaceIndicatorEl.title = normalizedPath;
+}
+
+function syncWorkspaceIndicatorFromInstances() {
+  const current = liveInstances.find((instance) => instance?.port === getCurrentPort());
+  updateWorkspaceIndicator(current?.cwd || '');
+}
+
+function getCurrentWorkspacePath() {
+  const current = liveInstances.find((instance) => instance?.port === getCurrentPort());
+  return current?.cwd || '';
+}
+
+function renderWorkspaceWelcome() {
+  messageRenderer.renderWelcome({ workspacePath: getCurrentWorkspacePath() });
+}
+
+function hasAnySessionsLoaded() {
+  return Array.isArray(sidebar.projects)
+    && sidebar.projects.some((project) => Array.isArray(project.sessions) && project.sessions.length > 0);
+}
+
+function setWorkspaceLaunchInProgress(inProgress) {
+  workspaceLaunchInProgress = inProgress;
+  if (openFolderBtn) {
+    openFolderBtn.disabled = inProgress;
+    openFolderBtn.setAttribute('aria-busy', inProgress ? 'true' : 'false');
+    openFolderBtn.title = inProgress ? 'Opening workspace...' : 'Open folder as workspace';
+  }
+}
 
 // File browser
 const fileSidebar = document.getElementById('file-sidebar');
@@ -114,12 +165,12 @@ fileSidebarToggle.addEventListener('click', () => {
   if (!isCollapsed && !fileBrowser.currentPath) {
     fileBrowser.load(); // Load session cwd
   }
-  localStorage.setItem('tau-file-sidebar', isCollapsed ? 'closed' : 'open');
+  localStorage.setItem('pi-studio-file-sidebar', isCollapsed ? 'closed' : 'open');
 });
 
 fileSidebarClose.addEventListener('click', () => {
   fileSidebar.classList.add('collapsed');
-  localStorage.setItem('tau-file-sidebar', 'closed');
+  localStorage.setItem('pi-studio-file-sidebar', 'closed');
 });
 
 fileSidebarUp.addEventListener('click', () => {
@@ -138,7 +189,7 @@ document.getElementById('file-sidebar-finder').addEventListener('click', () => {
 });
 
 // Restore file sidebar state
-if (localStorage.getItem('tau-file-sidebar') === 'open') {
+if (localStorage.getItem('pi-studio-file-sidebar') === 'open') {
   fileSidebar.classList.remove('collapsed');
   fileBrowser.load();
 }
@@ -569,7 +620,7 @@ async function addImageFiles(files) {
       const img = await processImageFile(file);
       pendingImages.push(img);
     } catch (e) {
-      console.error('[Tau] Image processing failed:', e);
+      console.error('[Pi Studio] Image processing failed:', e);
     }
   }
   renderImagePreviews();
@@ -641,7 +692,7 @@ function sendMessage() {
 
   if (pendingImages.length > 0) {
     cmd.images = pendingImages.map(img => {
-      console.log(`[Tau] Sending image: mimeType=${img.mimeType}, dataLen=${img.data?.length}`);
+      console.log(`[Pi Studio] Sending image: mimeType=${img.mimeType}, dataLen=${img.data?.length}`);
       return {
         type: 'image',
         data: img.data,
@@ -1085,7 +1136,7 @@ async function resetUiForNewSession() {
   state.reset();
   messageRenderer.clear();
   toolCardRenderer.clear();
-  messageRenderer.renderWelcome();
+  renderWorkspaceWelcome();
   sidebar.clearActive();
   mirrorActiveSessionFile = null;
   viewingActiveSession = true;
@@ -1124,24 +1175,30 @@ async function newSession() {
 }
 
 async function handleNewProjectChat(project) {
+  if (workspaceLaunchInProgress) return;
+  setWorkspaceLaunchInProgress(true);
   sessionTotalCost = 0;
   lastInputTokens = 0;
   updateCostDisplay();
   updateTokenUsage();
-  const launched = await startNewProjectChat({
-    project,
-    tauriNative: window.tauriNative,
-    fetchInstances,
-    getCurrentPort,
-    navigate: navigateInWindow,
-    onInWindowNewSession: resetUiForNewSession,
-    renderError: (message) => messageRenderer.renderError(message),
-  });
-  if (!launched) return;
+  try {
+    const launched = await startNewProjectChat({
+      project,
+      tauriNative: window.tauriNative,
+      fetchInstances,
+      getCurrentPort,
+      navigate: navigateInWindow,
+      onInWindowNewSession: resetUiForNewSession,
+      renderError: (message) => messageRenderer.renderError(message),
+    });
+    if (!launched) return;
 
-  if (isMobile()) {
-    sidebarEl.classList.add('collapsed');
-    sidebarOverlay.classList.remove('visible');
+    if (isMobile()) {
+      sidebarEl.classList.add('collapsed');
+      sidebarOverlay.classList.remove('visible');
+    }
+  } finally {
+    setWorkspaceLaunchInProgress(false);
   }
 }
 
@@ -1204,7 +1261,7 @@ async function switchSession(sessionFile, session = null, project = null) {
         console.log('[App] Skipped history load: dirName or file missing');
       }
     } else {
-      messageRenderer.renderWelcome();
+      renderWorkspaceWelcome();
     }
 
     // In mirror mode, check if this session is live on any instance
@@ -1255,6 +1312,11 @@ async function switchSession(sessionFile, session = null, project = null) {
 // ═══════════════════════════════════════
 
 function handleMirrorSync(data) {
+  if (!sessionsLoaded) {
+    deferredMirrorSync = data;
+    return;
+  }
+
   console.log('[Mirror] Received state snapshot:', data.entries?.length, 'entries');
   isMirrorMode = true;
 
@@ -1284,10 +1346,19 @@ function handleMirrorSync(data) {
   sessionTotalCost = 0;
   lastInputTokens = 0;
 
+  // Keep Welcome stable when there are already sessions in the sidebar and
+  // the user has not explicitly selected one yet.
+  if (!sidebar.activeSessionFile && hasAnySessionsLoaded()) {
+    renderWorkspaceWelcome();
+    updateCostDisplay();
+    updateTokenUsage();
+    return;
+  }
+
   if (data.entries && data.entries.length > 0) {
     renderSessionHistory(data.entries);
   } else {
-    messageRenderer.renderWelcome();
+    renderWorkspaceWelcome();
   }
 
   updateCostDisplay();
@@ -1313,6 +1384,10 @@ async function pollInstances() {
       const data = await res.json();
       liveInstances = data.instances || [];
       updateMirrorLiveIndicator();
+      syncWorkspaceIndicatorFromInstances();
+      if (document.querySelector('.welcome')) {
+        renderWorkspaceWelcome();
+      }
     }
   } catch {}
 }
@@ -1676,7 +1751,7 @@ btnThinkingLevel.addEventListener('click', async () => {
 });
 
 // Show thinking toggle (local pref)
-const showThinking = localStorage.getItem('tau-show-thinking') !== 'false';
+const showThinking = localStorage.getItem('pi-studio-show-thinking') !== 'false';
 toggleShowThinking.className = `settings-toggle${showThinking ? ' on' : ''}`;
 if (!showThinking) document.body.classList.add('hide-thinking');
 
@@ -1684,7 +1759,7 @@ toggleShowThinking.addEventListener('click', () => {
   const isOn = toggleShowThinking.classList.contains('on');
   toggleShowThinking.className = `settings-toggle${isOn ? '' : ' on'}`;
   document.body.classList.toggle('hide-thinking', isOn);
-  localStorage.setItem('tau-show-thinking', !isOn);
+  localStorage.setItem('pi-studio-show-thinking', !isOn);
 });
 
 // Auth toggle
@@ -1993,18 +2068,24 @@ if (isMobile()) {
 // Launcher
 const launcherEl = document.getElementById('launcher');
 const launcher = new Launcher(launcherEl, async (projectPath) => {
-  await startNewProjectChat({
-    project: { path: projectPath, sessions: [] },
-    tauriNative: window.tauriNative,
-    fetchInstances,
-    getCurrentPort,
-    navigate: navigateInWindow,
-    onInWindowNewSession: async () => {
-      hideLauncher();
-      await resetUiForNewSession();
-    },
-    renderError: (message) => messageRenderer.renderError(message),
-  });
+  if (workspaceLaunchInProgress) return;
+  setWorkspaceLaunchInProgress(true);
+  try {
+    await startNewProjectChat({
+      project: { path: projectPath, sessions: [] },
+      tauriNative: window.tauriNative,
+      fetchInstances,
+      getCurrentPort,
+      navigate: navigateInWindow,
+      onInWindowNewSession: async () => {
+        hideLauncher();
+        await resetUiForNewSession();
+      },
+      renderError: (message) => messageRenderer.renderError(message),
+    });
+  } finally {
+    setWorkspaceLaunchInProgress(false);
+  }
 });
 
 // Check if launcher should show (projects configured)
@@ -2058,7 +2139,7 @@ function hideLauncher() {
   document.querySelector('.mode-link:first-child')?.classList.add('active');
 }
 
-// Make the tau icon in sidebar switch back to chat
+// Make the Pi Studio icon in sidebar switch back to chat
 document.querySelector('.mode-link:first-child')?.addEventListener('click', () => {
   hideLauncher();
 });
@@ -2067,20 +2148,35 @@ document.querySelector('.mode-link:first-child')?.addEventListener('click', () =
 // Open Folder as workspace
 // ═══════════════════════════════════════
 
-document.getElementById('open-folder-btn').addEventListener('click', async () => {
-  await openFolderAsWorkspace({
-    tauriNative: window.tauriNative,
-    fetchInstances,
-    getCurrentPort,
-    navigate: navigateInWindow,
-    onInWindowNewSession: resetUiForNewSession,
-    renderError: (message) => messageRenderer.renderError(message),
-  });
+openFolderBtn?.addEventListener('click', async () => {
+  if (workspaceLaunchInProgress) return;
+  setWorkspaceLaunchInProgress(true);
+  try {
+    await openFolderAsWorkspace({
+      tauriNative: window.tauriNative,
+      fetchInstances,
+      getCurrentPort,
+      navigate: navigateInWindow,
+      onInWindowNewSession: resetUiForNewSession,
+      renderError: (message) => messageRenderer.renderError(message),
+    });
+  } finally {
+    setWorkspaceLaunchInProgress(false);
+  }
 });
 
 wsClient.connect();
-messageRenderer.renderWelcome();
+renderWorkspaceWelcome();
 sidebar.loadSessions().then(() => {
+  sessionsLoaded = true;
+  if (!hasAnySessionsLoaded()) {
+    renderWorkspaceWelcome();
+  }
+  if (deferredMirrorSync) {
+    const syncData = deferredMirrorSync;
+    deferredMirrorSync = null;
+    handleMirrorSync(syncData);
+  }
   if (isMirrorMode) updateMirrorLiveIndicator();
 });
 initLauncher();
@@ -2099,4 +2195,4 @@ if (splash) {
   });
 }
 
-console.log('🚀 Tau initialized');
+console.log('🚀 Pi Studio initialized');

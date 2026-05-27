@@ -11,7 +11,7 @@ export class SessionSidebar {
     this.projects = [];
     this.collapsedProjects = new Set();
     this.searchQuery = '';
-    this.favourites = JSON.parse(localStorage.getItem('tau-favourites') || '[]');
+    this.favourites = JSON.parse(localStorage.getItem('pi-studio-favourites') || '[]');
     this.contextMenu = null;
 
     // Close context menu on click anywhere
@@ -23,7 +23,7 @@ export class SessionSidebar {
   }
 
   saveFavourites() {
-    localStorage.setItem('tau-favourites', JSON.stringify(this.favourites));
+    localStorage.setItem('pi-studio-favourites', JSON.stringify(this.favourites));
   }
 
   isFavourite(filePath) {

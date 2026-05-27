@@ -1,25 +1,27 @@
 {
-  "name": "tau-mirror",
+  "name": "pi-studio",
   "version": "1.0.7",
-  "description": "Web UI that mirrors your Pi terminal session in the browser",
+  "description": "Local Codex-style GUI for the Pi coding agent — desktop app and browser extension",
   "keywords": [
     "pi",
     "pi-package",
     "coding-agent",
     "web-ui",
-    "mirror"
+    "desktop",
+    "multi-agent",
+    "tauri"
   ],
   "author": "deflating",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/deflating/tau.git"
+    "url": "https://github.com/deflating/pi-studio.git"
   },
   "pi": {
     "extensions": [
       "./extensions/mirror-server.ts"
     ],
-    "image": "https://raw.githubusercontent.com/deflating/tau/main/docs/images/dark.png"
+    "image": "https://raw.githubusercontent.com/deflating/pi-studio/main/docs/images/dark.png"
   },
   "scripts": {
     "tauri": "tauri",

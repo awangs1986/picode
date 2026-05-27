@@ -25,6 +25,7 @@ async function switchToWorkspace({
     targetPort = await tauriNative.openWorkspace(targetCwd, {
       forceNewSession: true,
       openWindow: false,
+      waitForSessions: false,
     });
   }
 

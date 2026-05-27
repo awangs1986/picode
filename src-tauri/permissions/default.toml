@@ -1,13 +1,3 @@
-[default]
-description = "Default permissions for the Pi Desktop app — allows all app commands from workspace windows."
-permissions = [
-    "allow-cmd-open-workspace",
-    "allow-cmd-pick-folder",
-    "allow-cmd-new-session",
-    "allow-cmd-switch-session",
-    "allow-cmd-stop-instance",
-]
-
 [[permission]]
 identifier = "allow-cmd-open-workspace"
 description = "Allow spawning a new pi process and opening a workspace window"
@@ -32,3 +22,15 @@ commands.allow = ["cmd_switch_session"]
 identifier = "allow-cmd-stop-instance"
 description = "Allow stopping (killing) a pi instance"
 commands.allow = ["cmd_stop_instance"]
+
+# Permission set that bundles all custom command permissions.
+# Referenced from capabilities/default.json as "pi-desktop:default".
+[default]
+description = "Default permissions bundle for Pi Desktop custom commands"
+permissions = [
+  "allow-cmd-open-workspace",
+  "allow-cmd-pick-folder",
+  "allow-cmd-new-session",
+  "allow-cmd-switch-session",
+  "allow-cmd-stop-instance",
+]

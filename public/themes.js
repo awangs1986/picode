@@ -46,11 +46,11 @@ export function applyTheme(themeId) {
   // Validate
   if (!themes[themeId]) themeId = 'night';
   root.setAttribute('data-theme', themeId);
-  localStorage.setItem('tau-theme', themeId);
+  localStorage.setItem('pi-studio-theme', themeId);
 }
 
 export function getCurrentTheme() {
-  const saved = localStorage.getItem('tau-theme');
+  const saved = localStorage.getItem('pi-studio-theme');
   // Migrate old values
   if (saved === 'dark') return 'night';
   if (saved === 'light') return 'terracotta';
@@ -61,9 +61,9 @@ export function getCurrentTheme() {
 }
 
 // Listen for OS theme changes if no explicit preference saved
-if (!localStorage.getItem('tau-theme')) {
+if (!localStorage.getItem('pi-studio-theme')) {
   window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', (e) => {
-    if (!localStorage.getItem('tau-theme')) {
+    if (!localStorage.getItem('pi-studio-theme')) {
       const root = document.documentElement;
       root.setAttribute('data-theme', e.matches ? 'terracotta' : 'night');
     }

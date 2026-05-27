@@ -6,7 +6,7 @@
  * 
  * - Forwards all Pi events to connected browser clients
  * - Accepts commands from the browser and executes them via the extension API
- * - Serves static files for the Tau web UI
+ * - Serves static files for the Pi Studio web UI
  * - Sends full state snapshot on client connect (messages, model, etc.)
  */
 
@@ -17,35 +17,35 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import QRCode from "qrcode";
 
-// Load tau settings from ~/.pi/agent/settings.json (falls back to env vars)
-function loadTauSettings(): { port: number; autoStart: boolean; user: string; pass: string; authEnabled?: boolean; projectsDir?: string } {
+// Load Pi Studio settings from ~/.pi/agent/settings.json (falls back to env vars)
+function loadSettings(): { port: number; autoStart: boolean; user: string; pass: string; authEnabled?: boolean; projectsDir?: string } {
   let settings: any = {};
   try {
     const settingsPath = path.join(process.env.HOME || "~", ".pi/agent/settings.json");
-    settings = JSON.parse(fs.readFileSync(settingsPath, "utf8")).tau || {};
+    settings = JSON.parse(fs.readFileSync(settingsPath, "utf8")).pistudio || {};
   } catch {}
   return {
-    port: parseInt(process.env.TAU_MIRROR_PORT || settings.port || "3001"),
+    port: parseInt(process.env.PI_STUDIO_PORT || settings.port || "3001"),
     autoStart: !(
-      process.env.TAU_DISABLED === "1" || process.env.TAU_DISABLED === "true" ||
+      process.env.PI_STUDIO_DISABLED === "1" || process.env.PI_STUDIO_DISABLED === "true" ||
       settings.disabled === true
     ),
-    user: process.env.TAU_USER || settings.user || "",
-    pass: process.env.TAU_PASS || settings.pass || "",
+    user: process.env.PI_STUDIO_USER || settings.user || "",
+    pass: process.env.PI_STUDIO_PASS || settings.pass || "",
     authEnabled: settings.authEnabled,
-    projectsDir: process.env.TAU_PROJECTS_DIR || settings.projectsDir,
+    projectsDir: process.env.PI_STUDIO_PROJECTS_DIR || settings.projectsDir,
   };
 }
 
-const TAU_SETTINGS = loadTauSettings();
-const PORT = TAU_SETTINGS.port;
-const TAU_AUTO_START = TAU_SETTINGS.autoStart;
-const AUTH_USER = TAU_SETTINGS.user;
-const AUTH_PASS = TAU_SETTINGS.pass;
+const SETTINGS = loadSettings();
+const PORT = SETTINGS.port;
+const AUTO_START = SETTINGS.autoStart;
+const AUTH_USER = SETTINGS.user;
+const AUTH_PASS = SETTINGS.pass;
 const AUTH_CONFIGURED = !!(AUTH_USER && AUTH_PASS);
-let authEnabled = AUTH_CONFIGURED && TAU_SETTINGS.authEnabled !== false;
+let authEnabled = AUTH_CONFIGURED && SETTINGS.authEnabled !== false;
 // @ts-ignore — __dirname is provided by jiti at runtime
-const STATIC_DIR = process.env.TAU_STATIC_DIR || findPublicDir();
+const STATIC_DIR = process.env.PI_STUDIO_STATIC_DIR || findPublicDir();
 
 function findPublicDir(): string {
     const candidates: string[] = [];
@@ -64,13 +64,13 @@ function findPublicDir(): string {
     // 2) Installed package path (for npm-installed extension execution)
     try {
       // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const pkgPath = require.resolve("tau-mirror/package.json");
+      const pkgPath = require.resolve("pi-studio/package.json");
       addCandidate(path.join(path.dirname(pkgPath), "public"));
     } catch {}
 
     // 3) Development fallback from current working directory
     addCandidate(path.resolve(process.cwd(), "public"));
-    addCandidate(path.resolve(process.cwd(), "node_modules/tau-mirror/public"));
+    addCandidate(path.resolve(process.cwd(), "node_modules/pi-studio/public"));
 
     for (const candidate of candidates) {
       if (fs.existsSync(path.join(candidate, "index.html"))) return candidate;
@@ -80,9 +80,10 @@ function findPublicDir(): string {
     return path.resolve(process.cwd(), "public");
 }
 const SESSIONS_DIR = path.join(process.env.HOME || "~", ".pi/agent/sessions");
-const INSTANCES_DIR = path.join(process.env.HOME || "~", ".pi/tau-instances");
+const SESSIONS_ARCHIVE_DIR = path.join(process.env.HOME || "~", ".pi/agent/sessions-archive");
+const INSTANCES_DIR = path.join(process.env.HOME || "~", ".pi/pistudio-instances");
 
-// Instance registry — tracks all running Tau servers
+// Instance registry — tracks all running Pi Studio servers
 function registerInstance(port: number, sessionFile: string, cwd: string) {
   fs.mkdirSync(INSTANCES_DIR, { recursive: true });
   const info = { port, pid: process.pid, sessionFile, cwd, startedAt: new Date().toISOString() };
@@ -124,7 +125,7 @@ function getRunningInstances(): Array<{ port: number; pid: number; sessionFile: 
 }
 
 /**
- * Kill zombie Tau instances — processes that are alive but orphaned
+ * Kill zombie Pi Studio instances — processes that are alive but orphaned
  * (e.g. tmux pane was killed without session_shutdown firing).
  * A zombie is detected by checking if the process has a controlling terminal.
  * If it doesn't, the HTTP server is the only thing keeping it alive.
@@ -152,7 +153,7 @@ function cleanupZombieInstances() {
         const tty = execSync(`ps -o tty= -p ${info.pid}`, { encoding: "utf8" }).trim();
         if (!tty || tty === "??" || tty === "-") {
           // No terminal — this is a zombie, kill it
-          console.log(`[Mirror] Killing zombie Tau instance (PID ${info.pid}, port ${info.port})`);
+          console.log(`[Mirror] Killing zombie Pi Studio instance (PID ${info.pid}, port ${info.port})`);
           process.kill(info.pid, "SIGTERM");
           try { fs.unlinkSync(path.join(INSTANCES_DIR, file)); } catch {}
         }
@@ -178,12 +179,57 @@ const MIME_TYPES: Record<string, string> = {
   ".woff2": "font/woff2",
 };
 
-function saveTauSetting(key: string, value: any) {
+function normalizeWorkspacePath(inputPath: string): string {
+  const expanded = inputPath.startsWith("~")
+    ? path.join(process.env.HOME || "", inputPath.slice(1))
+    : inputPath;
+  return path.resolve(expanded);
+}
+
+function encodeSessionDirName(workspacePath: string): string {
+  return `--${workspacePath.replace(/\//g, "-")}--`;
+}
+
+function isWorkspaceRunning(workspacePath: string): boolean {
+  const target = path.resolve(workspacePath);
+  return getRunningInstances().some((instance) => {
+    if (!instance?.cwd) return false;
+    try {
+      return fs.realpathSync(instance.cwd) === target;
+    } catch {
+      return path.resolve(instance.cwd) === target;
+    }
+  });
+}
+
+function resolveWorkspaceWithinProjects(projectPath: string): { projectsRoot: string; targetPath: string } {
+  const projectsDir = SETTINGS.projectsDir;
+  if (!projectsDir) throw new Error("projectsDir is not configured");
+  const projectsRoot = normalizeWorkspacePath(projectsDir);
+  if (!fs.existsSync(projectsRoot) || !fs.statSync(projectsRoot).isDirectory()) {
+    throw new Error("projectsDir is not a valid directory");
+  }
+  const targetPath = normalizeWorkspacePath(projectPath);
+  if (!fs.existsSync(targetPath) || !fs.statSync(targetPath).isDirectory()) {
+    throw new Error("Workspace directory not found");
+  }
+  const realProjectsRoot = fs.realpathSync(projectsRoot);
+  const realTargetPath = fs.realpathSync(targetPath);
+  if (
+    realTargetPath === realProjectsRoot ||
+    !realTargetPath.startsWith(`${realProjectsRoot}${path.sep}`)
+  ) {
+    throw new Error("Workspace must be inside projectsDir");
+  }
+  return { projectsRoot: realProjectsRoot, targetPath: realTargetPath };
+}
+
+function saveSetting(key: string, value: any) {
   const settingsPath = path.join(process.env.HOME || "~", ".pi/agent/settings.json");
   try {
     const settings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
-    if (!settings.tau) settings.tau = {};
-    settings.tau[key] = value;
+    if (!settings.pistudio) settings.pistudio = {};
+    settings.pistudio[key] = value;
     fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
   } catch {}
 }
@@ -200,7 +246,7 @@ function checkBasicAuth(req: http.IncomingMessage): boolean {
 
 function sendAuthRequired(res: http.ServerResponse) {
   res.writeHead(401, {
-    "WWW-Authenticate": 'Basic realm="Tau"',
+    "WWW-Authenticate": 'Basic realm="Pi Studio"',
     "Content-Type": "application/json",
   });
   res.end(JSON.stringify({ error: "Unauthorized" }));
@@ -268,42 +314,42 @@ export default function (pi: ExtensionAPI) {
   }
 
   // ═══════════════════════════════════════
-  // /tau-stop and /tau-start commands
+  // /studio-stop and /studio-start commands
   // ═══════════════════════════════════════
-  pi.registerCommand("taustop", {
-    description: "Stop the Tau mirror server",
+  pi.registerCommand("studiostop", {
+    description: "Stop the Pi Studio server",
     handler: async (_args, ctx) => {
       if (!server) {
-        ctx.ui.notify("Tau is not running", "warning");
+        ctx.ui.notify("Pi Studio is not running", "warning");
         return;
       }
       stopServer();
       ctx.ui.setStatus("mirror", "");
-      ctx.ui.notify("Tau mirror server stopped", "info");
-      console.log("[Mirror] Server stopped via /taustop");
+      ctx.ui.notify("Pi Studio server stopped", "info");
+      console.log("[Mirror] Server stopped via /studiostop");
     },
   });
 
-  pi.registerCommand("taustart", {
-    description: "Start the Tau mirror server",
+  pi.registerCommand("studiostart", {
+    description: "Start the Pi Studio server",
     handler: async (_args, ctx) => {
       if (server) {
-        ctx.ui.notify(`Tau is already running at ${mirrorUrl}`, "warning");
+        ctx.ui.notify(`Pi Studio is already running at ${mirrorUrl}`, "warning");
         return;
       }
       startServer(ctx);
-      ctx.ui.notify("Tau mirror server starting...", "info");
+      ctx.ui.notify("Pi Studio server starting...", "info");
     },
   });
 
   // ═══════════════════════════════════════
   // /qr command — show QR code to connect
   // ═══════════════════════════════════════
-  pi.registerCommand("tau", {
-    description: "Open Tau web UI in browser",
+  pi.registerCommand("studio", {
+    description: "Open Pi Studio in browser",
     handler: async (_args, ctx) => {
       if (!mirrorUrl) {
-        ctx.ui.notify("Mirror server not running yet", "warning");
+        ctx.ui.notify("Pi Studio server not running yet", "warning");
         return;
       }
       const { exec } = require("node:child_process");
@@ -313,14 +359,14 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerCommand("qr", {
-    description: "Show QR code for Tau mirror URL",
+    description: "Show QR code for Pi Studio URL",
     handler: async (_args, ctx) => {
       if (!mirrorUrl) {
-        ctx.ui.notify("Mirror server not running yet", "warning");
+        ctx.ui.notify("Pi Studio server not running yet", "warning");
         return;
       }
       const qrPageUrl = `${mirrorUrl}/api/qr`;
-      ctx.ui.notify(`Tau: ${mirrorUrl}  •  QR: ${qrPageUrl}`, "info");
+      ctx.ui.notify(`Pi Studio: ${mirrorUrl}  •  QR: ${qrPageUrl}`, "info");
       // Open in default browser
       const { exec } = require("node:child_process");
       exec(`open "${qrPageUrl}"`);
@@ -775,11 +821,11 @@ export default function (pi: ExtensionAPI) {
 
         case "set_auth": {
           if (!AUTH_CONFIGURED) {
-            sendTo(ws, error("set_auth", "No credentials configured. Set tau.user and tau.pass in settings.json"));
+            sendTo(ws, error("set_auth", "No credentials configured. Set pistudio.user and pistudio.pass in settings.json"));
             break;
           }
           authEnabled = !!command.enabled;
-          saveTauSetting("authEnabled", authEnabled);
+          saveSetting("authEnabled", authEnabled);
           broadcast({ type: "event", event: { type: "auth_changed", enabled: authEnabled } });
           sendTo(ws, success("set_auth", { enabled: authEnabled }));
           break;
@@ -872,10 +918,10 @@ export default function (pi: ExtensionAPI) {
           : "";
         res.writeHead(200, { "Content-Type": "text/html" });
         res.end(`<!DOCTYPE html>
-<html><head><meta name="viewport" content="width=device-width"><title>Tau — Connect</title>
+<html><head><meta name="viewport" content="width=device-width"><title>Pi Studio — Connect</title>
 <style>body{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#131316;color:#fff;font-family:-apple-system,sans-serif}
 img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rgba(255,255,255,0.5);font-size:13px;margin-top:8px}</style>
-</head><body><p style="color:rgba(255,255,255,0.3);font-size:11px">LAN</p><img src="${dataUrls[0]}" width="256" height="256" alt="QR Code"><a href="${mirrorUrl}">${mirrorUrl}</a>${tsSection}<p style="margin-top:16px">Scan to open Tau on your phone</p></body></html>`);
+</head><body><p style="color:rgba(255,255,255,0.3);font-size:11px">LAN</p><img src="${dataUrls[0]}" width="256" height="256" alt="QR Code"><a href="${mirrorUrl}">${mirrorUrl}</a>${tsSection}<p style="margin-top:16px">Scan to open Pi Studio on your phone</p></body></html>`);
       }).catch((e: any) => {
         res.writeHead(500, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: e.message }));
@@ -925,6 +971,147 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
           execSync(`osascript -e 'tell app "iTerm2" to create window with default profile command "cd '"'"'${escaped}'"'"' && pi"'`);
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ ok: true }));
+        } catch (e: any) {
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: e.message }));
+        }
+      });
+      return;
+    }
+
+    if (urlPath === "/api/projects/delete" && req.method === "POST") {
+      let body = "";
+      req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
+      req.on("end", () => {
+        try {
+          const { path: projectPath } = JSON.parse(body);
+          if (!projectPath || typeof projectPath !== "string") {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "path required" }));
+            return;
+          }
+
+          const { targetPath: realTargetPath } = resolveWorkspaceWithinProjects(projectPath);
+          if (isWorkspaceRunning(realTargetPath)) {
+            res.writeHead(409, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Workspace is running. Please stop it first." }));
+            return;
+          }
+
+          fs.rmSync(realTargetPath, { recursive: true, force: false });
+
+          const sessionsDirName = encodeSessionDirName(realTargetPath);
+          const sessionDirPath = path.join(SESSIONS_DIR, sessionsDirName);
+          let deletedSessionsDir: string | null = null;
+          if (fs.existsSync(sessionDirPath) && fs.statSync(sessionDirPath).isDirectory()) {
+            fs.rmSync(sessionDirPath, { recursive: true, force: true });
+            deletedSessionsDir = sessionDirPath;
+          }
+
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(
+            JSON.stringify({
+              ok: true,
+              deletedPath: realTargetPath,
+              deletedSessionsDir,
+            })
+          );
+        } catch (e: any) {
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: e.message }));
+        }
+      });
+      return;
+    }
+
+    if (urlPath === "/api/projects/rename" && req.method === "POST") {
+      let body = "";
+      req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
+      req.on("end", () => {
+        try {
+          const { path: projectPath, newName } = JSON.parse(body);
+          if (!projectPath || typeof projectPath !== "string") {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "path required" }));
+            return;
+          }
+          if (!newName || typeof newName !== "string" || !newName.trim()) {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "newName required" }));
+            return;
+          }
+          if (newName.includes(path.sep) || newName.includes("/") || newName.includes("\\")) {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "newName must not contain path separators" }));
+            return;
+          }
+
+          const { targetPath: realTargetPath } = resolveWorkspaceWithinProjects(projectPath);
+          if (isWorkspaceRunning(realTargetPath)) {
+            res.writeHead(409, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Workspace is running. Please stop it first." }));
+            return;
+          }
+
+          const parentDir = path.dirname(realTargetPath);
+          const newPath = path.join(parentDir, newName.trim());
+          if (fs.existsSync(newPath)) {
+            res.writeHead(409, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "A project with this name already exists" }));
+            return;
+          }
+
+          fs.renameSync(realTargetPath, newPath);
+
+          const oldSessionDir = path.join(SESSIONS_DIR, encodeSessionDirName(realTargetPath));
+          const newSessionDir = path.join(SESSIONS_DIR, encodeSessionDirName(newPath));
+          if (fs.existsSync(oldSessionDir) && fs.statSync(oldSessionDir).isDirectory()) {
+            fs.renameSync(oldSessionDir, newSessionDir);
+          }
+
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true, oldPath: realTargetPath, newPath }));
+        } catch (e: any) {
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: e.message }));
+        }
+      });
+      return;
+    }
+
+    if (urlPath === "/api/projects/archive-chats" && req.method === "POST") {
+      let body = "";
+      req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
+      req.on("end", () => {
+        try {
+          const { path: projectPath } = JSON.parse(body);
+          if (!projectPath || typeof projectPath !== "string") {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "path required" }));
+            return;
+          }
+
+          const { targetPath: realTargetPath } = resolveWorkspaceWithinProjects(projectPath);
+          if (isWorkspaceRunning(realTargetPath)) {
+            res.writeHead(409, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Workspace is running. Please stop it first." }));
+            return;
+          }
+
+          const sessionDir = path.join(SESSIONS_DIR, encodeSessionDirName(realTargetPath));
+          if (!fs.existsSync(sessionDir) || !fs.statSync(sessionDir).isDirectory()) {
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ ok: true, archivedDir: null }));
+            return;
+          }
+
+          fs.mkdirSync(SESSIONS_ARCHIVE_DIR, { recursive: true });
+          const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+          const archiveDir = path.join(SESSIONS_ARCHIVE_DIR, `${path.basename(sessionDir)}-${timestamp}`);
+          fs.renameSync(sessionDir, archiveDir);
+
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true, archivedDir: archiveDir }));
         } catch (e: any) {
           res.writeHead(500, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: e.message }));
@@ -1151,16 +1338,14 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
   }
 
   function serveProjectsList(res: http.ServerResponse) {
-    const projectsDir = TAU_SETTINGS.projectsDir;
+    const projectsDir = SETTINGS.projectsDir;
     if (!projectsDir) {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ projects: [] }));
       return;
     }
 
-    const resolved = projectsDir.startsWith("~")
-      ? path.join(process.env.HOME || "", projectsDir.slice(1))
-      : projectsDir;
+    const resolved = normalizeWorkspacePath(projectsDir);
 
     if (!fs.existsSync(resolved)) {
       res.writeHead(200, { "Content-Type": "application/json" });
@@ -1562,7 +1747,7 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
 
     server.on("upgrade", (request, socket, head) => {
       if (authEnabled && !checkBasicAuth(request)) {
-        socket.write("HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"Tau\"\r\n\r\n");
+        socket.write("HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"Pi Studio\"\r\n\r\n");
         socket.destroy();
         return;
       }
@@ -1692,14 +1877,14 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
 
       mirrorUrl = `http://${localIp}:${port}`;
       tailscaleUrl = tailscaleIp ? `http://${tailscaleIp}:${port}` : "";
-      console.log(`[Mirror] Tau mirror server running on ${mirrorUrl}${tailscaleUrl ? `  •  Tailscale: ${tailscaleUrl}` : ""}`);
+      console.log(`[Mirror] Pi Studio server running on ${mirrorUrl}${tailscaleUrl ? `  •  Tailscale: ${tailscaleUrl}` : ""}`);
       ctx.ui.setStatus("mirror", `Mirror: ${localIp}:${port}${tailscaleIp ? ` • TS: ${tailscaleIp}:${port}` : ""}`);
 
       // Register this instance
       const sessionFile = ctx.sessionManager.getSessionFile() || "";
       registerInstance(port, sessionFile, ctx.cwd || process.cwd());
 
-      ctx.ui.notify(`Tau mirror: ${mirrorUrl}${tailscaleUrl ? `  •  Tailscale: ${tailscaleUrl}` : ""}  •  /qr for QR code`, "info");
+      ctx.ui.notify(`Pi Studio: ${mirrorUrl}${tailscaleUrl ? `  •  Tailscale: ${tailscaleUrl}` : ""}  •  /qr for QR code`, "info");
     };
 
     tryListen(PORT);
@@ -1711,8 +1896,8 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
   pi.on("session_start", async (_event, ctx) => {
     latestCtx = ctx;
 
-    if (!TAU_AUTO_START) {
-      console.log("[Mirror] Tau auto-start disabled (TAU_DISABLED=1). Use /tau-start to start manually.");
+    if (!AUTO_START) {
+      console.log("[Mirror] Pi Studio auto-start disabled (PI_STUDIO_DISABLED=1). Use /studiostart to start manually.");
       return;
     }
 

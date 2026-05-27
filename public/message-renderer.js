@@ -21,12 +21,16 @@ export class MessageRenderer {
     this.container.innerHTML = '';
   }
 
-  renderWelcome() {
+  renderWelcome({ workspacePath } = {}) {
+    const workspaceHtml = workspacePath
+      ? `<p class="hint welcome-workspace">Current workspace: <code>${this.escapeHtml(workspacePath)}</code></p>`
+      : '';
     this.container.innerHTML = `
       <div class="welcome">
         <div class="welcome-icon"><img src="icons/tau-192.png" alt="τ" class="tau-icon-welcome"></div>
-        <p>Welcome to Tau</p>
+        <p>Welcome to Pi Studio</p>
         <p class="hint">Type a message below to start chatting with Pi, or select a session from the sidebar.</p>
+        ${workspaceHtml}
         <div class="shortcuts-hint">
           <span>/ Focus input</span>
           <span>Esc Abort</span>

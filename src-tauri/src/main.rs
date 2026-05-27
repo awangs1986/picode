@@ -5,6 +5,7 @@ mod pi_manager;
 use pi_manager::{is_port_in_use, wait_for_endpoint, wait_for_health, PiManager};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 use tauri::image::Image;
 use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_dialog::DialogExt;
@@ -42,23 +43,59 @@ async fn cmd_open_workspace(
     session_path: Option<String>,
     force_new_session: Option<bool>,
     open_window: Option<bool>,
+    wait_for_sessions: Option<bool>,
     manager: State<'_, PiManagerState>,
     app: AppHandle,
 ) -> Result<u16, String> {
+    let started_at = Instant::now();
     let port = manager.next_port();
+    let spawn_started_at = Instant::now();
     manager.spawn(&cwd, port, session_path.as_deref())?;
-    wait_for_health(port, 25).await?;
+    eprintln!(
+        "[pi-desktop] open_workspace spawn complete: port={} cwd={} elapsed_ms={}",
+        port,
+        cwd,
+        spawn_started_at.elapsed().as_millis()
+    );
+
+    let health_started_at = Instant::now();
+    wait_for_health(port, 12).await?;
+    eprintln!(
+        "[pi-desktop] open_workspace health ready: port={} elapsed_ms={}",
+        port,
+        health_started_at.elapsed().as_millis()
+    );
     if force_new_session.unwrap_or(false) {
+        let new_session_started_at = Instant::now();
         manager.send_rpc(port, serde_json::json!({ "type": "new_session" }))?;
+        eprintln!(
+            "[pi-desktop] open_workspace new_session sent: port={} elapsed_ms={}",
+            port,
+            new_session_started_at.elapsed().as_millis()
+        );
     }
-    // Ensure the API surface the frontend hits on first paint is ready before we
-    // navigate or open the window. Without this, the new pi can be accepting health
-    // pings while /api/sessions is still warming, producing a transient "Failed to
-    // load sessions" on cold starts.
-    wait_for_endpoint(port, "/api/sessions", 15).await?;
+    if wait_for_sessions.unwrap_or(false) {
+        let sessions_started_at = Instant::now();
+        match wait_for_endpoint(port, "/api/sessions", 4).await {
+            Ok(_) => eprintln!(
+                "[pi-desktop] open_workspace sessions ready: port={} elapsed_ms={}",
+                port,
+                sessions_started_at.elapsed().as_millis()
+            ),
+            Err(err) => eprintln!(
+                "[pi-desktop] open_workspace sessions warmup skipped: port={} error={}",
+                port, err
+            ),
+        }
+    }
     if open_window.unwrap_or(true) {
         open_workspace_window(&app, port)?;
     }
+    eprintln!(
+        "[pi-desktop] open_workspace complete: port={} total_elapsed_ms={}",
+        port,
+        started_at.elapsed().as_millis()
+    );
     Ok(port)
 }
 
@@ -91,7 +128,7 @@ fn open_workspace_window(app: &AppHandle, port: u16) -> Result<(), String> {
         .map_err(|e| format!("Failed to load window icon: {}", e))?;
 
     WebviewWindowBuilder::new(app, &label, WebviewUrl::External(url.parse().unwrap()))
-        .title("Pi Agent")
+        .title("Pi Studio")
         .inner_size(1300.0, 860.0)
         .min_inner_size(800.0, 600.0)
         .decorations(true)

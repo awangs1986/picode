@@ -89,6 +89,7 @@ describe('startNewProjectChat', () => {
     expect(deps.tauriNative.openWorkspace).toHaveBeenCalledWith('/Users/me/fresh', {
       forceNewSession: true,
       openWindow: false,
+      waitForSessions: false,
     });
     expect(deps.navigate).toHaveBeenCalledWith('http://localhost:3010/');
     expect(deps.onInWindowNewSession).not.toHaveBeenCalled();
@@ -106,6 +107,7 @@ describe('startNewProjectChat', () => {
     expect(deps.tauriNative.openWorkspace).toHaveBeenCalledWith('/project/path', {
       forceNewSession: true,
       openWindow: false,
+      waitForSessions: false,
     });
     expect(deps.navigate).toHaveBeenCalledWith('http://localhost:3010/');
   });
@@ -182,6 +184,7 @@ describe('openFolderAsWorkspace', () => {
     expect(deps.tauriNative.openWorkspace).toHaveBeenCalledWith('/picked/path', {
       forceNewSession: true,
       openWindow: false,
+      waitForSessions: false,
     });
     expect(deps.navigate).toHaveBeenCalledWith('http://localhost:3010/');
   });

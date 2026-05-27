@@ -31,4 +31,4 @@ echo "  CLI:     $CLI"
 echo "  Static:  $(pwd)/public"
 echo ""
 
-TAU_STATIC_DIR=$(pwd)/public node "$CLI"
+PI_STUDIO_STATIC_DIR=$(pwd)/public node "$CLI"

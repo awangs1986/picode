@@ -1,7 +1,7 @@
 {
-  "name": "Tau",
-  "short_name": "Tau",
-  "description": "Web UI for pi coding agent",
+  "name": "Pi Studio",
+  "short_name": "Pi Studio",
+  "description": "Local desktop GUI for the Pi coding agent",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#f5f3ef",

@@ -35,6 +35,7 @@
         sessionPath: options.sessionPath ?? null,
         forceNewSession: options.forceNewSession ?? true,
         openWindow: options.openWindow ?? true,
+        waitForSessions: options.waitForSessions ?? false,
       }),
 
     newSession: (port) =>

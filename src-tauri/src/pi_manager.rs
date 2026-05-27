@@ -3,7 +3,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 struct PiProcess {
     child: Child,
@@ -55,19 +55,44 @@ impl PiManager {
             args.push(session.to_string());
         }
 
+        eprintln!(
+            "[pi-desktop] spawning pi: argv={:?} args={:?} cwd={} port={} static_dir={}",
+            argv, args, cwd, port, static_dir
+        );
+
         let mut child = Command::new(&argv[0]);
         child
             .args(&args)
             .current_dir(cwd)
-            .env("TAU_STATIC_DIR", &static_dir)
-            .env("TAU_MIRROR_PORT", port.to_string())
+            .env("PI_STUDIO_STATIC_DIR", &static_dir)
+            .env("PI_STUDIO_PORT", port.to_string())
             .stdin(Stdio::piped())
+            // Drop stdout: pi emits RPC frames on it that we don't consume here, and
+            // letting it fill an unread pipe would eventually block the child.
             .stdout(Stdio::null())
-            .stderr(Stdio::null());
+            // Inherit stderr so pi's startup/runtime errors are visible in the same
+            // terminal running `npm run dev` — critical for diagnosing failures of
+            // new_session / open_workspace that would otherwise be silent.
+            .stderr(Stdio::inherit());
 
-        let mut child = child
-            .spawn()
-            .map_err(|e| format!("Failed to spawn pi: {}", e))?;
+        let spawn_started_at = Instant::now();
+        let mut child = child.spawn().map_err(|e| {
+            format!(
+                "Failed to spawn pi ({}): {}. Check that `pi` is on PATH or that {} exists.",
+                argv.join(" "),
+                e,
+                dirs::home_dir()
+                    .unwrap_or_default()
+                    .join("code/pi/pi-mono/packages/coding-agent/dist/cli.js")
+                    .display()
+            )
+        })?;
+        eprintln!(
+            "[pi-desktop] pi process spawned: port={} pid={} elapsed_ms={}",
+            port,
+            child.id(),
+            spawn_started_at.elapsed().as_millis()
+        );
         let stdin = child
             .stdin
             .take()

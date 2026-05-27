@@ -1,7 +1,7 @@
-// Tau Service Worker — minimal, just enables PWA install
-// No aggressive caching since Tau connects to a live local server
+// Pi Studio Service Worker — minimal, just enables PWA install
+// No aggressive caching since Pi Studio connects to a live local server
 
-const CACHE_NAME = 'tau-v1';
+const CACHE_NAME = 'pi-studio-v1';
 
 // Cache only the app shell on install
 self.addEventListener('install', (event) => {
@@ -60,7 +60,7 @@ self.addEventListener('fetch', (event) => {
       .catch(() => {
         // Offline — serve from cache
         return caches.match(event.request).then((cached) => {
-          return cached || new Response('Tau is offline — start your pi session to connect.', {
+          return cached || new Response('Pi Studio is offline — start your pi session to connect.', {
             status: 503,
             headers: { 'Content-Type': 'text/plain' },
           });
