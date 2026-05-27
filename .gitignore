@@ -1,5 +1,10 @@
 node_modules/
+.npm-cache/
 .DS_Store
+
+# Tauri build artifacts
+src-tauri/target/
+src-tauri/gen/
 
 # Pi session exports
 pi-session-*.html

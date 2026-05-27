@@ -1076,7 +1076,46 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
       return;
     }
 
-    // Memoryd check
+    // Agent config read/write
+    if (urlPath === "/api/agent-config" && req.method === "GET") {
+      try {
+        const configPath = path.join(process.env.HOME || "~", ".pi", "agent", "settings.json");
+        const content = fs.existsSync(configPath) ? fs.readFileSync(configPath, "utf8") : "{}";
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ success: true, content, path: configPath }));
+      } catch (e: any) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ success: false, error: e.message }));
+      }
+      return;
+    }
+
+    if (urlPath === "/api/agent-config" && req.method === "PUT") {
+      let body = "";
+      req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
+      req.on("end", () => {
+        try {
+          const { content } = JSON.parse(body);
+          if (typeof content !== "string") {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ success: false, error: "content must be a string" }));
+            return;
+          }
+          // Validate JSON before saving
+          JSON.parse(content);
+          const configPath = path.join(process.env.HOME || "~", ".pi", "agent", "settings.json");
+          fs.mkdirSync(path.dirname(configPath), { recursive: true });
+          fs.writeFileSync(configPath, content, "utf8");
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ success: true }));
+        } catch (e: any) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ success: false, error: e.message }));
+        }
+      });
+      return;
+    }
+
     res.writeHead(404, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "Not found" }));
   }
@@ -1325,7 +1364,11 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
     stream.destroy();
 
     if (!header?.id) return null;
-    if (userMessageCount <= 1 && lineCount <= 8) return null; // pipe mode
+    // Heuristic to suppress one-shot "pipe mode" invocations (no user input, no assistant turn).
+    // Real interactive sessions write at least the session header + a model/thinking change pair,
+    // and a brand-new chat with a single short user message can be as compact as ~7 lines, so we
+    // only filter out trivially-short files that have NO user messages at all.
+    if (userMessageCount === 0 && lineCount <= 4) return null;
 
     return {
       id: header.id,

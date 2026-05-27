@@ -21,8 +21,26 @@
     ],
     "image": "https://raw.githubusercontent.com/deflating/tau/main/docs/images/dark.png"
   },
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "PATH=\"$HOME/.cargo/bin:$PATH\" tauri dev",
+    "build": "PATH=\"$HOME/.cargo/bin:$PATH\" tauri build",
+    "test": "vitest run && node scripts/check-tauri-permissions.js",
+    "test:watch": "vitest",
+    "check:permissions": "node scripts/check-tauri-permissions.js",
+    "check:rust": "bash scripts/check-rust.sh"
+  },
   "dependencies": {
-    "ws": "^8.16.0",
-    "qrcode": "^1.5.0"
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-dialog": "^2.7.1",
+    "@tauri-apps/plugin-fs": "^2.5.1",
+    "@tauri-apps/plugin-shell": "^2.3.5",
+    "qrcode": "^1.5.0",
+    "ws": "^8.16.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.2",
+    "jsdom": "^26.1.0",
+    "vitest": "^3.2.4"
   }
 }

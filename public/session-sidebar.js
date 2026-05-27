@@ -41,18 +41,34 @@ export class SessionSidebar {
     this.render();
   }
 
-  async loadSessions() {
-    try {
-      this.container.innerHTML = Array.from({length: 6}, () =>
-        '<div class="session-skeleton"><div class="session-skeleton-title"></div><div class="session-skeleton-meta"></div></div>'
-      ).join('');
-      const res = await fetch('/api/sessions');
-      const data = await res.json();
-      this.projects = data.projects || [];
-      this.render();
-    } catch (error) {
-      console.error('[Sidebar] Failed to load sessions:', error);
-      this.container.innerHTML = '<div class="session-loading">Failed to load sessions</div>';
+  async loadSessions({ retries = 4, retryDelayMs = 250 } = {}) {
+    this.container.innerHTML = Array.from({ length: 6 }, () =>
+      '<div class="session-skeleton"><div class="session-skeleton-title"></div><div class="session-skeleton-meta"></div></div>'
+    ).join('');
+
+    let lastError = null;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        const res = await fetch('/api/sessions');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        this.projects = data.projects || [];
+        this.render();
+        return;
+      } catch (error) {
+        lastError = error;
+        if (attempt < retries) {
+          await new Promise((resolve) => setTimeout(resolve, retryDelayMs * (attempt + 1)));
+        }
+      }
+    }
+
+    console.error('[Sidebar] Failed to load sessions:', lastError);
+    this.container.innerHTML =
+      '<div class="session-loading">Failed to load sessions <button class="retry-link" id="retry-load-sessions">Retry</button></div>';
+    const retryBtn = this.container.querySelector('#retry-load-sessions');
+    if (retryBtn) {
+      retryBtn.addEventListener('click', () => this.loadSessions());
     }
   }
 
@@ -393,7 +409,7 @@ export class SessionSidebar {
 
       header.innerHTML = `
         <span class="chevron">▼</span>
-        <span class="project-name" title="${this.escapeHtml(project.path)}">${this.escapeHtml(shortPath)}</span>
+        <span class="project-name" title="${project.path}">${shortPath}</span>
         <span class="project-count">${project.sessions.length}</span>
         <button class="project-new-chat-btn" title="New chat in ${this.escapeHtml(shortPath)}" aria-label="New chat in ${this.escapeHtml(shortPath)}">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>

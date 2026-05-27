@@ -11,7 +11,31 @@ import { SessionSidebar } from './session-sidebar.js';
 import { themes, applyTheme, getCurrentTheme } from './themes.js';
 import { FileBrowser } from './file-browser.js';
 import { Launcher } from './launcher.js';
-import { FolderPicker } from './folder-picker.js';
+import {
+  startNewProjectChat,
+  openFolderAsWorkspace,
+  startInWindowNewSession,
+} from './workspace-actions.js';
+
+const fetchInstances = async () => {
+  try {
+    const res = await fetch('/api/instances');
+    if (!res.ok) return [];
+    const data = await res.json();
+    return data.instances || [];
+  } catch {
+    return [];
+  }
+};
+const getCurrentPort = () => {
+  const fromTauri = window.tauriNative?.currentPort?.();
+  if (typeof fromTauri === 'number') return fromTauri;
+  const fromLocation = Number(location.port);
+  return Number.isFinite(fromLocation) && fromLocation > 0 ? fromLocation : 3001;
+};
+const navigateInWindow = (url) => {
+  window.location.href = url;
+};
 
 
 // Initialize components
@@ -67,6 +91,9 @@ let mirrorActiveSessionFile = null; // The live session file path from the TUI
 let viewingActiveSession = true; // Whether we're viewing the live session or a historical one
 let isMirrorMode = false; // Set when mirror_sync received
 let liveInstances = []; // All running Tau instances [{port, sessionFile, cwd}]
+// When true, the next message_end should trigger a sidebar reload so a freshly
+// created (in-memory only) session shows up in the list as soon as it's persisted.
+let pendingNewSessionRefresh = false;
 
 // File browser
 const fileSidebar = document.getElementById('file-sidebar');
@@ -76,6 +103,11 @@ const fileSidebarUp = document.getElementById('file-sidebar-up');
 const fileList = document.getElementById('file-list');
 const fileSidebarPath = document.getElementById('file-sidebar-path');
 const fileBrowser = new FileBrowser(fileList, fileSidebarPath, messageInput);
+const isTauriRuntime = Boolean(window.tauriNative?.isTauri || window.__TAURI__?.core?.invoke);
+
+if (!isTauriRuntime) {
+  messageRenderer.renderError('This app is Tauri-only. Please launch it from the Tauri desktop app.');
+}
 
 fileSidebarToggle.addEventListener('click', () => {
   const isCollapsed = fileSidebar.classList.toggle('collapsed');
@@ -223,6 +255,11 @@ function handleRPCEvent(event) {
       break;
     case 'message_end':
       handleMessageEnd(event.message);
+      if (pendingNewSessionRefresh) {
+        pendingNewSessionRefresh = false;
+        sidebar.loadSessions().catch(() => {});
+        pollInstances().catch(() => {});
+      }
       break;
     case 'tool_execution_start':
       handleToolExecutionStart(event);
@@ -1039,13 +1076,46 @@ sessionSearchInput.addEventListener('input', () => {
   sidebar.setSearchQuery(sessionSearchInput.value);
 });
 
+/**
+ * Reset the chat surface to a fresh "new session" view inside the current window.
+ * Clears renderers/state, unmarks the active sidebar item and refreshes the list
+ * so the newly created session shows up once pi writes its first message to disk.
+ */
+async function resetUiForNewSession() {
+  state.reset();
+  messageRenderer.clear();
+  toolCardRenderer.clear();
+  messageRenderer.renderWelcome();
+  sidebar.clearActive();
+  mirrorActiveSessionFile = null;
+  viewingActiveSession = true;
+  updateMirrorInputState();
+
+  // Mark that the next assistant turn should refresh the sidebar, since pi
+  // doesn't persist a brand-new session to disk until the first message round-trip.
+  pendingNewSessionRefresh = true;
+
+  pollInstances().catch(() => {});
+  sidebar.loadSessions().catch(() => {});
+}
+
 async function newSession() {
   sessionTotalCost = 0;
   lastInputTokens = 0;
   updateCostDisplay();
   updateTokenUsage();
-  await switchSession(null);
-  sidebar.clearActive();
+
+  if (window.tauriNative) {
+    const ok = await startInWindowNewSession({
+      tauriNative: window.tauriNative,
+      renderError: (message) => messageRenderer.renderError(message),
+    });
+    if (ok) await resetUiForNewSession();
+  } else {
+    await switchSession(null);
+    sidebar.clearActive();
+  }
+
   if (isMobile()) {
     sidebarEl.classList.add('collapsed');
     sidebarOverlay.classList.remove('visible');
@@ -1058,39 +1128,21 @@ async function handleNewProjectChat(project) {
   lastInputTokens = 0;
   updateCostDisplay();
   updateTokenUsage();
-
-  try {
-    const res = await fetch('/api/sessions/switch', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionFile: null, cwd: project.path }),
-    });
-    if (!res.ok) {
-      const err = await res.json();
-      messageRenderer.renderError(`Failed to start new chat: ${err.error}`);
-      return;
-    }
-  } catch (e) {
-    messageRenderer.renderError('Failed to start new chat');
-    return;
-  }
-
-  state.reset();
-  messageRenderer.clear();
-  toolCardRenderer.clear();
-  messageRenderer.renderWelcome();
-  sidebar.clearActive();
-
-  // New project chat should always be writable.
-  // In mirror mode we might have been viewing a historical read-only session.
-  viewingActiveSession = true;
-  updateMirrorInputState();
+  const launched = await startNewProjectChat({
+    project,
+    tauriNative: window.tauriNative,
+    fetchInstances,
+    getCurrentPort,
+    navigate: navigateInWindow,
+    onInWindowNewSession: resetUiForNewSession,
+    renderError: (message) => messageRenderer.renderError(message),
+  });
+  if (!launched) return;
 
   if (isMobile()) {
     sidebarEl.classList.add('collapsed');
     sidebarOverlay.classList.remove('visible');
   }
-  if (!isMobile()) messageInput.focus();
 }
 
 async function handleSessionSelect(session, project) {
@@ -1099,6 +1151,21 @@ async function handleSessionSelect(session, project) {
   lastInputTokens = 0;
   updateCostDisplay();
   updateTokenUsage();
+
+  // In Tauri: switch session via RPC command to the current pi instance
+  if (window.tauriNative && session.filePath) {
+    try {
+      await window.tauriNative.switchSession(session.filePath);
+    } catch (e) {
+      messageRenderer.renderError(`Failed to switch session: ${e}`);
+    }
+    if (isMobile()) {
+      sidebarEl.classList.add('collapsed');
+      sidebarOverlay.classList.remove('visible');
+    }
+    return;
+  }
+
   await switchSession(session.filePath, session, project);
 
   // Close sidebar on mobile after selecting
@@ -1636,6 +1703,92 @@ toggleAuth.addEventListener('click', async () => {
 
 
 
+// ═══════════════════════════════════════
+// Agent Config Editor
+// ═══════════════════════════════════════
+
+const btnOpenConfig = document.getElementById('btn-open-config');
+const configEditorOverlay = document.getElementById('config-editor-overlay');
+const configEditorModal = document.getElementById('config-editor-modal');
+const configEditorClose = document.getElementById('config-editor-close');
+const configEditorCancel = document.getElementById('config-editor-cancel');
+const configEditorSave = document.getElementById('config-editor-save');
+const configEditorTextarea = document.getElementById('config-editor-textarea');
+const configEditorError = document.getElementById('config-editor-error');
+const configEditorPath = document.getElementById('config-editor-path');
+
+function openConfigEditor() {
+  configEditorError.classList.add('hidden');
+  configEditorTextarea.value = '';
+  configEditorPath.textContent = '';
+  configEditorModal.classList.remove('hidden');
+  configEditorOverlay.classList.remove('hidden');
+
+  fetch('/api/agent-config')
+    .then(r => r.json())
+    .then(data => {
+      if (data.success) {
+        try {
+          configEditorTextarea.value = JSON.stringify(JSON.parse(data.content), null, 2);
+        } catch {
+          configEditorTextarea.value = data.content;
+        }
+        configEditorPath.textContent = data.path || '';
+      } else {
+        showConfigError(data.error || 'Failed to load config');
+      }
+    })
+    .catch(e => showConfigError(e.message));
+}
+
+function closeConfigEditor() {
+  configEditorModal.classList.add('hidden');
+  configEditorOverlay.classList.add('hidden');
+}
+
+function showConfigError(msg) {
+  configEditorError.textContent = msg;
+  configEditorError.classList.remove('hidden');
+}
+
+btnOpenConfig.addEventListener('click', () => {
+  closeSettings();
+  openConfigEditor();
+});
+
+configEditorClose.addEventListener('click', closeConfigEditor);
+configEditorCancel.addEventListener('click', closeConfigEditor);
+configEditorOverlay.addEventListener('click', closeConfigEditor);
+
+configEditorSave.addEventListener('click', async () => {
+  configEditorError.classList.add('hidden');
+  const content = configEditorTextarea.value;
+  try {
+    JSON.parse(content);
+  } catch (e) {
+    showConfigError('Invalid JSON: ' + e.message);
+    return;
+  }
+  configEditorSave.disabled = true;
+  try {
+    const resp = await fetch('/api/agent-config', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content }),
+    });
+    const data = await resp.json();
+    if (data.success) {
+      closeConfigEditor();
+    } else {
+      showConfigError(data.error || 'Failed to save config');
+    }
+  } catch (e) {
+    showConfigError(e.message);
+  } finally {
+    configEditorSave.disabled = false;
+  }
+});
+
 // Restore saved theme
 const savedTheme = getCurrentTheme();
 applyTheme(savedTheme);
@@ -1840,20 +1993,18 @@ if (isMobile()) {
 // Launcher
 const launcherEl = document.getElementById('launcher');
 const launcher = new Launcher(launcherEl, async (projectPath) => {
-  try {
-    const res = await fetch('/api/projects/launch', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path: projectPath }),
-    });
-    const data = await res.json();
-    if (data.ok) {
-      // Refresh the launcher to show the new active instance
-      setTimeout(() => launcher.load(), 2000);
-    }
-  } catch (e) {
-    console.error('[Launcher] Failed to launch:', e);
-  }
+  await startNewProjectChat({
+    project: { path: projectPath, sessions: [] },
+    tauriNative: window.tauriNative,
+    fetchInstances,
+    getCurrentPort,
+    navigate: navigateInWindow,
+    onInWindowNewSession: async () => {
+      hideLauncher();
+      await resetUiForNewSession();
+    },
+    renderError: (message) => messageRenderer.renderError(message),
+  });
 });
 
 // Check if launcher should show (projects configured)
@@ -1916,25 +2067,14 @@ document.querySelector('.mode-link:first-child')?.addEventListener('click', () =
 // Open Folder as workspace
 // ═══════════════════════════════════════
 
-const folderPicker = new FolderPicker();
-document.getElementById('open-folder-btn').addEventListener('click', () => {
-  folderPicker.open(async (selectedPath) => {
-    try {
-      const res = await fetch('/api/workspace/open', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: selectedPath }),
-      });
-      const data = await res.json();
-      if (data.ok) {
-        messageRenderer.renderSystemMessage(`Opening workspace: ${data.path}\nA new terminal window with Pi has been launched. It will appear in the sidebar once active.`);
-        setTimeout(() => sidebar.loadSessions(), 3000);
-      } else {
-        messageRenderer.renderError(`Failed to open folder: ${data.error || 'Unknown error'}`);
-      }
-    } catch (e) {
-      messageRenderer.renderError(`Failed to open folder: ${e.message}`);
-    }
+document.getElementById('open-folder-btn').addEventListener('click', async () => {
+  await openFolderAsWorkspace({
+    tauriNative: window.tauriNative,
+    fetchInstances,
+    getCurrentPort,
+    navigate: navigateInWindow,
+    onInWindowNewSession: resetUiForNewSession,
+    renderError: (message) => messageRenderer.renderError(message),
   });
 });
 

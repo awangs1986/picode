@@ -1,0 +1,34 @@
+[default]
+description = "Default permissions for the Pi Desktop app — allows all app commands from workspace windows."
+permissions = [
+    "allow-cmd-open-workspace",
+    "allow-cmd-pick-folder",
+    "allow-cmd-new-session",
+    "allow-cmd-switch-session",
+    "allow-cmd-stop-instance",
+]
+
+[[permission]]
+identifier = "allow-cmd-open-workspace"
+description = "Allow spawning a new pi process and opening a workspace window"
+commands.allow = ["cmd_open_workspace"]
+
+[[permission]]
+identifier = "allow-cmd-pick-folder"
+description = "Allow native folder picker dialog"
+commands.allow = ["cmd_pick_folder"]
+
+[[permission]]
+identifier = "allow-cmd-new-session"
+description = "Allow creating a new session via RPC"
+commands.allow = ["cmd_new_session"]
+
+[[permission]]
+identifier = "allow-cmd-switch-session"
+description = "Allow switching to a session file via RPC"
+commands.allow = ["cmd_switch_session"]
+
+[[permission]]
+identifier = "allow-cmd-stop-instance"
+description = "Allow stopping (killing) a pi instance"
+commands.allow = ["cmd_stop_instance"]

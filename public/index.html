@@ -199,6 +199,33 @@
           <button class="settings-toggle" id="toggle-auth"></button>
         </div>
       </div>
+      <div class="settings-section">
+        <div class="settings-section-title">Configuration</div>
+        <div class="settings-row">
+          <span class="settings-label">Agent config file</span>
+          <button class="settings-value-btn" id="btn-open-config">Edit</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Agent Config Editor Modal -->
+  <div class="config-editor-overlay hidden" id="config-editor-overlay"></div>
+  <div class="config-editor-modal hidden" id="config-editor-modal">
+    <div class="config-editor-header">
+      <div class="config-editor-title-group">
+        <h3>Agent Configuration</h3>
+        <span class="config-editor-path" id="config-editor-path"></span>
+      </div>
+      <button class="settings-close" id="config-editor-close"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+    </div>
+    <div class="config-editor-body">
+      <textarea class="config-editor-textarea" id="config-editor-textarea" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"></textarea>
+      <div class="config-editor-error hidden" id="config-editor-error"></div>
+    </div>
+    <div class="config-editor-footer">
+      <button class="config-editor-cancel" id="config-editor-cancel">Cancel</button>
+      <button class="btn-primary" id="config-editor-save">Save</button>
     </div>
   </div>
 
@@ -213,6 +240,7 @@
   <div id="dialog-container" class="hidden"></div>
 
   <!-- Scripts -->
+  <script src="tauri-bridge.js"></script>
   <script type="module" src="app.js"></script>
 </body>
 </html>
