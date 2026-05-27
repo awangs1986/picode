@@ -1,4 +1,4 @@
-# Tau Roadmap
+# Pi Studio Roadmap
 
 Ideas and planned features. Nothing here is committed — just captured so it doesn't get lost.
 
@@ -22,7 +22,7 @@ Right sidebar with lazy-loaded file tree. Navigate directories, double-click to 
 Styled dropdown with search/filter, keyboard support, frosted glass menu. Replaces native `<select>`.
 
 ### Compaction Support
-Manual compact command broadcasts start/end events to Tau. Shows compaction status in the conversation.
+Manual compact command broadcasts start/end events to Pi Studio. Shows compaction status in the conversation.
 
 ### Voice Input
 Mic button inside the input bubble. Uses Web Speech API (on-device dictation). Live transcription into the textarea. Pulses red while recording. Hidden if browser doesn't support it.
@@ -52,10 +52,10 @@ Theme picker, auto-compaction toggle, thinking level, show/hide thinking blocks,
 ### Logo & Branding
 - Fresh README with feature overview
 - Screenshots (Dusk, Clean, mobile, file browser, search)
-- Already have the tau icon in multiple sizes
+- Already have the Pi Studio icon in multiple sizes
 
 ### npm Publishing
-- `pi install npm:tau-mirror` for frictionless install
+- `pi install npm:pi-studio` for frictionless install
 - Needs npm account setup and packaging
 
 ---
@@ -82,7 +82,7 @@ Desktop: button collapses sidebar and shrinks conversation to narrow feed, previ
 Builds on the file browser — could auto-show preview when a file gets edited.
 
 ### Agent Teams (bundled)
-Ship a subagent/team extension as part of Tau. Spawn agent teams from the web UI, visual grouping in sidebar, team status overview, live-switch between agents. Based on Pi's subagent pattern but tightly integrated.
+Ship a subagent/team extension as part of Pi Studio. Spawn agent teams from the web UI, visual grouping in sidebar, team status overview, live-switch between agents. Based on Pi's subagent pattern but tightly integrated.
 
 ### Conversation Fork/Branch Visualisation
 Pi already has fork support in the RPC. Visualise the conversation as a tree — go back to any point and try a different approach. Like git for conversations.
@@ -100,4 +100,4 @@ Send the same prompt to two models side by side and compare responses. Split vie
 Embedded terminal panel (xterm.js) showing real-time bash output from Pi's tool executions. Would need pi-core to expose a PTY stream through the extension API — currently bash tool runs one-shot commands, not a persistent shell. Read-only output display is possible now but limited value over existing tool cards.
 
 ### memoryd Dashboard
-Standalone viewer for memoryd memory files. Was previously built into Tau, stripped out to keep the core lean. The viewer code is saved at `~/Desktop/memoryd-viewer/`. Now being integrated into the native macOS memoryd menu bar app.
+Standalone viewer for memoryd memory files. Was previously built into Pi Studio, stripped out to keep the core lean. The viewer code is saved at `~/Desktop/memoryd-viewer/`. Now being integrated into the native macOS memoryd menu bar app.

@@ -1,43 +1,52 @@
-# Tau
+# Pi Studio
 
-A web UI that mirrors your [Pi](https://github.com/badlogic/pi-mono) terminal session in the browser. No separate server — it runs as a Pi extension inside your existing process.
+A local Codex-style desktop app for the [Pi](https://github.com/badlogic/pi-mono) coding agent. No cloud, no account — runs entirely on your machine.
 
-![Tau dark mode](docs/images/dark.png)
+![Pi Studio dark mode](docs/images/dark.png)
 
-![Tau terracotta theme](docs/images/terracotta.png)
-
-![Settings](docs/images/settings.png)
-
-![Commands](docs/images/commands.png)
+![Pi Studio terracotta theme](docs/images/terracotta.png)
 
 ## What it does
 
-Tau connects to your running Pi TUI and gives you a second view in the browser. Same session, same messages, same tools — just a different screen. Type in the terminal or the browser, both stay in sync.
+Pi Studio gives you a full visual interface for Pi. Open any project, chat with the agent, browse sessions and files — all from a native desktop app. Multiple projects run in parallel, each in its own window with its own agent.
 
-- **Live mirroring** — streams messages, tool calls, and thinking blocks in real-time
-- **Works on any device** — open it on your phone, tablet, or another monitor
-- **Session browser** — view history from any past session
-- **No extra process** — the Pi extension *is* the server
+- **Multi-project** — each project gets its own window, working directory, session history, and running agent
+- **Live chat** — streaming responses, tool-call cards, thinking blocks, inline diffs
+- **Session browser** — view and resume any past session, full-text search across history
+- **File browser** — lazy-loaded file tree, drag files into the chat
+- **No terminal required** — launch, switch, and manage agents entirely from the GUI
 
 ## Install
 
+### Desktop app
+
+Download the latest release for macOS.
+
+Or build from source:
+
 ```bash
-pi install npm:tau-mirror
+git clone https://github.com/deflating/pi-studio.git
+cd pi-studio
+npm run build
 ```
 
-Or from git:
+### Pi extension (browser mode)
+
+If you prefer to run Pi in the terminal and access the UI in a browser:
 
 ```bash
-pi install git:github.com/deflating/tau
+pi install npm:pi-studio
 ```
+
+Then open the URL shown in the status bar (default: `http://localhost:3001`).
 
 ## Usage
 
-1. Start Pi normally in your terminal
-2. Open the URL shown in the status bar (default: `http://localhost:3001`)
-3. That's it
+1. Launch **Pi Studio**
+2. Click a project bubble to open it (or pick a folder)
+3. Start chatting — Pi agent starts automatically
 
-Type `/qr` in the terminal to show a QR code and scan it to access via your phone.
+Type `/qr` in the terminal to show a QR code and access from your phone.
 
 ## Features
 
@@ -79,87 +88,96 @@ Type `/qr` in the terminal to show a QR code and scan it to access via your phon
 - Manual context compaction with status display
 - Auto-compaction support
 
-### PWA
+### Themes
+Six built-in themes: Dusk, Dawn, Midnight, Clean, Terracotta, Sage.
+
+### PWA (browser/extension mode)
 - Installable as a standalone app on iOS, Android, and macOS
 - Custom app icons
 - Service worker with network-first caching
 
-## Configuration
+## Configuration (extension mode)
 
 Environment variables (set before starting Pi):
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `TAU_MIRROR_PORT` | `3001` | Server port |
-| `TAU_STATIC_DIR` | *(bundled)* | Override static files path |
-| `TAU_DISABLED` | `0` | Set to `1` to disable Tau (it stays installed but won't start the server) |
-| `TAU_USER` | *(none)* | HTTP Basic Auth username (both `TAU_USER` and `TAU_PASS` required to enable) |
-| `TAU_PASS` | *(none)* | HTTP Basic Auth password |
+| `PI_STUDIO_PORT` | `3001` | Server port |
+| `PI_STUDIO_STATIC_DIR` | *(bundled)* | Override static files path |
+| `PI_STUDIO_DISABLED` | `0` | Set to `1` to disable Pi Studio (stays installed but won't start the server) |
+| `PI_STUDIO_USER` | *(none)* | HTTP Basic Auth username (both `PI_STUDIO_USER` and `PI_STUDIO_PASS` required to enable) |
+| `PI_STUDIO_PASS` | *(none)* | HTTP Basic Auth password |
 
 ### Authentication
 
-Tau supports optional HTTP Basic Auth (browser-native login popup).
+Supports optional HTTP Basic Auth:
 
 **1. Set credentials** — add to `~/.pi/agent/settings.json`:
 
 ```json
 {
-  "tau": {
+  "pistudio": {
     "user": "pi",
     "pass": "your-password"
   }
 }
 ```
 
-Or via environment variables: `TAU_USER=pi TAU_PASS=secret pi`
+Or via environment variables: `PI_STUDIO_USER=pi PI_STUDIO_PASS=secret pi`
 
-**2. Toggle on/off** — once credentials are configured, a "Require login" toggle appears in Settings within the Tau web UI. Flip it on to start requiring authentication, off to open it back up. The setting persists across restarts.
+**2. Toggle on/off** — once credentials are configured, a "Require login" toggle appears in Settings. The setting persists across restarts.
 
-Both HTTP and WebSocket connections are gated when enabled. The `/api/health` endpoint remains open for monitoring.
-
-### Start / Stop
-
-Control Tau at runtime without uninstalling:
+### Start / Stop (extension mode)
 
 ```
-/tau-stop     Stop the mirror server
-/tau-start    Start it again
+/studiostop     Stop the Pi Studio server
+/studiostart    Start it again
 ```
 
-To prevent Tau from auto-starting (e.g. in multi-session or dev container workflows):
+To prevent auto-starting:
 
 ```bash
-TAU_DISABLED=1 pi
+PI_STUDIO_DISABLED=1 pi
 ```
 
-You can still start it manually with `/tau-start` in that session.
+You can still start it manually with `/studiostart` in that session.
 
 ## How it works
 
-Tau is a [Pi extension](https://github.com/badlogic/pi-mono#extensions) that starts an HTTP + WebSocket server inside the Pi process. The extension subscribes to all Pi events and forwards them to connected browser clients. Commands from the browser are executed via the extension API against the same agent session.
+**Desktop app:** Tauri wraps the web UI. A Rust `PiManager` spawns one `pi --mode rpc` subprocess per workspace, each on its own port. Each project gets its own OS window.
+
+**Extension mode:** `extensions/mirror-server.ts` starts an HTTP + WebSocket server inside the Pi process, subscribes to all Pi events, and forwards them to connected browser clients.
 
 ```
+Desktop app:
+┌─────────────┐     ┌──────────────────────────────┐
+│  Pi Studio  │     │  Tauri + PiManager           │
+│  (Webview)  │◄───►│    ↳ pi --mode rpc :3001     │
+│             │     │    ↳ pi --mode rpc :3002     │
+└─────────────┘     └──────────────────────────────┘
+
+Extension mode:
 ┌─────────────┐     ┌──────────────────────────────┐     ┌─────────────┐
 │  Pi TUI     │     │  Pi Process                  │     │  Browser    │
-│  (terminal) │◄───►│                              │◄───►│  (Tau)      │
-│             │     │  tau extension               │     │             │
-└─────────────┘     │    ↳ HTTP + WS on :3001      │     └─────────────┘
-                    └──────────────────────────────┘
+│  (terminal) │◄───►│    ↳ HTTP + WS on :3001      │◄───►│  (Pi Studio)│
+└─────────────┘     └──────────────────────────────┘     └─────────────┘
 ```
-
-There's no separate server to run. The extension auto-loads when Pi starts and shuts down when Pi exits.
 
 ## Development
 
-Clone and point the extension at the local static files:
-
 ```bash
-git clone https://github.com/deflating/tau.git
-cd tau
-TAU_STATIC_DIR=$(pwd)/public pi
+git clone https://github.com/deflating/pi-studio.git
+cd pi-studio
+PI_STUDIO_STATIC_DIR=$(pwd)/public pi
 ```
 
-Edit the files in `public/` — refresh the browser to see changes.
+Edit files in `public/` — refresh the browser to see changes.
+
+For the Tauri desktop app:
+
+```bash
+npm run dev
+```
 
 ## License
 
