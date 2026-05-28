@@ -25,6 +25,12 @@ impl PiManager {
 
     fn find_pi_binary() -> Vec<String> {
         // Returns argv: [binary, args...]
+        let common_paths = ["/opt/homebrew/bin/pi", "/usr/local/bin/pi"];
+        for candidate in common_paths {
+            if std::path::Path::new(candidate).exists() {
+                return vec![candidate.to_string()];
+            }
+        }
         if let Ok(output) = Command::new("which").arg("pi").output() {
             if output.status.success() {
                 let p = String::from_utf8_lossy(&output.stdout).trim().to_string();

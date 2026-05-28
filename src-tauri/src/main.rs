@@ -13,6 +13,7 @@ use std::time::Instant;
 use tauri::image::Image;
 use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_dialog::MessageDialogKind;
 
 type PiManagerState = Arc<PiManager>;
 
@@ -200,6 +201,29 @@ fn open_workspace_window(app: &AppHandle, port: u16) -> Result<(), String> {
     Ok(())
 }
 
+fn open_bootstrap_window(app: &AppHandle, startup_error: &str) -> Result<(), String> {
+    let label = "bootstrap";
+    let icon = Image::from_bytes(include_bytes!("../icons/32x32.png"))
+        .map_err(|e| format!("Failed to load window icon: {}", e))?;
+    let encoded_error = startup_error
+        .replace('&', "%26")
+        .replace(' ', "%20")
+        .replace('\n', "%0A");
+    let url = format!("bootstrap.html?startupError={}", encoded_error);
+
+    WebviewWindowBuilder::new(app, label, WebviewUrl::App(url.into()))
+        .title("Pi Studio")
+        .inner_size(900.0, 640.0)
+        .min_inner_size(700.0, 480.0)
+        .decorations(true)
+        .icon(icon)
+        .map_err(|e| e.to_string())?
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
 fn find_static_dir(app: &tauri::App) -> PathBuf {
     // In `tauri dev`, the process cwd is often `src-tauri/`, so `./public`
     // points to a non-existent folder. Prefer the workspace root public dir.
@@ -296,6 +320,25 @@ fn find_latest_session_boot_target() -> Option<(String, String)> {
     Some((cwd, session_path.to_string_lossy().to_string()))
 }
 
+#[tauri::command]
+async fn cmd_retry_startup(manager: State<'_, PiManagerState>) -> Result<u16, String> {
+    let home_cwd = dirs::home_dir()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    let (cwd, session_path) = match find_latest_session_boot_target() {
+        Some((resolved_cwd, resolved_session_path)) => (resolved_cwd, Some(resolved_session_path)),
+        None => (home_cwd, None),
+    };
+    let initial_port = 3001u16;
+
+    if !is_port_in_use(initial_port) {
+        manager.spawn(&cwd, initial_port, session_path.as_deref())?;
+    }
+    wait_for_health(initial_port, 30).await?;
+    Ok(initial_port)
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 fn main() {
@@ -331,10 +374,26 @@ fn main() {
             let initial_port = 3001u16;
 
             // Dev mode: pi may already be running (started by beforeDevCommand)
+            let mut startup_ok = true;
             if !is_port_in_use(initial_port) {
-                manager
-                    .spawn(&cwd, initial_port, session_path.as_deref())
-                    .expect("Failed to start pi process");
+                if let Err(err) = manager.spawn(&cwd, initial_port, session_path.as_deref()) {
+                    startup_ok = false;
+                    eprintln!("[pi-desktop] startup failed to spawn pi: {}", err);
+                    if let Err(window_err) = open_bootstrap_window(&app.handle().clone(), &err) {
+                        eprintln!(
+                            "[pi-desktop] failed to open bootstrap window after startup error: {}",
+                            window_err
+                        );
+                        app.dialog()
+                            .message(format!(
+                                "Pi Studio could not start the Pi runtime.\n\n{}\n\nPlease install the `pi` CLI and try again.",
+                                err
+                            ))
+                            .title("Pi Studio startup failed")
+                            .kind(MessageDialogKind::Error)
+                            .show(|_| {});
+                    }
+                }
             } else {
                 eprintln!(
                     "[pi-desktop] Port {} already in use, attaching to existing pi",
@@ -344,17 +403,19 @@ fn main() {
 
             app.manage(manager.clone());
 
-            let app_handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                match wait_for_health(initial_port, 30).await {
-                    Ok(_) => {
-                        if let Err(e) = open_workspace_window(&app_handle, initial_port) {
-                            eprintln!("Failed to open window: {}", e);
+            if startup_ok {
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    match wait_for_health(initial_port, 30).await {
+                        Ok(_) => {
+                            if let Err(e) = open_workspace_window(&app_handle, initial_port) {
+                                eprintln!("Failed to open window: {}", e);
+                            }
                         }
+                        Err(e) => eprintln!("Pi failed to start: {}", e),
                     }
-                    Err(e) => eprintln!("Pi failed to start: {}", e),
-                }
-            });
+                });
+            }
 
             Ok(())
         })
@@ -377,6 +438,7 @@ fn main() {
             cmd_stop_instance,
             cmd_pick_folder,
             cmd_get_pi_version,
+            cmd_retry_startup,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

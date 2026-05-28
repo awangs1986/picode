@@ -55,6 +55,24 @@ Pi Studio gives you a full visual interface for Pi. Open any project, chat with 
 
 Download the latest release for macOS.
 
+Tip: installing the [Pi](https://github.com/badlogic/pi-mono) CLI enables full agent features immediately. If it is not installed yet, Pi Studio now shows a startup helper with a retry button.
+
+#### macOS unsigned release notice
+
+Pi Studio currently ships macOS builds without Apple Developer ID signing/notarization.
+Expected Gatekeeper behavior is a block such as:
+
+`"Pi Studio" cannot be opened because the developer cannot be verified.`
+
+Use the standard GUI allow path:
+
+1. Drag `Pi Studio.app` into `/Applications`
+2. Right-click the app and choose **Open**
+3. If blocked, open **System Settings -> Privacy & Security**
+4. Click **Open Anyway** for Pi Studio
+
+For maintainers: publish the generated `.dmg` artifact directly and avoid modifying `.app` contents after bundling. The release helper script `npm run release:mac:dmg` validates this (rejects ad-hoc and broken signatures).
+
 Or build from source:
 
 ```bash
