@@ -3,6 +3,10 @@
 This project publishes macOS artifacts to intentionally trigger the Gatekeeper
 "developer cannot be verified" path (not a damaged app path).
 
+To avoid linker-injected ad-hoc signatures on macOS binaries, this repo sets:
+
+- `.cargo/config.toml` -> `-Wl,-no_adhoc_codesign` for both Apple targets.
+
 ## Rules
 
 - Do not ship ad-hoc signatures.
