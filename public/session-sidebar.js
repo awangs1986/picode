@@ -13,6 +13,7 @@ export class SessionSidebar {
     this.searchQuery = '';
     this.favourites = JSON.parse(localStorage.getItem('pi-studio-favourites') || '[]');
     this.archived = JSON.parse(localStorage.getItem('pi-studio-archived') || '[]');
+    this.archivedCollapsed = localStorage.getItem('pi-studio-archived-collapsed') !== 'false';
     this.contextMenu = null;
 
     // Close context menu on click anywhere
@@ -29,6 +30,10 @@ export class SessionSidebar {
 
   saveArchived() {
     localStorage.setItem('pi-studio-archived', JSON.stringify(this.archived));
+  }
+
+  saveArchivedCollapsed() {
+    localStorage.setItem('pi-studio-archived-collapsed', String(this.archivedCollapsed));
   }
 
   isFavourite(filePath) {
@@ -348,7 +353,8 @@ export class SessionSidebar {
   // Render
   // ═══════════════════════════════════════
 
-  buildSessionItem(session, project) {
+  buildSessionItem(session, project, options = {}) {
+    const { showArchiveButton = true } = options;
     const item = document.createElement('div');
     item.className = 'session-item';
     item.dataset.filePath = session.filePath;
@@ -371,6 +377,10 @@ export class SessionSidebar {
       </svg>
     `;
 
+    const archiveButtonHtml = showArchiveButton
+      ? `<button class="session-archive-btn" title="${archiveBtnLabel}" aria-label="${archiveBtnLabel}">${archiveBtnIcon}</button>`
+      : '';
+
     item.innerHTML = `
       <div class="session-title-row">
         ${favIcon}
@@ -378,7 +388,7 @@ export class SessionSidebar {
         ${tmuxTag}
         <span class="session-action-slot">
           <span class="session-time">${time}</span>
-          <button class="session-archive-btn" title="${archiveBtnLabel}" aria-label="${archiveBtnLabel}">${archiveBtnIcon}</button>
+          ${archiveButtonHtml}
         </span>
       </div>
     `;
@@ -495,15 +505,22 @@ export class SessionSidebar {
       archivedGroup.className = 'archived-group';
 
       const header = document.createElement('div');
-      header.className = 'project-header archived-header';
-      header.innerHTML = `<span>🗃️</span> <span>Archived</span> <span class="project-count">${archivedSessions.length}</span>`;
+      header.className = `project-header archived-header${this.archivedCollapsed ? ' collapsed' : ''}`;
+      header.innerHTML = `<span class="chevron">▼</span> <span>Archived</span> <span class="project-count">${archivedSessions.length}</span>`;
       archivedGroup.appendChild(header);
 
       const sessionsDiv = document.createElement('div');
-      sessionsDiv.className = 'project-sessions';
+      sessionsDiv.className = `project-sessions${this.archivedCollapsed ? ' collapsed' : ''}`;
       for (const { session, project } of archivedSessions) {
-        sessionsDiv.appendChild(this.buildSessionItem(session, project));
+        sessionsDiv.appendChild(this.buildSessionItem(session, project, { showArchiveButton: false }));
       }
+
+      header.addEventListener('click', () => {
+        this.archivedCollapsed = !this.archivedCollapsed;
+        this.saveArchivedCollapsed();
+        header.classList.toggle('collapsed', this.archivedCollapsed);
+        sessionsDiv.classList.toggle('collapsed', this.archivedCollapsed);
+      });
 
       archivedGroup.appendChild(sessionsDiv);
       this.container.appendChild(archivedGroup);
