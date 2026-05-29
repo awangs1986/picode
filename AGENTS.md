@@ -2,19 +2,23 @@
 
 ## Product
 
-**Pi Studio** is a local Codex-style GUI for the Pi coding agent. It runs as a Tauri desktop app (primary) or as a lightweight Pi extension (secondary).
+**Pi Studio** is a local Codex-style desktop GUI for the Pi coding agent. It is a Tauri app that bundles its own `pi` runtime — there is no separate install of `pi` to manage, and no "extension mode" / "browser mode" to ship.
 
-### Modes
+### Architecture
 
-**Desktop app (primary)**
-Tauri wraps the web UI. A Rust `PiManager` (`src-tauri/src/pi_manager.rs`) spawns one `pi --mode rpc` subprocess per workspace, each on its own port. Each workspace gets its own OS window. The project launcher (`public/launcher.js`) shows all known projects as bubbles; clicking one opens or focuses the workspace window. Multi-project, multi-agent, no terminal required.
+Tauri wraps the web UI. A Rust `PiManager` (`src-tauri/src/pi_manager.rs`) spawns one `pi --mode rpc` subprocess per workspace, each on its own port, using the embedded pi binary shipped in `src-tauri/resources/pi/` (downloaded by `scripts/fetch-pi-binary.js` from pi-mono releases at the version pinned in `scripts/pi-version.json`). Each workspace gets its own OS window. The project launcher (`public/launcher.js`) shows known projects as bubbles; clicking one opens or focuses the workspace window. Multi-project, multi-agent, no terminal required.
 
 ```
-Tauri Desktop
-  OS Window A  →  WebviewWindow → localhost:3001  →  pi --mode rpc  (project A)
-  OS Window B  →  WebviewWindow → localhost:3002  →  pi --mode rpc  (project B)
-  ...
-  PiManager (Rust) spawns + tracks all pi processes
+Pi Studio .app
+  resources/
+    public/                       (frontend)
+    extensions/embedded-server.mjs (HTTP + WS server, runs inside pi)
+    pi/<bun-compiled pi binary + assets>
+  Rust PiManager
+    spawn pi --mode rpc --extension embedded-server.mjs  (project A, :3001)
+    spawn pi --mode rpc --extension embedded-server.mjs  (project B, :3002)
+    OS Window per project  →  WebView  →  localhost:300X
+  Tauri IPC commands wired through public/tauri-bridge.js
 ```
 
 Tauri IPC commands (invoked via `window.tauriNative` in `public/tauri-bridge.js`):
@@ -24,29 +28,22 @@ Tauri IPC commands (invoked via `window.tauriNative` in `public/tauri-bridge.js`
 - `cmd_stop_instance(port)` — kill a pi process
 - `cmd_pick_folder()` — native folder picker
 
-**Pi extension (secondary)**
-`extensions/mirror-server.ts` starts an HTTP + WebSocket server inside a running Pi process. Same web UI, no Tauri. Install with `pi install npm:pi-studio` and open the URL in any browser.
-
-```
-Pi process
-  mirror-server extension  →  HTTP + WS on :3001  →  Browser (any device)
-```
-
 ### Goals
 
 - Local Codex-style GUI: all projects and agents visible in one app
 - Multi-project: each project has its own window, isolated working directory, session history, and running agent
 - Multi-agent: spawn new agents per project; switch between sessions without leaving the app
 - Visualization: streaming chat, tool-call cards, thinking blocks, token/cost tracking per session
-- Desktop-first; extension mode retained for lightweight / remote / mobile access
+- Fully self-contained desktop app: zero dependency on the user's PATH / shell environment / globally installed pi
 
 ### Constraints
 
 - Frontend: vanilla JS, no framework (`public/`)
-- Backend: Rust (Tauri) for the desktop app; Node.js for the extension server
-- PI integration: always via `pi --mode rpc` subprocess — never re-implement PI runtime logic
+- Backend: Rust (Tauri) wraps + manages process lifecycle; Node.js extension (`embedded-server.ts`) implements the HTTP + WS surface the WebView talks to
+- PI integration: always via embedded `pi --mode rpc` subprocess — never re-implement PI runtime logic
 - Session history and working directory are isolated per project/port
-- Extension mode must remain usable independently; desktop features are additive
+- The embedded pi version is the source of truth: `pi --version` shown in the UI comes from `PI_STUDIO_PI_VERSION` (set by Rust at spawn time, populated from `scripts/pi-version.json`). A user-installed pi on `$PATH` is irrelevant and never touched.
+- User extensions under `~/.pi/agent/extensions/` and `<workspace>/.pi/extensions/` are still auto-loaded by the embedded pi (embedding doesn't disable user extensions).
 
 ### PI references
 
@@ -60,6 +57,13 @@ Pi process
 # Agent working notes
 
 Conventions for any coding agent working in this directory.
+
+## Bumping the embedded pi version
+
+1. Edit `scripts/pi-version.json` → `version`.
+2. `npm run fetch:pi` (re-downloads the platform tarball, replaces `src-tauri/resources/pi/`).
+3. Smoke test: `./src-tauri/resources/pi/pi --version` and `npm run dev`.
+4. Commit `scripts/pi-version.json`. Do **not** commit `src-tauri/resources/pi/`; it is gitignored.
 
 ## Post-fix verification (Rust / Tauri)
 

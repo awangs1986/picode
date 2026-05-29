@@ -1,9 +1,8 @@
 use std::collections::HashMap;
-use std::env;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 struct PiProcess {
@@ -16,10 +15,46 @@ pub struct PiManager {
     static_dir: PathBuf,
 }
 
-struct PiCommandResolution {
-    argv: Vec<String>,
-    path_env: Option<String>,
-    version: String,
+struct EmbeddedExtensionResolution {
+    path: String,
+    /// Tag describing which candidate matched, for diagnostic logging.
+    /// Examples: "bundled", "dev:source", "env:PI_STUDIO_EXTENSION".
+    source: &'static str,
+}
+
+/// `scripts/pi-version.json` baked into the binary at compile time so we can
+/// forward the locked pi version to the embedded server (which displays it
+/// in the UI footer) without re-running fetch logic at startup.
+const PI_VERSION_JSON: &str = include_str!("../../scripts/pi-version.json");
+
+/// Locked pi version string (e.g. "0.77.0"). Resolved lazily on first call.
+pub fn locked_pi_version() -> &'static str {
+    static CACHED: OnceLock<String> = OnceLock::new();
+    CACHED.get_or_init(|| {
+        // We deliberately do a hand-rolled extraction rather than a full
+        // serde_json parse: this string is baked in at compile time, the
+        // schema is trivial ({"version": "..."}), and avoiding the
+        // dependency makes this fn callable from `const` contexts in the
+        // future if needed. If the JSON shape grows, switch to serde_json.
+        let needle = "\"version\"";
+        let bytes = PI_VERSION_JSON;
+        let start = bytes
+            .find(needle)
+            .expect("pi-version.json: missing \"version\" key");
+        let after_key = &bytes[start + needle.len()..];
+        let colon = after_key
+            .find(':')
+            .expect("pi-version.json: malformed \"version\" entry");
+        let after_colon = &after_key[colon + 1..];
+        let first_quote = after_colon
+            .find('"')
+            .expect("pi-version.json: \"version\" value not quoted");
+        let rest = &after_colon[first_quote + 1..];
+        let end_quote = rest
+            .find('"')
+            .expect("pi-version.json: unterminated \"version\" value");
+        rest[..end_quote].to_string()
+    })
 }
 
 impl PiManager {
@@ -30,238 +65,198 @@ impl PiManager {
         }
     }
 
-    fn build_pi_path_env(explicit_bin: Option<&str>) -> Option<String> {
-        let mut paths: Vec<PathBuf> = env::var_os("PATH")
-            .map(|value| env::split_paths(&value).collect())
-            .unwrap_or_default();
-        let mut extras: Vec<PathBuf> = Vec::new();
-
-        #[cfg(not(target_os = "windows"))]
-        {
-            extras.extend(
-                [
-                    "/opt/homebrew/bin",
-                    "/usr/local/bin",
-                    "/usr/bin",
-                    "/bin",
-                    "/usr/sbin",
-                    "/sbin",
-                ]
-                .into_iter()
-                .map(PathBuf::from),
-            );
-
-            if let Ok(home) = env::var("HOME") {
-                let home_path = Path::new(&home);
-                extras.push(home_path.join(".local/bin"));
-                extras.push(home_path.join(".cargo/bin"));
-                extras.push(home_path.join(".bun/bin"));
-            }
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            if let Ok(appdata) = env::var("APPDATA") {
-                extras.push(Path::new(&appdata).join("npm"));
-            }
-            if let Ok(local_app_data) = env::var("LOCALAPPDATA") {
-                extras.push(
-                    Path::new(&local_app_data)
-                        .join("Microsoft")
-                        .join("WindowsApps"),
-                );
-            }
-        }
-
-        if let Some(bin_path) = explicit_bin.filter(|value| !value.trim().is_empty()) {
-            if let Some(parent) = Path::new(bin_path.trim()).parent() {
-                extras.push(parent.to_path_buf());
-            }
-        }
-
-        for extra in extras {
-            if !paths.iter().any(|path| path == &extra) {
-                paths.push(extra);
-            }
-        }
-        if paths.is_empty() {
-            return None;
-        }
-        env::join_paths(paths)
-            .ok()
-            .map(|joined| joined.to_string_lossy().to_string())
-    }
-
-    fn candidate_pi_commands() -> Vec<Vec<String>> {
-        let mut candidates: Vec<Vec<String>> = Vec::new();
-        if let Ok(explicit) = env::var("PI_BIN") {
-            let candidate = explicit.trim();
-            if !candidate.is_empty() {
-                candidates.push(vec![candidate.to_string()]);
-            }
-        }
-
-        if let Ok(output) = Command::new("/bin/sh")
-            .arg("-lc")
-            .arg("command -v pi")
-            .output()
-        {
-            if output.status.success() {
-                let p = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                if !p.is_empty() {
-                    candidates.push(vec![p]);
-                }
-            }
-        }
-
-        let common_paths = ["/opt/homebrew/bin/pi", "/usr/local/bin/pi"];
-        for candidate in common_paths {
-            if Path::new(candidate).exists() {
-                candidates.push(vec![candidate.to_string()]);
-            }
-        }
-
-        // Fallback: local dev path
-        let local = dirs::home_dir()
-            .unwrap_or_default()
-            .join("code/pi/pi-mono/packages/coding-agent/dist/cli.js");
-        if local.exists() {
-            candidates.push(vec!["node".to_string(), local.to_string_lossy().to_string()]);
-        }
-        candidates.push(vec!["pi".to_string()]);
-
-        let mut deduped: Vec<Vec<String>> = Vec::new();
-        for candidate in candidates {
-            if !deduped.iter().any(|value| value == &candidate) {
-                deduped.push(candidate);
-            }
-        }
-        deduped
-    }
-
-    fn check_pi_command(argv: &[String], path_env: Option<&str>) -> Result<String, String> {
-        let mut command = Command::new(&argv[0]);
-        command.args(&argv[1..]).arg("--version");
-        if let Some(path_env) = path_env {
-            command.env("PATH", path_env);
-        }
-        let output = command.output().map_err(|err| err.to_string())?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            return Err(if stderr.is_empty() {
-                format!("{} --version exited with {}", argv.join(" "), output.status)
-            } else {
-                format!(
-                    "{} --version exited with {}: {}",
-                    argv.join(" "),
-                    output.status,
-                    stderr
-                )
-            });
-        }
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let version = if !stdout.is_empty() { stdout } else { stderr };
-        if version.is_empty() {
-            Err(format!("{} --version returned empty output", argv.join(" ")))
+    /// Locate the embedded pi binary shipped inside the Tauri bundle.
+    ///
+    /// Lookup order:
+    /// 1. `PI_BIN` env var (escape hatch for testing a different binary).
+    /// 2. `<static_dir>/../pi/<bin>` — the production location, sibling of
+    ///    the bundled `public/` and `extensions/` resource dirs.
+    /// 3. *Debug builds only:* `<repo>/src-tauri/resources/pi/<bin>` —
+    ///    populated by `npm run fetch:pi`, used during `tauri dev`.
+    ///
+    /// Returns `Err` (not `Ok(None)`) if no binary is found, so callers can
+    /// surface a clear "run `npm run fetch:pi`" message rather than spawning
+    /// a missing/stale binary.
+    fn resolve_bundled_pi(&self) -> Result<PathBuf, String> {
+        let bin_name = if cfg!(target_os = "windows") {
+            "pi.exe"
         } else {
-            Ok(version)
-        }
-    }
+            "pi"
+        };
 
-    fn resolve_pi_command() -> Result<PiCommandResolution, String> {
-        let candidates = Self::candidate_pi_commands();
-        let explicit_bin = env::var("PI_BIN")
-            .ok()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty());
-        let path_env = Self::build_pi_path_env(explicit_bin.as_deref());
-
-        let mut errors: Vec<String> = Vec::new();
-        for argv in candidates {
-            match Self::check_pi_command(&argv, path_env.as_deref()) {
-                Ok(version) => {
-                    return Ok(PiCommandResolution {
-                        argv,
-                        path_env: path_env.clone(),
-                        version,
-                    });
-                }
-                Err(err) => errors.push(err),
+        // Explicit override (rare; useful when smoke-testing a hand-built pi).
+        if let Ok(explicit) = std::env::var("PI_BIN") {
+            let candidate = PathBuf::from(explicit.trim());
+            if candidate.is_file() {
+                return Ok(candidate);
             }
         }
 
+        let mut tried: Vec<PathBuf> = Vec::new();
+        let bundled = self
+            .static_dir
+            .parent()
+            .map(|parent| parent.join("pi").join(bin_name));
+        if let Some(p) = bundled.clone() {
+            if p.is_file() {
+                return Ok(p);
+            }
+            tried.push(p);
+        }
+
+        if cfg!(debug_assertions) {
+            let dev_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("resources")
+                .join("pi")
+                .join(bin_name);
+            if dev_path.is_file() {
+                return Ok(dev_path);
+            }
+            tried.push(dev_path);
+        }
+
+        let tried_str = tried
+            .iter()
+            .map(|p| format!("  - {}", p.display()))
+            .collect::<Vec<_>>()
+            .join("\n");
         Err(format!(
-            "Unable to locate a working `pi` executable. {}",
-            errors.join(" | ")
+            "Could not find embedded pi binary. Tried:\n{}\n\n\
+             For dev: run `npm run fetch:pi` from the repo root.\n\
+             For release: the .app bundle is missing `resources/pi/{}`. \
+             Reinstall Pi Studio.",
+            tried_str, bin_name
         ))
     }
 
-    pub fn resolve_pi_version() -> Result<String, String> {
-        let resolution = Self::resolve_pi_command()?;
-        Ok(resolution.version)
-    }
-
-    fn resolve_mirror_extension_path(&self) -> Option<String> {
-        if let Ok(explicit) = env::var("PI_STUDIO_EXTENSION") {
+    /// Locate the embedded-server extension shipped with this build.
+    ///
+    /// Returns the first existing candidate from this priority order:
+    ///
+    /// 1. `PI_STUDIO_EXTENSION` env var (explicit override; useful for tests).
+    /// 2. Bundled `extensions/embedded-server.mjs` next to `static_dir`. This
+    ///    is what shipped Pi Studio installs use; the bundle is produced by
+    ///    `scripts/build-extensions.js` and is fully self-contained (no
+    ///    `node_modules` lookup at runtime).
+    /// 3. Source `extensions/embedded-server.ts` next to `static_dir`. Used
+    ///    by `tauri dev` where pi loads the raw `.ts` via jiti against the
+    ///    repo's `node_modules/`.
+    /// 4. *Debug builds only:* repo-relative paths via `CARGO_MANIFEST_DIR`
+    ///    and `cwd`. These are gated to debug builds because
+    ///    `CARGO_MANIFEST_DIR` is a compile-time string and would otherwise
+    ///    silently "work" only on the build machine.
+    ///
+    /// Returns `Err` (not `Ok(None)`) when nothing is found, so callers can
+    /// fail-fast and surface the error to the user instead of silently
+    /// spawning a pi that has no `/api` surface.
+    fn resolve_embedded_extension_path(&self) -> Result<EmbeddedExtensionResolution, String> {
+        if let Ok(explicit) = std::env::var("PI_STUDIO_EXTENSION") {
             let candidate = explicit.trim();
             if !candidate.is_empty() && Path::new(candidate).exists() {
-                return Some(candidate.to_string());
+                return Ok(EmbeddedExtensionResolution {
+                    path: candidate.to_string(),
+                    source: "env:PI_STUDIO_EXTENSION",
+                });
             }
         }
 
-        let mut candidates: Vec<PathBuf> = Vec::new();
+        let mut candidates: Vec<(PathBuf, &'static str)> = Vec::new();
         if let Some(parent) = self.static_dir.parent() {
-            candidates.push(parent.join("extensions").join("mirror-server.ts"));
-        }
-        candidates.push(
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("..")
-                .join("extensions")
-                .join("mirror-server.ts"),
-        );
-        if let Ok(cwd) = env::current_dir() {
-            candidates.push(cwd.join("extensions").join("mirror-server.ts"));
+            candidates.push((
+                parent.join("extensions").join("embedded-server.mjs"),
+                "bundled",
+            ));
+            candidates.push((
+                parent.join("extensions").join("embedded-server.ts"),
+                "dev:source",
+            ));
         }
 
-        candidates
+        // Compile-time path fallbacks: only useful while developing locally.
+        // Release builds must rely on the bundled .mjs; if that is missing we
+        // want a loud error, not a silent fallback to the build machine's
+        // hard-coded path (the previous behaviour, which made the same .app
+        // "work" on the developer's machine and fail everywhere else).
+        if cfg!(debug_assertions) {
+            candidates.push((
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("..")
+                    .join("extensions")
+                    .join("embedded-server.ts"),
+                "dev:cargo-manifest-dir",
+            ));
+            if let Ok(cwd) = std::env::current_dir() {
+                candidates.push((cwd.join("extensions").join("embedded-server.ts"), "dev:cwd"));
+            }
+        }
+
+        for (candidate, source) in &candidates {
+            if candidate.exists() {
+                return Ok(EmbeddedExtensionResolution {
+                    path: candidate.to_string_lossy().to_string(),
+                    source,
+                });
+            }
+        }
+
+        let tried = candidates
             .into_iter()
-            .find(|candidate| candidate.exists())
-            .map(|candidate| candidate.to_string_lossy().to_string())
+            .map(|(p, source)| format!("  - [{}] {}", source, p.display()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        Err(format!(
+            "Could not find embedded-server extension. Tried:\n{}\n\n\
+             For release builds, this means the .app bundle is missing \
+             `extensions/embedded-server.mjs` (run `npm run build:extensions` \
+             before `tauri build`). For dev, make sure `extensions/embedded-server.ts` \
+             exists in this repo.",
+            tried
+        ))
     }
 
     pub fn spawn(&self, cwd: &str, port: u16, session_path: Option<&str>) -> Result<(), String> {
-        let resolved = Self::resolve_pi_command()?;
-        let argv = resolved.argv;
+        let pi_bin = self.resolve_bundled_pi()?;
         let static_dir = self.static_dir.to_string_lossy().to_string();
 
-        let mut args: Vec<String> = argv[1..].to_vec();
-        if let Some(extension_path) = self.resolve_mirror_extension_path() {
-            args.push("--extension".to_string());
-            args.push(extension_path);
-        } else {
-            eprintln!(
-                "[pi-desktop] mirror-server extension not found; runtime may not expose /api and /ws"
-            );
-        }
-        args.push("--mode".to_string());
-        args.push("rpc".to_string());
+        // We treat a missing embedded-server extension as a hard error
+        // rather than continuing to spawn pi without `--extension`. Without
+        // the extension, pi runs as a plain RPC process with no
+        // `/api/sessions` or `/ws`, which the web UI then renders as
+        // "Failed to load sessions" / "Disconnected" — a confusing soft
+        // failure that hides the real bundling bug.
+        let extension = self.resolve_embedded_extension_path()?;
+        eprintln!(
+            "[pi-desktop] embedded-server resolved: source={} path={}",
+            extension.source, extension.path
+        );
+
+        let mut args: Vec<String> = vec![
+            "--extension".to_string(),
+            extension.path,
+            "--mode".to_string(),
+            "rpc".to_string(),
+        ];
         if let Some(session) = session_path {
             args.push("--session".to_string());
             args.push(session.to_string());
         }
 
         eprintln!(
-            "[pi-desktop] spawning pi: argv={:?} args={:?} cwd={} port={} static_dir={}",
-            argv, args, cwd, port, static_dir
+            "[pi-desktop] spawning pi: bin={} args={:?} cwd={} port={} static_dir={}",
+            pi_bin.display(),
+            args,
+            cwd,
+            port,
+            static_dir
         );
 
-        let mut child = Command::new(&argv[0]);
+        let mut child = Command::new(&pi_bin);
         child
             .args(&args)
             .current_dir(cwd)
             .env("PI_STUDIO_STATIC_DIR", &static_dir)
             .env("PI_STUDIO_PORT", port.to_string())
+            .env("PI_STUDIO_PI_VERSION", locked_pi_version())
             .stdin(Stdio::piped())
             // Drop stdout: pi emits RPC frames on it that we don't consume here, and
             // letting it fill an unread pipe would eventually block the child.
@@ -270,21 +265,15 @@ impl PiManager {
             // terminal running `npm run dev` — critical for diagnosing failures of
             // new_session / open_workspace that would otherwise be silent.
             .stderr(Stdio::inherit());
-        if let Some(path_env) = &resolved.path_env {
-            child.env("PATH", path_env);
-        }
 
         let spawn_started_at = Instant::now();
         let mut child = child.spawn().map_err(|e| {
             format!(
-                "Failed to spawn pi ({}): {}. Resolved version: {}. Check that `pi` is on PATH or that {} exists.",
-                argv.join(" "),
+                "Failed to spawn embedded pi ({}): {}. \
+                 The bundled binary may be corrupted or unsupported on this OS/arch. \
+                 Reinstall Pi Studio, or for dev rerun `npm run fetch:pi`.",
+                pi_bin.display(),
                 e,
-                resolved.version,
-                dirs::home_dir()
-                    .unwrap_or_default()
-                    .join("code/pi/pi-mono/packages/coding-agent/dist/cli.js")
-                    .display()
             )
         })?;
         eprintln!(

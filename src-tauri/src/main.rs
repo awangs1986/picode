@@ -2,7 +2,9 @@
 
 mod pi_manager;
 
-use pi_manager::{is_port_in_use, wait_for_endpoint, wait_for_health, PiManager};
+use pi_manager::{
+    is_port_in_use, locked_pi_version, wait_for_endpoint, wait_for_health, PiManager,
+};
 use serde_json::Value;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
@@ -123,10 +125,11 @@ async fn cmd_pick_folder(app: AppHandle) -> Option<String> {
     rx.await.ok().flatten()
 }
 
-/// Returns installed pi CLI version string (e.g. "pi 0.24.1")
+/// Returns the locked pi version embedded in this Pi Studio build
+/// (read from `scripts/pi-version.json` at compile time).
 #[tauri::command]
 fn cmd_get_pi_version() -> Result<String, String> {
-    PiManager::resolve_pi_version()
+    Ok(locked_pi_version().to_string())
 }
 
 // ─── Window helpers ───────────────────────────────────────────────────────────
@@ -335,7 +338,7 @@ fn main() {
                         );
                         app.dialog()
                             .message(format!(
-                                "Pi Studio could not start the Pi runtime.\n\n{}\n\nPlease install the `pi` CLI and try again.",
+                                "Pi Studio could not start the embedded pi runtime.\n\n{}\n\nThe Pi Studio installation may be incomplete or corrupted. Please reinstall Pi Studio and try again.",
                                 err
                             ))
                             .title("Pi Studio startup failed")

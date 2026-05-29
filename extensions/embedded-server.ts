@@ -1,22 +1,40 @@
 /**
- * Mirror Server Extension
- * 
- * Starts a WebSocket + HTTP server inside the running Pi process,
- * allowing a browser to connect and mirror the TUI session in real-time.
- * 
- * - Forwards all Pi events to connected browser clients
- * - Accepts commands from the browser and executes them via the extension API
- * - Serves static files for the Pi Studio web UI
- * - Sends full state snapshot on client connect (messages, model, etc.)
+ * Embedded Server Extension for Pi Studio desktop
+ *
+ * Starts the HTTP + WebSocket server that the Pi Studio Tauri WebView talks to.
+ * This is not a user-facing "pi extension" — it ships inside the Pi Studio
+ * .app bundle and is loaded by the bundled `pi` binary that Pi Studio spawns
+ * via `--extension <bundle>/embedded-server.mjs`.
+ *
+ * Responsibilities:
+ * - Serve the static frontend assets (`public/`)
+ * - Bridge browser RPC over `/api/rpc` (HTTP) and `/ws` (WebSocket) to the
+ *   pi extension API (sendUserMessage, abort, set_model, etc.)
+ * - Expose REST endpoints the frontend queries directly:
+ *   `/api/sessions`, `/api/projects`, `/api/cost-dashboard`, `/api/files`,
+ *   `/api/search`, `/api/open`, `/api/agent-config`, `/api/instances`
+ * - Forward all pi lifecycle events to connected browsers
+ * - Generate session titles from user messages
+ *
+ * What's intentionally NOT here anymore (vs the old mirror-server.ts):
+ * - QR / Tailscale advertising — desktop WebView is always localhost
+ * - Basic auth — desktop WebView is always localhost
+ * - `/studiostart` / `/studiostop` / `/qr` commands — server lifecycle is
+ *   tied 1:1 to the pi process Pi Studio spawns
+ * - Cross-process instance discovery via `~/.pi/pistudio-instances/` —
+ *   Pi Studio's Rust side already knows which ports it spawned. We keep a
+ *   trivial single-entry registry so the frontend's `active` state stays
+ *   correct without needing a Tauri invoke for `/api/projects` queries.
+ * - `pi --version` exec probing — version is forwarded by Pi Studio via
+ *   `PI_STUDIO_PI_VERSION` env var.
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { WebSocketServer, WebSocket } from "ws";
 import * as http from "node:http";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { execFile } from "node:child_process";
-import QRCode from "qrcode";
 
 type OpenTarget = {
   id: string;
@@ -60,8 +78,9 @@ async function getAvailableOpenTargets(): Promise<OpenTarget[]> {
   return OPEN_TARGETS.filter((_, idx) => checks[idx]);
 }
 
-// Load Pi Studio settings from ~/.pi/agent/settings.json (falls back to env vars)
-function loadSettings(): { port: number; autoStart: boolean; user: string; pass: string; authEnabled?: boolean; projectsDir?: string } {
+// Pi Studio settings live under `pistudio` key in ~/.pi/agent/settings.json.
+// We only honor the fields that still make sense in desktop-only mode.
+function loadSettings(): { port: number; projectsDir?: string } {
   let settings: any = {};
   try {
     const settingsPath = path.join(process.env.HOME || "~", ".pi/agent/settings.json");
@@ -69,24 +88,16 @@ function loadSettings(): { port: number; autoStart: boolean; user: string; pass:
   } catch {}
   return {
     port: parseInt(process.env.PI_STUDIO_PORT || settings.port || "3001"),
-    autoStart: !(
-      process.env.PI_STUDIO_DISABLED === "1" || process.env.PI_STUDIO_DISABLED === "true" ||
-      settings.disabled === true
-    ),
-    user: process.env.PI_STUDIO_USER || settings.user || "",
-    pass: process.env.PI_STUDIO_PASS || settings.pass || "",
-    authEnabled: settings.authEnabled,
     projectsDir: process.env.PI_STUDIO_PROJECTS_DIR || settings.projectsDir,
   };
 }
 
 const SETTINGS = loadSettings();
 const PORT = SETTINGS.port;
-const AUTO_START = SETTINGS.autoStart;
-const AUTH_USER = SETTINGS.user;
-const AUTH_PASS = SETTINGS.pass;
-const AUTH_CONFIGURED = !!(AUTH_USER && AUTH_PASS);
-let authEnabled = AUTH_CONFIGURED && SETTINGS.authEnabled !== false;
+// Forwarded by Pi Studio (Rust side) from `scripts/pi-version.json`. We deliberately
+// do not call `pi --version` here: this extension always runs *inside* the pi
+// binary Pi Studio spawned, so the version is known.
+const EMBEDDED_PI_VERSION = process.env.PI_STUDIO_PI_VERSION || "";
 // @ts-ignore — __dirname is provided by jiti at runtime
 const STATIC_DIR = process.env.PI_STUDIO_STATIC_DIR || findPublicDir();
 
@@ -100,26 +111,17 @@ function findPublicDir(): string {
       candidates.push(normalized);
     };
 
-    // 1) Common extension-relative paths
+    // Common extension-relative paths. Pi Studio's Rust side always sets
+    // PI_STUDIO_STATIC_DIR, so this fallback chain is only exercised in
+    // weird dev scenarios (e.g. loading the extension directly via pi -e).
     addCandidate(path.resolve(__dirname, "public"));
     addCandidate(path.resolve(__dirname, "../public"));
-
-    // 2) Installed package path (for npm-installed extension execution)
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const pkgPath = require.resolve("pi-studio/package.json");
-      addCandidate(path.join(path.dirname(pkgPath), "public"));
-    } catch {}
-
-    // 3) Development fallback from current working directory
     addCandidate(path.resolve(process.cwd(), "public"));
-    addCandidate(path.resolve(process.cwd(), "node_modules/pi-studio/public"));
 
     for (const candidate of candidates) {
       if (fs.existsSync(path.join(candidate, "index.html"))) return candidate;
     }
 
-    // Keep previous fallback behavior
     return path.resolve(process.cwd(), "public");
 }
 const SESSIONS_DIR = path.join(process.env.HOME || "~", ".pi/agent/sessions");
@@ -127,7 +129,12 @@ const SESSIONS_ARCHIVE_DIR = path.join(process.env.HOME || "~", ".pi/agent/sessi
 const INSTANCES_DIR = path.join(process.env.HOME || "~", ".pi/pistudio-instances");
 const PROJECTS_ARCHIVE_DIR_NAME = ".archive";
 
-// Instance registry — tracks all running Pi Studio servers
+// Minimal single-process instance registry. We keep this so the frontend's
+// `/api/projects` and `/api/instances` responses can mark workspaces as
+// "active" without needing a Tauri invoke. Unlike the old mirror-server
+// which scanned the whole INSTANCES_DIR (for tmux / standalone pi
+// processes), we only ever write our own entry: Pi Studio's Rust side
+// manages all pi processes it spawns.
 function registerInstance(port: number, sessionFile: string, cwd: string) {
   fs.mkdirSync(INSTANCES_DIR, { recursive: true });
   const info = { port, pid: process.pid, sessionFile, cwd, startedAt: new Date().toISOString() };
@@ -166,47 +173,6 @@ function getRunningInstances(): Array<{ port: number; pid: number; sessionFile: 
     } catch {}
   }
   return instances;
-}
-
-/**
- * Kill zombie Pi Studio instances — processes that are alive but orphaned
- * (e.g. tmux pane was killed without session_shutdown firing).
- * A zombie is detected by checking if the process has a controlling terminal.
- * If it doesn't, the HTTP server is the only thing keeping it alive.
- */
-function cleanupZombieInstances() {
-  if (!fs.existsSync(INSTANCES_DIR)) return;
-  const { execSync } = require("node:child_process");
-  for (const file of fs.readdirSync(INSTANCES_DIR)) {
-    if (!file.endsWith(".json")) continue;
-    try {
-      const info = JSON.parse(fs.readFileSync(path.join(INSTANCES_DIR, file), "utf8"));
-      // Skip our own process
-      if (info.pid === process.pid) continue;
-      // Check if process is alive
-      try {
-        process.kill(info.pid, 0);
-      } catch {
-        // Already dead — clean up
-        try { fs.unlinkSync(path.join(INSTANCES_DIR, file)); } catch {}
-        continue;
-      }
-      // Check if process has a controlling terminal (TTY)
-      // Orphaned processes from killed tmux panes lose their TTY
-      try {
-        const tty = execSync(`ps -o tty= -p ${info.pid}`, { encoding: "utf8" }).trim();
-        if (!tty || tty === "??" || tty === "-") {
-          // No terminal — this is a zombie, kill it
-          console.log(`[Mirror] Killing zombie Pi Studio instance (PID ${info.pid}, port ${info.port})`);
-          process.kill(info.pid, "SIGTERM");
-          try { fs.unlinkSync(path.join(INSTANCES_DIR, file)); } catch {}
-        }
-      } catch {
-        // ps failed — process might have died between checks, clean up
-        try { fs.unlinkSync(path.join(INSTANCES_DIR, file)); } catch {}
-      }
-    } catch {}
-  }
 }
 
 // MIME types for static file serving
@@ -268,85 +234,6 @@ function resolveWorkspaceWithinProjects(projectPath: string): { projectsRoot: st
   return { projectsRoot: realProjectsRoot, targetPath: realTargetPath };
 }
 
-function saveSetting(key: string, value: any) {
-  const settingsPath = path.join(process.env.HOME || "~", ".pi/agent/settings.json");
-  try {
-    const settings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
-    if (!settings.pistudio) settings.pistudio = {};
-    settings.pistudio[key] = value;
-    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
-  } catch {}
-}
-
-function checkBasicAuth(req: http.IncomingMessage): boolean {
-  if (!authEnabled) return true;
-  const header = req.headers.authorization;
-  if (!header?.startsWith("Basic ")) return false;
-  const decoded = Buffer.from(header.slice(6), "base64").toString();
-  const colon = decoded.indexOf(":");
-  if (colon === -1) return false;
-  return decoded.slice(0, colon) === AUTH_USER && decoded.slice(colon + 1) === AUTH_PASS;
-}
-
-function sendAuthRequired(res: http.ServerResponse) {
-  res.writeHead(401, {
-    "WWW-Authenticate": 'Basic realm="Pi Studio"',
-    "Content-Type": "application/json",
-  });
-  res.end(JSON.stringify({ error: "Unauthorized" }));
-}
-
-function getPiVersion(): Promise<string> {
-  const candidates = ["pi", "/opt/homebrew/bin/pi", "/usr/local/bin/pi"];
-  return new Promise((resolve, reject) => {
-    const runPiWithNode = (piPath: string, done: (ok: boolean) => void) => {
-      let resolvedPath = piPath;
-      try {
-        resolvedPath = fs.realpathSync(piPath);
-      } catch {}
-      execFile(process.execPath, [resolvedPath, "--version"], { timeout: 5000 }, (err, stdout) => {
-        if (err) {
-          done(false);
-          return;
-        }
-        const version = (stdout || "").toString().trim();
-        if (!version) {
-          done(false);
-          return;
-        }
-        resolve(version);
-        done(true);
-      });
-    };
-
-    const tryNext = (index: number) => {
-      if (index >= candidates.length) {
-        reject(new Error("Unable to resolve pi binary for version lookup"));
-        return;
-      }
-      const candidate = candidates[index];
-      const exists = candidate.includes("/") && fs.existsSync(candidate);
-      if (exists) {
-        runPiWithNode(candidate, (ok) => {
-          if (!ok) tryNext(index + 1);
-        });
-        return;
-      }
-      execFile(candidate, ["--version"], { timeout: 5000 }, (err, stdout) => {
-        if (!err) {
-          const version = (stdout || "").toString().trim();
-          if (version) {
-            resolve(version);
-            return;
-          }
-        }
-        tryNext(index + 1);
-      });
-    };
-    tryNext(0);
-  });
-}
-
 export default function (pi: ExtensionAPI) {
   let server: http.Server | null = null;
   let wss: WebSocketServer | null = null;
@@ -355,10 +242,6 @@ export default function (pi: ExtensionAPI) {
 
   // Store latest context reference for use in command handlers
   let latestCtx: ExtensionContext | null = null;
-  let piVersionCache: string | null = null;
-
-  // Pending RPC-style requests from browser (id -> resolver)
-  const pendingRequests = new Map<string, (response: any) => void>();
 
   // ═══════════════════════════════════════
   // Helper: send to one client
@@ -381,8 +264,7 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
-  let mirrorUrl = "";
-  let tailscaleUrl = "";
+  let localUrl = "";
 
   // ═══════════════════════════════════════
   // Helper: stop the server
@@ -405,69 +287,8 @@ export default function (pi: ExtensionAPI) {
       server = null;
     }
     unregisterInstance();
-    mirrorUrl = "";
-    tailscaleUrl = "";
+    localUrl = "";
   }
-
-  // ═══════════════════════════════════════
-  // /studio-stop and /studio-start commands
-  // ═══════════════════════════════════════
-  pi.registerCommand("studiostop", {
-    description: "Stop the Pi Studio server",
-    handler: async (_args, ctx) => {
-      if (!server) {
-        ctx.ui.notify("Pi Studio is not running", "warning");
-        return;
-      }
-      stopServer();
-      ctx.ui.setStatus("mirror", "");
-      ctx.ui.notify("Pi Studio server stopped", "info");
-      console.log("[Mirror] Server stopped via /studiostop");
-    },
-  });
-
-  pi.registerCommand("studiostart", {
-    description: "Start the Pi Studio server",
-    handler: async (_args, ctx) => {
-      if (server) {
-        ctx.ui.notify(`Pi Studio is already running at ${mirrorUrl}`, "warning");
-        return;
-      }
-      startServer(ctx);
-      ctx.ui.notify("Pi Studio server starting...", "info");
-    },
-  });
-
-  // ═══════════════════════════════════════
-  // /qr command — show QR code to connect
-  // ═══════════════════════════════════════
-  pi.registerCommand("studio", {
-    description: "Open Pi Studio in browser",
-    handler: async (_args, ctx) => {
-      if (!mirrorUrl) {
-        ctx.ui.notify("Pi Studio server not running yet", "warning");
-        return;
-      }
-      const { exec } = require("node:child_process");
-      exec(`open "${mirrorUrl}"`);
-      ctx.ui.notify(`Opened ${mirrorUrl}`, "info");
-    },
-  });
-
-  pi.registerCommand("qr", {
-    description: "Show QR code for Pi Studio URL",
-    handler: async (_args, ctx) => {
-      if (!mirrorUrl) {
-        ctx.ui.notify("Pi Studio server not running yet", "warning");
-        return;
-      }
-      const qrPageUrl = `${mirrorUrl}/api/qr`;
-      ctx.ui.notify(`Pi Studio: ${mirrorUrl}  •  QR: ${qrPageUrl}`, "info");
-      // Open in default browser
-      const { exec } = require("node:child_process");
-      exec(`open "${qrPageUrl}"`);
-    },
-  });
 
   // ═══════════════════════════════════════
   // Event forwarding — subscribe to all Pi events
@@ -656,13 +477,13 @@ export default function (pi: ExtensionAPI) {
               const content: any[] = [{ type: "text", text: command.message || "(see attached image)" }];
               for (const img of command.images) {
                 if (!img.data || typeof img.data !== "string") {
-                  console.error("[mirror-server] Skipping image: missing or invalid data");
+                  console.error("[embedded-server] Skipping image: missing or invalid data");
                   continue;
                 }
                 // Strip data URL prefix if accidentally included
                 const data = img.data.includes(",") ? img.data.split(",")[1] : img.data;
                 const mimeType = (validMimes.includes(img.mimeType) ? img.mimeType : "image/png") as "image/png" | "image/jpeg" | "image/gif" | "image/webp";
-                console.log(`[mirror-server] Image: mimeType=${mimeType}, dataLen=${data.length}, rawMimeType=${img.mimeType}`);
+                console.log(`[embedded-server] Image: mimeType=${mimeType}, dataLen=${data.length}, rawMimeType=${img.mimeType}`);
                 const imageBlock = {
                   type: "image" as const,
                   data: data,
@@ -670,7 +491,7 @@ export default function (pi: ExtensionAPI) {
                 };
                 // Defensive: verify mimeType is actually set (debug crash where it was missing)
                 if (!imageBlock.mimeType) {
-                  console.error(`[mirror-server] BUG: mimeType is falsy after assignment! img.mimeType=${img.mimeType}, falling back to image/png`);
+                  console.error(`[embedded-server] BUG: mimeType is falsy after assignment! img.mimeType=${img.mimeType}, falling back to image/png`);
                   imageBlock.mimeType = "image/png";
                 }
                 content.push(imageBlock);
@@ -738,13 +559,8 @@ export default function (pi: ExtensionAPI) {
         }
 
         case "get_pi_version": {
-          if (piVersionCache) {
-            sendTo(ws, success("get_pi_version", { version: piVersionCache }));
-            break;
-          }
-          const version = await getPiVersion();
-          piVersionCache = version;
-          sendTo(ws, success("get_pi_version", { version }));
+          // Embedded pi version is forwarded by Pi Studio (Rust) at spawn time.
+          sendTo(ws, success("get_pi_version", { version: EMBEDDED_PI_VERSION }));
           break;
         }
 
@@ -898,7 +714,9 @@ export default function (pi: ExtensionAPI) {
             const args = command.outputPath
               ? `"${sessionFile}" "${command.outputPath}"`
               : `"${sessionFile}"`;
-            const output = execSync(`pi --export ${args}`, { cwd: process.cwd(), timeout: 30000, encoding: "utf-8" });
+            // process.execPath at runtime is the embedded pi binary, which
+            // supports --export when invoked as a top-level CLI.
+            const output = execSync(`"${process.execPath}" --export ${args}`, { cwd: process.cwd(), timeout: 30000, encoding: "utf-8" });
             // pi prints the output path
             const result = output.trim().split("\n").pop() || sessionFile.replace(".jsonl", ".html");
             sendTo(ws, success("export_html", { path: result }));
@@ -908,7 +726,6 @@ export default function (pi: ExtensionAPI) {
           break;
         }
 
-        // ─── Commands & Files ───
         // ─── Sync ───
         case "mirror_sync_request": {
           if (ctx) {
@@ -921,20 +738,17 @@ export default function (pi: ExtensionAPI) {
         }
 
         // ─── Auth ───
+        // Desktop mode does not need basic auth (WebView is local). We keep
+        // the RPC surface so the frontend's settings panel doesn't break,
+        // but always report "not configured" so the auth toggle stays
+        // hidden client-side.
         case "get_auth": {
-          sendTo(ws, success("get_auth", { configured: AUTH_CONFIGURED, enabled: authEnabled }));
+          sendTo(ws, success("get_auth", { configured: false, enabled: false }));
           break;
         }
 
         case "set_auth": {
-          if (!AUTH_CONFIGURED) {
-            sendTo(ws, error("set_auth", "No credentials configured. Set pistudio.user and pistudio.pass in settings.json"));
-            break;
-          }
-          authEnabled = !!command.enabled;
-          saveSetting("authEnabled", authEnabled);
-          broadcast({ type: "event", event: { type: "auth_changed", enabled: authEnabled } });
-          sendTo(ws, success("set_auth", { enabled: authEnabled }));
+          sendTo(ws, error("set_auth", "Auth is not configurable in desktop mode"));
           break;
         }
 
@@ -952,12 +766,6 @@ export default function (pi: ExtensionAPI) {
   // ═══════════════════════════════════════
   async function serveStaticFile(req: http.IncomingMessage, res: http.ServerResponse) {
     let urlPath = req.url || "/";
-
-    // Auth gate — exempt /api/health for monitoring
-    if (authEnabled && urlPath !== "/api/health" && !checkBasicAuth(req)) {
-      sendAuthRequired(res);
-      return;
-    }
 
     // Handle API routes
     if (urlPath.startsWith("/api/")) {
@@ -1012,47 +820,18 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    if (urlPath === "/api/qr") {
-      if (!mirrorUrl) {
-        res.writeHead(503, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Server not ready" }));
-        return;
-      }
-      const qrPromises = [QRCode.toDataURL(mirrorUrl, { width: 256, margin: 2 })];
-      if (tailscaleUrl) qrPromises.push(QRCode.toDataURL(tailscaleUrl, { width: 256, margin: 2 }));
-      Promise.all(qrPromises).then((dataUrls: string[]) => {
-        const tsSection = tailscaleUrl && dataUrls[1]
-          ? `<p style="margin-top:24px;color:rgba(255,255,255,0.3);font-size:11px">TAILSCALE</p><img src="${dataUrls[1]}" width="256" height="256" alt="Tailscale QR"><a href="${tailscaleUrl}">${tailscaleUrl}</a>`
-          : "";
-        res.writeHead(200, { "Content-Type": "text/html" });
-        res.end(`<!DOCTYPE html>
-<html><head><meta name="viewport" content="width=device-width"><title>Pi Studio — Connect</title>
-<style>body{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#131316;color:#fff;font-family:-apple-system,sans-serif}
-img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rgba(255,255,255,0.5);font-size:13px;margin-top:8px}</style>
-</head><body><p style="color:rgba(255,255,255,0.3);font-size:11px">LAN</p><img src="${dataUrls[0]}" width="256" height="256" alt="QR Code"><a href="${mirrorUrl}">${mirrorUrl}</a>${tsSection}<p style="margin-top:16px">Scan to open Pi Studio on your phone</p></body></html>`);
-      }).catch((e: any) => {
-        res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: e.message }));
-      });
-      return;
-    }
-
     if (urlPath === "/api/health") {
+      // Keep the legacy `mirrorUrl` field name in the payload — the frontend
+      // still reads it via the old name, and renaming is a churn-without-
+      // benefit change scoped out of this migration.
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ status: "ok", mode: "mirror", mirrorUrl, tailscaleUrl: tailscaleUrl || undefined }));
+      res.end(JSON.stringify({ status: "ok", mode: "embedded", mirrorUrl: localUrl }));
       return;
     }
 
     if (urlPath === "/api/pi-version" && req.method === "GET") {
-      getPiVersion()
-        .then((version) => {
-          res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ success: true, version }));
-        })
-        .catch((e: any) => {
-          res.writeHead(500, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ success: false, error: e?.message || "Failed to get pi version" }));
-        });
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ success: true, version: EMBEDDED_PI_VERSION }));
       return;
     }
 
@@ -1089,6 +868,10 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
           }
           const { execSync } = require("node:child_process");
           const escaped = resolved.replace(/'/g, "'\\''");
+          // Note: this still shells out to `pi` on the user's PATH. Pi Studio's
+          // own workspace opener uses Tauri's cmd_open_workspace and the
+          // embedded pi, so this path is only exercised when a workspace is
+          // launched via the projects list from outside Pi Studio's flow.
           execSync(`osascript -e 'tell app "iTerm2" to create window with default profile command "cd '"'"'${escaped}'"'"' && pi"'`);
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ ok: true }));
@@ -1112,7 +895,7 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
             return;
           }
 
-          const { targetPath: realTargetPath } = resolveWorkspaceWithinProjects(projectPath);
+          const { projectsRoot, targetPath: realTargetPath } = resolveWorkspaceWithinProjects(projectPath);
           if (isWorkspaceRunning(realTargetPath)) {
             res.writeHead(409, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ error: "Workspace is running. Please stop it first." }));
@@ -1400,15 +1183,15 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
       return;
     }
 
-    // Session switch — in mirror mode, this is a no-op (session is controlled by TUI)
+    // Session switch — in embedded mode, this is a no-op (session is controlled by Pi Studio).
     if (urlPath === "/api/sessions/switch" && req.method === "POST") {
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ success: true, mirror: true, note: "Session switching is controlled by the TUI in mirror mode" }));
+      res.end(JSON.stringify({ success: true, embedded: true, note: "Session switching is controlled by Pi Studio's Rust side" }));
       return;
     }
 
     if (urlPath === "/api/workspace/open" && req.method === "POST") {
-      console.log("[Mirror] Received workspace open request");
+      console.log("[Embedded] Received workspace open request");
       let body = "";
       req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
       req.on("end", () => {
@@ -1427,7 +1210,10 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
             res.end(JSON.stringify({ error: `Directory not found: ${resolved}` }));
             return;
           }
-          // Open a new terminal window running pi in the selected directory
+          // Open a new terminal window running pi in the selected directory.
+          // Note: this still uses the user's PATH `pi`, not the embedded one,
+          // because Pi Studio's own workspace flow lives in Tauri commands;
+          // this endpoint is the legacy "open in external terminal" affordance.
           // eslint-disable-next-line @typescript-eslint/no-require-imports
           // @ts-ignore
           const { execSync } = require("node:child_process");
@@ -1496,32 +1282,6 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
   // ═══════════════════════════════════════
   // Sessions list endpoint
   // ═══════════════════════════════════════
-  function getTmuxSessionFiles(): Set<string> {
-    try {
-      const { execSync } = require("node:child_process");
-      // Get tmux pane PIDs
-      const paneOutput = execSync("tmux list-panes -a -F '#{pane_pid}' 2>/dev/null", { encoding: "utf8" });
-      const tmuxFiles = new Set<string>();
-
-      for (const shellPid of paneOutput.trim().split("\n").filter(Boolean)) {
-        try {
-          // Find Pi (node) processes that are children of tmux shells
-          const children = execSync(`pgrep -P ${shellPid} 2>/dev/null`, { encoding: "utf8" });
-          for (const pid of children.trim().split("\n").filter(Boolean)) {
-            // Check what .jsonl files this process has open
-            const lsofOut = execSync(`lsof -p ${pid} 2>/dev/null | grep '\\.jsonl'`, { encoding: "utf8" });
-            for (const line of lsofOut.trim().split("\n").filter(Boolean)) {
-              const match = line.match(/\/.+\.jsonl$/);
-              if (match) tmuxFiles.add(match[0]);
-            }
-          }
-        } catch { /* no match */ }
-      }
-      return tmuxFiles;
-    } catch {
-      return new Set();
-    }
-  }
 
   function serveProjectsList(res: http.ServerResponse) {
     const projectsDir = SETTINGS.projectsDir;
@@ -1596,7 +1356,6 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
         return;
       }
 
-      const tmuxFiles = getTmuxSessionFiles();
       const readline = await import("node:readline");
       const dirEntries = fs.readdirSync(SESSIONS_DIR, { withFileTypes: true });
       const projects: any[] = [];
@@ -1616,8 +1375,7 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
             const parsed = await parseSessionFile(filePath, readline);
             if (parsed) {
               const stat = fs.statSync(filePath);
-              const isTmux = tmuxFiles.has(filePath);
-              sessions.push({ ...parsed, file, filePath, mtime: stat.mtimeMs, ...(isTmux && { tmux: true }) });
+              sessions.push({ ...parsed, file, filePath, mtime: stat.mtimeMs });
             }
           } catch { /* skip */ }
         }
@@ -2223,18 +1981,10 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
   function startServer(ctx: ExtensionContext) {
     if (server) return; // Already running
 
-    // Clean up zombie instances from killed tmux panes etc.
-    cleanupZombieInstances();
-
     server = http.createServer(serveStaticFile);
     wss = new WebSocketServer({ noServer: true });
 
     server.on("upgrade", (request, socket, head) => {
-      if (authEnabled && !checkBasicAuth(request)) {
-        socket.write("HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"Pi Studio\"\r\n\r\n");
-        socket.destroy();
-        return;
-      }
       if (request.url === "/ws") {
         wss!.handleUpgrade(request, socket, head, (ws) => {
           wss!.emit("connection", ws, request);
@@ -2245,7 +1995,7 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
     });
 
     wss.on("connection", (ws) => {
-      console.log("[Mirror] Browser client connected");
+      console.log("[Embedded] Browser client connected");
       clients.add(ws);
       (ws as any).isAlive = true;
 
@@ -2254,7 +2004,7 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
       });
 
       // Send initial state
-      sendTo(ws, { type: "state", isStreaming: false, mode: "mirror" });
+      sendTo(ws, { type: "state", isStreaming: false, mode: "embedded" });
 
       // Immediately send state snapshot
       if (latestCtx) {
@@ -2268,22 +2018,24 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
           const command = JSON.parse(data.toString());
           handleCommand(ws, command);
         } catch (e) {
-          console.error("[Mirror] Failed to parse client message:", e);
+          console.error("[Embedded] Failed to parse client message:", e);
         }
       });
 
       ws.on("close", () => {
-        console.log("[Mirror] Browser client disconnected");
+        console.log("[Embedded] Browser client disconnected");
         clients.delete(ws);
       });
 
       ws.on("error", (e) => {
-        console.error("[Mirror] Client error:", e);
+        console.error("[Embedded] Client error:", e);
         clients.delete(ws);
       });
     });
 
-    // Heartbeat keeps mobile/Tailscale sessions alive and removes stale clients.
+    // Heartbeat removes stale clients (a Pi Studio WebView closing the
+    // window typically triggers a clean close, but we keep this for
+    // robustness against ungraceful disconnects).
     heartbeatTimer = setInterval(() => {
       for (const client of clients) {
         if (client.readyState !== WebSocket.OPEN) {
@@ -2303,72 +2055,32 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
     }, 20000);
 
     const tryListen = (port: number, maxAttempts = 10) => {
-      server!.listen(port, "0.0.0.0", () => {
+      // Bind to 127.0.0.1 only — Pi Studio is a local desktop app and
+      // never needs to be reachable from other hosts. This sidesteps an
+      // entire class of "my firewall popped up asking to allow Pi Studio"
+      // and "another machine on my LAN can see my agent" footguns.
+      server!.listen(port, "127.0.0.1", () => {
         onListening(port);
       });
       server!.once("error", (err: any) => {
         if (err.code === "EADDRINUSE" && port < PORT + maxAttempts) {
-          console.log(`[Mirror] Port ${port} in use, trying ${port + 1}...`);
+          console.log(`[Embedded] Port ${port} in use, trying ${port + 1}...`);
           server!.removeAllListeners("error");
           tryListen(port + 1, maxAttempts);
         } else {
-          console.error(`[Mirror] Failed to start server:`, err.message);
+          console.error(`[Embedded] Failed to start server:`, err.message);
         }
       });
     };
 
     const onListening = (port: number) => {
-      // Get local IP for display — prefer en0/en1 (WiFi/Ethernet) over bridges/VPNs
-      const nets = require("node:os").networkInterfaces();
-      let localIp = "localhost";
-      let fallbackIp = "";
-      const preferred = ["en0", "en1"]; // WiFi and Ethernet adapters
-      for (const name of preferred) {
-        for (const net of nets[name] || []) {
-          if (net.family === "IPv4" && !net.internal) {
-            localIp = net.address;
-            break;
-          }
-        }
-        if (localIp !== "localhost") break;
-      }
-      // Fallback: any LAN IP that isn't a bridge or VPN
-      if (localIp === "localhost") {
-        for (const name of Object.keys(nets)) {
-          if (name.startsWith("bridge") || name.startsWith("utun") || name.startsWith("lo")) continue;
-          for (const net of nets[name] || []) {
-            if (net.family === "IPv4" && !net.internal && (net.address.startsWith("192.168.") || net.address.startsWith("10."))) {
-              localIp = net.address;
-              break;
-            }
-          }
-          if (localIp !== "localhost") break;
-        }
-      }
-      if (localIp === "localhost" && fallbackIp) localIp = fallbackIp;
+      localUrl = `http://127.0.0.1:${port}`;
+      console.log(`[Embedded] Pi Studio embedded server running on ${localUrl}`);
+      ctx.ui.setStatus("embedded", `Embedded: 127.0.0.1:${port}`);
 
-      // Detect Tailscale IP (100.x.x.x CGNAT range)
-      let tailscaleIp = "";
-      for (const name of Object.keys(nets)) {
-        for (const net of nets[name] || []) {
-          if (net.family === "IPv4" && !net.internal && net.address.startsWith("100.")) {
-            tailscaleIp = net.address;
-            break;
-          }
-        }
-        if (tailscaleIp) break;
-      }
-
-      mirrorUrl = `http://${localIp}:${port}`;
-      tailscaleUrl = tailscaleIp ? `http://${tailscaleIp}:${port}` : "";
-      console.log(`[Mirror] Pi Studio server running on ${mirrorUrl}${tailscaleUrl ? `  •  Tailscale: ${tailscaleUrl}` : ""}`);
-      ctx.ui.setStatus("mirror", `Mirror: ${localIp}:${port}${tailscaleIp ? ` • TS: ${tailscaleIp}:${port}` : ""}`);
-
-      // Register this instance
+      // Register this instance so `/api/projects` can mark workspaces as active.
       const sessionFile = ctx.sessionManager.getSessionFile() || "";
       registerInstance(port, sessionFile, ctx.cwd || process.cwd());
-
-      ctx.ui.notify(`Pi Studio: ${mirrorUrl}${tailscaleUrl ? `  •  Tailscale: ${tailscaleUrl}` : ""}  •  /qr for QR code`, "info");
     };
 
     tryListen(PORT);
@@ -2379,12 +2091,6 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
   // ═══════════════════════════════════════
   pi.on("session_start", async (_event, ctx) => {
     latestCtx = ctx;
-
-    if (!AUTO_START) {
-      console.log("[Mirror] Pi Studio auto-start disabled (PI_STUDIO_DISABLED=1). Use /studiostart to start manually.");
-      return;
-    }
-
     startServer(ctx);
   });
 
@@ -2393,6 +2099,6 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
   // ═══════════════════════════════════════
   pi.on("session_shutdown", async () => {
     stopServer();
-    console.log("[Mirror] Server shut down");
+    console.log("[Embedded] Server shut down");
   });
 }

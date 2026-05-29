@@ -2,38 +2,17 @@
 
 A local Codex-style desktop app for the [Pi](https://github.com/badlogic/pi-mono) coding agent. No cloud, no account — runs entirely on your machine.
 
+Pi Studio ships a known-good build of the `pi` runtime **inside the .app bundle**, so there's no separate `pi` install to manage, no PATH shenanigans, and no version drift between Pi Studio and the agent it talks to.
+
 ## Upstream and fork status
 
-Pi Studio is a maintained fork of **Tau**, adapted for Pi-first, local development workflows.
+Pi Studio is a maintained fork of **Tau**, adapted for Pi-first, local development workflows. It keeps Tau's local-first coding-agent UI philosophy and extends it with stronger multi-project desktop behavior and a smoother Pi-specific experience.
 
-It keeps Tau's local-first coding-agent UI philosophy and extends it with stronger multi-project desktop behavior and a smoother Pi-specific experience.
-
-## Purpose and key changes
-
-Pi Studio focuses on practical day-to-day use with Pi:
-
-- Fully local operation for agent runtime, sessions, and files
-- Desktop-first multi-project workflow with isolated project windows
-- Browser extension mode for terminal-based Pi usage
-- Better long-session ergonomics (search, navigation, context controls)
-
-Key additions in this fork include:
+Key additions in this fork:
 
 - **Tauri-native process manager** (`PiManager`) that runs one `pi --mode rpc` process per project window
-- **Dual runtime model**: desktop app + extension/browser mode
+- **Embedded pi runtime** — no separate `npm i -g @earendil-works/pi-coding-agent` step; Pi Studio ships its own pi binary
 - **Pi-focused UX refinements** across chat streaming, session history, model/thinking controls, and file workflows
-- **PWA support** in extension mode for installable mobile/desktop access
-
-## Pi Studio vs Tau
-
-| Area | Tau (upstream) | Pi Studio (this repo) |
-|------|-----------------|------------------------|
-| Scope | Base local coding-agent UI | Pi-focused fork for daily desktop use |
-| Process architecture | Upstream default process flow | Per-project `pi --mode rpc` managed by Rust `PiManager` |
-| Runtime options | Upstream mode(s) | Native Tauri app + Pi extension/browser mode |
-| Multi-project UX | Upstream baseline | Launcher-first parallel windows with isolated session state |
-| Pi workflow depth | General upstream integration | Extended Pi UX: chat streaming, session search, model/thinking controls, inline tool-call UX |
-| Mobile/browser access | Upstream-dependent setup | Built-in extension mode with PWA install support |
 
 ![Pi Studio dark mode](docs/images/dark.png)
 
@@ -51,16 +30,13 @@ Pi Studio gives you a full visual interface for Pi. Open any project, chat with 
 
 ## Install
 
-### Desktop app
+Download the latest release for macOS from the [releases page](https://github.com/deflating/pi-studio/releases).
 
-Download the latest release for macOS.
+You **do not** need to install the `pi` CLI separately — Pi Studio bundles its own pi runtime. If you happen to have a different `pi` installed in your shell, the two never interact: Pi Studio's embedded pi reads sessions and credentials from `~/.pi/agent/` but is otherwise isolated.
 
-Tip: installing the [Pi](https://github.com/badlogic/pi-mono) CLI enables full agent features immediately. If it is not installed yet, Pi Studio now shows a startup helper with a retry button.
+### macOS unsigned release notice
 
-#### macOS unsigned release notice
-
-Pi Studio currently ships macOS builds without Apple Developer ID signing/notarization.
-Expected Gatekeeper behavior is a block such as:
+Pi Studio currently ships macOS builds without Apple Developer ID signing/notarization. Expected Gatekeeper behavior is a block such as:
 
 `"Pi Studio" cannot be opened because the developer cannot be verified.`
 
@@ -68,36 +44,27 @@ Use the standard GUI allow path:
 
 1. Drag `Pi Studio.app` into `/Applications`
 2. Right-click the app and choose **Open**
-3. If blocked, open **System Settings -> Privacy & Security**
+3. If blocked, open **System Settings → Privacy & Security**
 4. Click **Open Anyway** for Pi Studio
 
 For maintainers: publish the generated `.dmg` artifact directly and avoid modifying `.app` contents after bundling. The release helper script `npm run release:mac:dmg` validates this (rejects ad-hoc and broken signatures).
 
-Or build from source:
+### Build from source
 
 ```bash
 git clone https://github.com/deflating/pi-studio.git
 cd pi-studio
-npm run build
+npm ci
+npm run build   # downloads the embedded pi binary, then runs `tauri build`
 ```
-
-### Pi extension (browser mode)
-
-If you prefer to run Pi in the terminal and access the UI in a browser:
-
-```bash
-pi install npm:pi-studio
-```
-
-Then open the URL shown in the status bar (default: `http://localhost:3001`).
 
 ## Usage
 
 1. Launch **Pi Studio**
 2. Click a project bubble to open it (or pick a folder)
-3. Start chatting — Pi agent starts automatically
+3. Start chatting — the embedded pi agent starts automatically in that workspace
 
-Type `/qr` in the terminal to show a QR code and access from your phone.
+Provide your model credentials once via `pi /login` inside any workspace, or by writing `~/.pi/agent/auth.json` directly. Pi Studio doesn't manage credentials itself — it reuses whatever pi has on disk.
 
 ## Features
 
@@ -142,93 +109,68 @@ Type `/qr` in the terminal to show a QR code and access from your phone.
 ### Themes
 Six built-in themes: Dusk, Dawn, Midnight, Clean, Terracotta, Sage.
 
-### PWA (browser/extension mode)
-- Installable as a standalone app on iOS, Android, and macOS
-- Custom app icons
-- Service worker with network-first caching
+## How it works
 
-## Configuration (extension mode)
+```
+┌──────────────────────────────────────────────────────┐
+│ Pi Studio .app                                       │
+│                                                      │
+│   Tauri + PiManager (Rust)                           │
+│      ├─► spawn  pi --mode rpc  (project A, :3001)    │
+│      ├─► spawn  pi --mode rpc  (project B, :3002)    │
+│      └─► OS Window per project ──► WebView ──► HTTP  │
+│                                                      │
+│   resources/                                         │
+│      ├─ public/             (frontend)               │
+│      ├─ extensions/         (embedded-server.mjs)    │
+│      └─ pi/                 (bun-compiled pi binary) │
+└──────────────────────────────────────────────────────┘
+                       │
+                       ▼ reads / writes
+              ~/.pi/agent/
+                 ├─ sessions/   (chat history, shared)
+                 ├─ auth.json   (API keys, shared)
+                 └─ settings.json
+```
 
-Environment variables (set before starting Pi):
+The embedded pi process loads `embedded-server.mjs` at startup. That extension owns the HTTP + WebSocket surface the Tauri WebView talks to: static assets, `/api/sessions`, `/api/projects`, `/api/cost-dashboard`, RPC bridge for prompts, etc. Pi Studio's Rust side controls process lifecycle, port allocation, and window management.
+
+Your own `~/.pi/agent/extensions/` and project-local `.pi/extensions/` are still auto-loaded by the embedded pi — embedding doesn't disable user extensions.
+
+## Configuration
+
+Environment variables read at startup (rarely needed):
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PI_STUDIO_PORT` | `3001` | Server port |
-| `PI_STUDIO_STATIC_DIR` | *(bundled)* | Override static files path |
-| `PI_STUDIO_DISABLED` | `0` | Set to `1` to disable Pi Studio (stays installed but won't start the server) |
-| `PI_STUDIO_USER` | *(none)* | HTTP Basic Auth username (both `PI_STUDIO_USER` and `PI_STUDIO_PASS` required to enable) |
-| `PI_STUDIO_PASS` | *(none)* | HTTP Basic Auth password |
+| `PI_STUDIO_PORT` | `3001` | First port pi tries; subsequent windows pick `3002`, `3003`, ... automatically |
+| `PI_STUDIO_PROJECTS_DIR` | *(set in launcher)* | Override the projects root directory |
 
-### Authentication
-
-Supports optional HTTP Basic Auth:
-
-**1. Set credentials** — add to `~/.pi/agent/settings.json`:
-
-```json
-{
-  "pistudio": {
-    "user": "pi",
-    "pass": "your-password"
-  }
-}
-```
-
-Or via environment variables: `PI_STUDIO_USER=pi PI_STUDIO_PASS=secret pi`
-
-**2. Toggle on/off** — once credentials are configured, a "Require login" toggle appears in Settings. The setting persists across restarts.
-
-### Start / Stop (extension mode)
-
-```
-/studiostop     Stop the Pi Studio server
-/studiostart    Start it again
-```
-
-To prevent auto-starting:
-
-```bash
-PI_STUDIO_DISABLED=1 pi
-```
-
-You can still start it manually with `/studiostart` in that session.
-
-## How it works
-
-**Desktop app:** Tauri wraps the web UI. A Rust `PiManager` spawns one `pi --mode rpc` subprocess per workspace, each on its own port. Each project gets its own OS window.
-
-**Extension mode:** `extensions/mirror-server.ts` starts an HTTP + WebSocket server inside the Pi process, subscribes to all Pi events, and forwards them to connected browser clients.
-
-```
-Desktop app:
-┌─────────────┐     ┌──────────────────────────────┐
-│  Pi Studio  │     │  Tauri + PiManager           │
-│  (Webview)  │◄───►│    ↳ pi --mode rpc :3001     │
-│             │     │    ↳ pi --mode rpc :3002     │
-└─────────────┘     └──────────────────────────────┘
-
-Extension mode:
-┌─────────────┐     ┌──────────────────────────────┐     ┌─────────────┐
-│  Pi TUI     │     │  Pi Process                  │     │  Browser    │
-│  (terminal) │◄───►│    ↳ HTTP + WS on :3001      │◄───►│  (Pi Studio)│
-└─────────────┘     └──────────────────────────────┘     └─────────────┘
-```
+Project list, theme, and workspace bookmarks live in `~/.pi/agent/settings.json` under the `pistudio` key.
 
 ## Development
 
 ```bash
 git clone https://github.com/deflating/pi-studio.git
 cd pi-studio
-PI_STUDIO_STATIC_DIR=$(pwd)/public pi
-```
-
-Edit files in `public/` — refresh the browser to see changes.
-
-For the Tauri desktop app:
-
-```bash
+npm ci
 npm run dev
 ```
+
+`npm run dev` will:
+
+1. Run `npm run fetch:pi` to populate `src-tauri/resources/pi/` with the locked pi binary (see `scripts/pi-version.json`).
+2. Start `tauri dev` against the local `public/` for instant frontend reload.
+
+To bump the embedded pi version, edit `scripts/pi-version.json`, run `npm run fetch:pi`, smoke-test, and commit.
+
+After changes under `src-tauri/`:
+
+```bash
+npm run check:rust   # cargo check + clippy + fmt
+```
+
+(per project policy, `tauri build` is not used for routine verification — it's reserved for actual releases.)
 
 ## License
 

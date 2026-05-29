@@ -7,7 +7,7 @@
     "frontendDist": "../public",
     "beforeDevCommand": "npm run dev:web",
     "devUrl": "http://127.0.0.1:1420",
-    "beforeBuildCommand": ""
+    "beforeBuildCommand": "npm run build:extensions"
   },
   "app": {
     "withGlobalTauri": true,
@@ -36,7 +36,8 @@
     ],
     "resources": {
       "../public": "public",
-      "../extensions": "extensions"
+      "../extensions/dist": "extensions",
+      "./resources/pi": "pi"
     }
   }
 }

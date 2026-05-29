@@ -47,6 +47,33 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
+      # Cache the downloaded pi tarballs across runs to avoid pulling ~30 MB
+      # from GitHub releases on every build. The key includes the locked
+      # version file so a version bump invalidates the cache automatically.
+      - name: Cache pi binary downloads
+        uses: actions/cache@v4
+        with:
+          path: .cache/pi-binaries
+          key: pi-binaries-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/pi-version.json') }}
+
+      - name: Fetch embedded pi binary
+        run: npm run fetch:pi
+
+      # Sanity-check that the host-platform binary actually runs. We only
+      # run this on the matching host (mac runner can exec the mac binary,
+      # etc.); cross-platform binaries are exercised by `pi --version` on
+      # their respective runners.
+      - name: Verify embedded pi runs (Unix)
+        if: runner.os != 'Windows'
+        run: ./src-tauri/resources/pi/pi --version
+
+      - name: Verify embedded pi runs (Windows)
+        if: runner.os == 'Windows'
+        run: .\src-tauri\resources\pi\pi.exe --version
+
+      - name: Build pi extensions bundle
+        run: npm run build:extensions
+
       - name: Build Tauri app and publish assets
         uses: tauri-apps/tauri-action@v0
         env:

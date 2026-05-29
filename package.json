@@ -1,12 +1,10 @@
 {
   "name": "pi-studio",
   "version": "0.1.9",
-  "description": "Local Codex-style GUI for the Pi coding agent — desktop app and browser extension",
+  "description": "Local Codex-style desktop GUI for the Pi coding agent",
   "keywords": [
     "pi",
-    "pi-package",
     "coding-agent",
-    "web-ui",
     "desktop",
     "multi-agent",
     "tauri"
@@ -17,17 +15,14 @@
     "type": "git",
     "url": "https://github.com/deflating/pi-studio.git"
   },
-  "pi": {
-    "extensions": [
-      "./extensions/mirror-server.ts"
-    ],
-    "image": "https://raw.githubusercontent.com/deflating/pi-studio/main/docs/images/dark.png"
-  },
   "scripts": {
     "tauri": "tauri",
     "dev:web": "live-server public --host=127.0.0.1 --port=1420 --no-browser",
-    "dev": "PATH=\"$HOME/.cargo/bin:$PATH\" tauri dev",
+    "dev": "npm run fetch:pi && PATH=\"$HOME/.cargo/bin:$PATH\" tauri dev",
+    "fetch:pi": "node scripts/fetch-pi-binary.js",
+    "build:extensions": "node scripts/build-extensions.js",
     "build": "PATH=\"$HOME/.cargo/bin:$PATH\" tauri build",
+    "prebuild": "npm run fetch:pi && npm run build:extensions",
     "release": "bash scripts/release.sh",
     "release:mac:dmg": "bash scripts/release-macos-dmg.sh",
     "test": "vitest run && node scripts/check-tauri-permissions.js",
@@ -45,6 +40,7 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.2",
+    "esbuild": "^0.28.0",
     "jsdom": "^26.1.0",
     "live-server": "^1.2.2",
     "vitest": "^3.2.4"
