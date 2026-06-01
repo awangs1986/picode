@@ -660,6 +660,30 @@ body {
   color: var(--bg);
 }
 
+.archived-delete-all-btn {
+  display: none;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px 4px;
+  margin-left: auto;
+  color: var(--text-dim);
+  border-radius: 4px;
+  line-height: 0;
+  flex-shrink: 0;
+  transition: color var(--duration) var(--ease), background var(--duration) var(--ease);
+}
+
+.archived-header:hover .archived-delete-all-btn {
+  display: flex;
+  align-items: center;
+}
+
+.archived-delete-all-btn:hover {
+  color: #e53e3e;
+  background: rgba(229, 62, 62, 0.1);
+}
+
 .project-sessions {
   display: flex;
   flex-direction: column;
