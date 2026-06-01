@@ -16,7 +16,7 @@ jobs:
       matrix:
         include:
           - os: macos-latest
-          - os: ubuntu-22.04
+          - os: ubuntu-20.04
           - os: windows-latest
 
     runs-on: ${{ matrix.os }}
@@ -37,13 +37,18 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
+          WEBKIT_DEV_PKG="libwebkit2gtk-4.1-dev"
+          if ! apt-cache show "$WEBKIT_DEV_PKG" >/dev/null 2>&1; then
+            WEBKIT_DEV_PKG="libwebkit2gtk-4.0-dev"
+          fi
           sudo apt-get install -y \
             desktop-file-utils \
-            libwebkit2gtk-4.1-dev \
+            "$WEBKIT_DEV_PKG" \
             libappindicator3-dev \
             librsvg2-dev \
             libfuse2 \
             squashfs-tools \
+            zsync \
             patchelf
 
       - name: Install dependencies
