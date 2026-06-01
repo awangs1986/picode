@@ -327,9 +327,38 @@ export default function (pi: ExtensionAPI) {
   // types) and pulling its constants would defeat the whole point.
   // ═══════════════════════════════════════
   const WS_OPEN = 1;
+  const PROTOCOL_VERSION = 1;
+  const workspaceId = `workspace:${process.cwd()}`;
+
+  function currentSessionIdFromCtx(ctx: ExtensionContext | null): string | null {
+    if (!ctx) return null;
+    try {
+      const sessionFile = ctx.sessionManager.getSessionFile();
+      if (typeof sessionFile === "string" && sessionFile.trim()) return sessionFile;
+    } catch {}
+    try {
+      const entries = ctx.sessionManager.getEntries();
+      const sessionEntry = entries.find((e: any) => e?.type === "session" && typeof e?.id === "string");
+      if (sessionEntry?.id) return sessionEntry.id;
+    } catch {}
+    return null;
+  }
+
+  function withRouteMeta(data: any) {
+    const currentCtx = globalState.getLatestCtx?.() ?? latestCtx;
+    const sessionId = currentSessionIdFromCtx(currentCtx);
+    return {
+      protocolVersion: PROTOCOL_VERSION,
+      workspaceId,
+      sessionId: sessionId || undefined,
+      port: globalState.server?.port || PORT,
+      ...data,
+    };
+  }
+
   function sendTo(ws: UnifiedWS, data: any) {
     if (ws.readyState === WS_OPEN) {
-      try { ws.send(JSON.stringify(data)); } catch {}
+      try { ws.send(JSON.stringify(withRouteMeta(data))); } catch {}
     }
   }
 
@@ -337,7 +366,7 @@ export default function (pi: ExtensionAPI) {
   // Helper: broadcast to all clients
   // ═══════════════════════════════════════
   function broadcast(data: any) {
-    const json = JSON.stringify(data);
+    const json = JSON.stringify(withRouteMeta(data));
     for (const client of globalState.clients) {
       if (client.readyState === WS_OPEN) {
         try { client.send(json); } catch {}
@@ -2083,7 +2112,10 @@ export default function (pi: ExtensionAPI) {
           : raw instanceof ArrayBuffer
             ? Buffer.from(raw).toString("utf8")
             : raw.toString();
-        const command = JSON.parse(text);
+        const incoming = JSON.parse(text);
+        const command = incoming?.type === "broker_command"
+          ? { ...(incoming.payload || {}), id: (incoming.payload?.id ?? incoming.requestId) }
+          : incoming;
         const dispatch = globalState.handleCommand;
         if (dispatch) {
           dispatch(ws, command);

@@ -191,6 +191,9 @@ const backgroundConnections = new Map();
 const portSessionMap = new Map();
 // The port that wsClient is currently connected to (the "foreground" session)
 let foregroundPort = getCurrentPort();
+wsClient.setRoutingContext({
+  workspaceId: `workspace:${getCurrentWorkspacePath() || 'unknown'}`,
+});
 
 const workspaceIndicatorEl = document.createElement('div');
 workspaceIndicatorEl.id = 'workspace-indicator';
@@ -1406,19 +1409,20 @@ async function resetUiForNewSession() {
 
 async function newSession() {
   if (window.tauriNative) {
-    // In Pi Studio, "+ New Session" spawns a fresh headless pi process for
-    // the current cwd and navigates THIS window's WebView to it. The
-    // previous pi process keeps running in the background (PiManager
-    // retains it; the user can return to it via the running-instances
-    // list). A single pi process can only drive one active session at a
-    // time, so a parallel task structurally needs its own process — but
-    // it does NOT need its own OS window. See workspace-actions.js.
+    // Default behavior is process-efficient: create the new chat in-place on
+    // the current pi process. Only spawn a dedicated process when a parallel
+    // task is actually running.
     await startInWindowNewSession({
       tauriNative: window.tauriNative,
-      fetchInstances,
+      getCurrentCwd: getCurrentWorkspacePath,
       getCurrentPort,
+      fetchInstances,
       navigate: navigateInWindow,
       onBeforeSwap: onBeforeInstanceSwap,
+      shouldSpawnParallel: () => state.isStreaming,
+      onInPlaceSessionCreated: () => {
+        resetUiForNewSession().catch(() => {});
+      },
       renderError: (message) => messageRenderer.renderError(message),
     });
     return;
@@ -1444,12 +1448,19 @@ async function handleNewProjectChat(project) {
   if (workspaceLaunchInProgress) return;
   setWorkspaceLaunchInProgress(true);
   try {
-    // startNewProjectChat spawns a fresh headless pi for the project's
-    // cwd and navigates THIS window to it. The previously-attached pi
-    // process keeps running in the background.
+    // Prefer reuse: same project + no active parallel run => in-place
+    // new_session on current process. Spawn dedicated process only when
+    // a parallel run is active.
     const launched = await startNewProjectChat({
       project,
       tauriNative: window.tauriNative,
+      getCurrentPort,
+      getCurrentCwd: getCurrentWorkspacePath,
+      shouldSpawnParallel: () => state.isStreaming,
+      onInPlaceSessionCreated: () => {
+        resetUiForNewSession().catch(() => {});
+      },
+      fetchInstances,
       navigate: navigateInWindow,
       onBeforeSwap: onBeforeInstanceSwap,
       renderError: (message) => messageRenderer.renderError(message),
@@ -1493,6 +1504,13 @@ async function handleSessionSelect(session, project) {
       wsClient.forceReconnect();
       clearMessageQueue();
       state.reset();
+      // Restore streaming state if A's task is still running in the background.
+      // state.reset() clears isStreaming, but pi won't re-emit agent_start for
+      // an in-progress run, so we have to recover the flag from sidebar state.
+      if (sidebar.isStreaming(session.filePath)) {
+        state.setStreaming(true);
+        showTypingIndicator(true);
+      }
       updateUI();
       messageRenderer.clear();
       toolCardRenderer.clear();
@@ -1594,6 +1612,27 @@ async function handleSessionSelect(session, project) {
     }
 
     // ── Case 3: Not streaming — normal session switch ──
+    // Pre-load the target session's UI so the frontend doesn't wait on pi to
+    // send a session_switch event (which carries no payload and was a no-op).
+    state.reset();
+    updateUI();
+    messageRenderer.clear();
+    toolCardRenderer.clear();
+    if (session && project) {
+      messageRenderer.renderSystemMessage('Loading session…');
+      const dirName = project?.dirName;
+      const file = session.file;
+      if (dirName && file) {
+        try {
+          const res = await fetch(`/api/sessions/${dirName}/${file}`);
+          const data = await res.json();
+          messageRenderer.clear();
+          renderSessionHistory(data.entries || []);
+        } catch (e) {
+          messageRenderer.renderError(`Failed to load session: ${e}`);
+        }
+      }
+    }
     try {
       await window.tauriNative.switchSession(session.filePath);
     } catch (e) {
@@ -1706,6 +1745,10 @@ function handleMirrorSync(data) {
   // Track the active session
   mirrorActiveSessionFile = data.sessionFile || null;
   if (data.sessionFile) portSessionMap.set(foregroundPort, data.sessionFile);
+  wsClient.setRoutingContext({
+    workspaceId: data.workspaceId || `workspace:${getCurrentWorkspacePath() || 'unknown'}`,
+    sessionId: data.sessionId || data.sessionFile || null,
+  });
   viewingActiveSession = true;
   state.setStreaming(Boolean(data.isStreaming));
   showTypingIndicator(Boolean(data.isStreaming));
