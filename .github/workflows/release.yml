@@ -23,6 +23,9 @@ jobs:
           - os: ubuntu-24.04-arm
             pi_target_platform: linux-arm64
           - os: windows-2022
+            pi_target_platform: windows-x64
+          - os: windows-11-arm
+            pi_target_platform: windows-arm64
 
     runs-on: ${{ matrix.os }}
 
