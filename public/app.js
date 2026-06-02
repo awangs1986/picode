@@ -2224,6 +2224,7 @@ const updateStatusEl = document.getElementById('setting-update-status');
 const updateInstallRow = document.getElementById('setting-update-install-row');
 const updateInstallLabel = document.getElementById('setting-update-install-label');
 const installUpdateBtn = document.getElementById('btn-install-update');
+const sidebarUpdateBtn = document.getElementById('sidebar-update-btn');
 
 const APP_VERSION = (() => {
   const meta = document.querySelector('meta[name="app-version"]');
@@ -2232,9 +2233,58 @@ const APP_VERSION = (() => {
 
 let pendingUpdate = null;
 let updaterBusy = false;
+let updateCheckFailed = false;
 const BETA_VERSION_RE = /-beta(?:[.-]|$)/i;
 const NUMERIC_PRERELEASE_VERSION_RE = /-\d+(?:\.\d+)*$/;
 let currentAppVersion = APP_VERSION;
+
+function setSidebarUpdateButton({ visible, label = 'Update', tone = 'ok', title = 'Open updates in settings', disabled = false }) {
+  if (!sidebarUpdateBtn) return;
+  sidebarUpdateBtn.classList.toggle('hidden', !visible);
+  if (!visible) {
+    sidebarUpdateBtn.textContent = 'Update';
+    sidebarUpdateBtn.dataset.tone = '';
+    sidebarUpdateBtn.disabled = false;
+    sidebarUpdateBtn.title = 'Open updates in settings';
+    return;
+  }
+  sidebarUpdateBtn.textContent = label;
+  sidebarUpdateBtn.dataset.tone = tone;
+  sidebarUpdateBtn.disabled = disabled;
+  sidebarUpdateBtn.title = title;
+}
+
+function syncSidebarUpdateButton() {
+  if (updaterBusy) {
+    setSidebarUpdateButton({
+      visible: true,
+      label: 'Updating...',
+      tone: 'warn',
+      title: 'Update is in progress',
+      disabled: true,
+    });
+    return;
+  }
+  if (pendingUpdate) {
+    setSidebarUpdateButton({
+      visible: true,
+      label: 'Update',
+      tone: 'ok',
+      title: `Update available: ${pendingUpdate.version}`,
+    });
+    return;
+  }
+  if (updateCheckFailed) {
+    setSidebarUpdateButton({
+      visible: true,
+      label: 'Retry',
+      tone: 'error',
+      title: 'Last update check failed. Open settings to retry.',
+    });
+    return;
+  }
+  setSidebarUpdateButton({ visible: false });
+}
 
 function setUpdateStatus(message, tone = 'info') {
   if (!updateStatusRow || !updateStatusEl) return;
@@ -2337,17 +2387,21 @@ async function checkForUpdates({ silent = false } = {}) {
       );
     }
     pendingUpdate = null;
+    updateCheckFailed = false;
     showInstallButton(null);
+    syncSidebarUpdateButton();
     return null;
   }
 
   if (!window.tauriNative?.hasUpdater) {
     if (!silent) setUpdateStatus('Auto-updates are only available in the desktop app.', 'warn');
     if (updaterSection && !window.tauriNative) updaterSection.hidden = true;
+    setSidebarUpdateButton({ visible: false });
     return null;
   }
 
   updaterBusy = true;
+  syncSidebarUpdateButton();
   if (checkUpdatesBtn) {
     checkUpdatesBtn.disabled = true;
     checkUpdatesBtn.textContent = 'Checking...';
@@ -2358,22 +2412,28 @@ async function checkForUpdates({ silent = false } = {}) {
     const update = await window.tauriNative.checkForUpdate();
     if (!update) {
       pendingUpdate = null;
+      updateCheckFailed = false;
       showInstallButton(null);
       setUpdateStatus("You're on the latest version.", 'ok');
+      syncSidebarUpdateButton();
       return null;
     }
 
     if (isIgnoredPrereleaseVersion(update.version)) {
       console.info('[updater] ignoring beta release:', update.version);
       pendingUpdate = null;
+      updateCheckFailed = false;
       showInstallButton(null);
       setUpdateStatus("You're on the latest stable version.", 'ok');
+      syncSidebarUpdateButton();
       return null;
     }
 
     pendingUpdate = update;
+    updateCheckFailed = false;
     showInstallButton(update);
     setUpdateStatus(`Update available: ${update.version}`, 'ok');
+    syncSidebarUpdateButton();
     return update;
   } catch (err) {
     const friendly = explainUpdateError(err?.message || err);
@@ -2381,9 +2441,12 @@ async function checkForUpdates({ silent = false } = {}) {
     if (!silent) {
       setUpdateStatus(friendly, 'warn');
     }
+    updateCheckFailed = true;
+    syncSidebarUpdateButton();
     return null;
   } finally {
     updaterBusy = false;
+    syncSidebarUpdateButton();
     if (checkUpdatesBtn) {
       checkUpdatesBtn.disabled = false;
       checkUpdatesBtn.textContent = 'Check now';
@@ -2396,6 +2459,7 @@ async function installPendingUpdate() {
   if (!window.tauriNative?.downloadAndInstallUpdate) return;
 
   updaterBusy = true;
+  syncSidebarUpdateButton();
   if (installUpdateBtn) {
     installUpdateBtn.disabled = true;
     installUpdateBtn.textContent = 'Downloading...';
@@ -2419,10 +2483,15 @@ async function installPendingUpdate() {
     });
 
     setUpdateStatus('Update installed. Restarting...', 'ok');
+    pendingUpdate = null;
+    updateCheckFailed = false;
+    syncSidebarUpdateButton();
     setTimeout(() => {
       window.tauriNative?.relaunchApp?.().catch((err) => {
         console.error('[updater] relaunch failed:', err);
         setUpdateStatus('Please restart Pi Studio to finish updating.', 'warn');
+        updateCheckFailed = true;
+        syncSidebarUpdateButton();
       });
     }, 600);
   } catch (err) {
@@ -2433,8 +2502,11 @@ async function installPendingUpdate() {
       installUpdateBtn.disabled = false;
       installUpdateBtn.textContent = 'Retry';
     }
+    updateCheckFailed = true;
+    syncSidebarUpdateButton();
   } finally {
     updaterBusy = false;
+    syncSidebarUpdateButton();
     if (checkUpdatesBtn) checkUpdatesBtn.disabled = false;
   }
 }
@@ -2455,6 +2527,7 @@ async function initUpdaterUI() {
 
   if (!window.tauriNative?.hasUpdater) {
     updaterSection.hidden = true;
+    syncSidebarUpdateButton();
     return;
   }
 
@@ -2463,6 +2536,7 @@ async function initUpdaterUI() {
   if (await isDevBuild()) {
     setUpdateStatus('Dev build — updates are checked only in packaged releases.', 'info');
     if (checkUpdatesBtn) checkUpdatesBtn.disabled = true;
+    syncSidebarUpdateButton();
     return;
   }
 
@@ -2471,6 +2545,7 @@ async function initUpdaterUI() {
     if (checkUpdatesBtn) checkUpdatesBtn.disabled = true;
     if (installUpdateBtn) installUpdateBtn.disabled = true;
     showInstallButton(null);
+    syncSidebarUpdateButton();
     return;
   }
 
@@ -2493,6 +2568,7 @@ async function initUpdaterUI() {
       checkForUpdates({ silent: true }).catch(() => {});
     }
   }, 6 * 60 * 60 * 1000);
+  syncSidebarUpdateButton();
 }
 
 void initUpdaterUI();
@@ -2575,7 +2651,23 @@ function closeSettings() {
   document.querySelector('.mode-link:first-child')?.classList.add('active');
 }
 
+async function openUpdatesFromSidebar() {
+  await openSettings();
+  selectSettingsTab('general');
+  updaterSection?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  if (pendingUpdate && installUpdateBtn && !installUpdateBtn.disabled) {
+    installUpdateBtn.focus();
+    return;
+  }
+  checkUpdatesBtn?.focus();
+}
+
 settingsBtn.addEventListener('click', openSettings);
+sidebarUpdateBtn?.addEventListener('click', () => {
+  openUpdatesFromSidebar().catch((err) => {
+    console.warn('[updater] unable to open updates from sidebar:', err);
+  });
+});
 settingsClose.addEventListener('click', closeSettings);
 settingsOverlay?.addEventListener('click', closeSettings);
 settingsNavItems.forEach((item) => {
