@@ -55,7 +55,7 @@ async fn cmd_open_workspace(
     let port = manager.next_port();
     let spawn_started_at = Instant::now();
     manager.spawn(&cwd, port, session_path.as_deref())?;
-    eprintln!(
+    log::info!(
         "[pi-desktop] open_workspace spawn complete: port={} cwd={} elapsed_ms={}",
         port,
         cwd,
@@ -85,7 +85,7 @@ async fn cmd_open_workspace(
             return Err(format!("{}{}", e, extra));
         }
     }
-    eprintln!(
+    log::info!(
         "[pi-desktop] open_workspace health ready: port={} elapsed_ms={}",
         port,
         health_started_at.elapsed().as_millis()
@@ -93,7 +93,7 @@ async fn cmd_open_workspace(
     if force_new_session.unwrap_or(false) {
         let new_session_started_at = Instant::now();
         manager.send_rpc(port, serde_json::json!({ "type": "new_session" }))?;
-        eprintln!(
+        log::info!(
             "[pi-desktop] open_workspace new_session sent: port={} elapsed_ms={}",
             port,
             new_session_started_at.elapsed().as_millis()
@@ -102,12 +102,12 @@ async fn cmd_open_workspace(
     if wait_for_sessions.unwrap_or(false) {
         let sessions_started_at = Instant::now();
         match wait_for_endpoint(port, "/api/sessions", 4).await {
-            Ok(_) => eprintln!(
+            Ok(_) => log::info!(
                 "[pi-desktop] open_workspace sessions ready: port={} elapsed_ms={}",
                 port,
                 sessions_started_at.elapsed().as_millis()
             ),
-            Err(err) => eprintln!(
+            Err(err) => log::warn!(
                 "[pi-desktop] open_workspace sessions warmup skipped: port={} error={}",
                 port, err
             ),
@@ -116,7 +116,7 @@ async fn cmd_open_workspace(
     if open_window.unwrap_or(true) {
         open_workspace_window(&app, port)?;
     }
-    eprintln!(
+    log::info!(
         "[pi-desktop] open_workspace complete: port={} total_elapsed_ms={}",
         port,
         started_at.elapsed().as_millis()
@@ -177,6 +177,16 @@ fn cmd_get_app_version() -> &'static str {
 #[tauri::command]
 fn cmd_is_dev() -> bool {
     cfg!(debug_assertions)
+}
+
+#[tauri::command]
+fn cmd_open_devtools(port: u16, app: AppHandle) -> Result<(), String> {
+    let label = format!("workspace-{}", port);
+    let window = app
+        .get_webview_window(&label)
+        .ok_or_else(|| format!("No workspace window found for port {}", port))?;
+    window.open_devtools();
+    Ok(())
 }
 
 // ─── Window helpers ───────────────────────────────────────────────────────────
@@ -317,7 +327,7 @@ fn extract_session_cwd(session_path: &PathBuf) -> Option<String> {
 fn find_latest_session_boot_target() -> Option<(String, String)> {
     let sessions_root = dirs::home_dir()?.join(".pi/agent/sessions");
     if !sessions_root.exists() {
-        eprintln!(
+        log::info!(
             "[pi-desktop] startup resume skipped: sessions dir not found at {}",
             sessions_root.display()
         );
@@ -365,6 +375,7 @@ fn main() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_log::Builder::new().build())
         .setup(|app| {
             let static_dir = find_static_dir(app);
             let manager = Arc::new(PiManager::new(static_dir));
@@ -375,14 +386,14 @@ fn main() {
                 .to_string();
             let (cwd, session_path) = match find_latest_session_boot_target() {
                 Some((resolved_cwd, resolved_session_path)) => {
-                    eprintln!(
+                    log::info!(
                         "[pi-desktop] startup resume target selected: cwd={} session={}",
                         resolved_cwd, resolved_session_path
                     );
                     (resolved_cwd, Some(resolved_session_path))
                 }
                 None => {
-                    eprintln!(
+                    log::info!(
                         "[pi-desktop] startup resume fallback: using home directory {}",
                         home_cwd
                     );
@@ -416,16 +427,16 @@ fn main() {
 
             let mut startup_ok = true;
             if initial_port != 47821 {
-                eprintln!(
+                log::warn!(
                     "[pi-desktop] port 47821 unavailable, using {} instead (likely another Pi Studio instance is running)",
                     initial_port
                 );
             }
             if let Err(err) = manager.spawn(&cwd, initial_port, session_path.as_deref()) {
                 startup_ok = false;
-                eprintln!("[pi-desktop] startup failed to spawn pi: {}", err);
+                log::error!("[pi-desktop] startup failed to spawn pi: {}", err);
                 if let Err(window_err) = open_bootstrap_window(&app.handle().clone(), &err) {
-                    eprintln!(
+                    log::error!(
                         "[pi-desktop] failed to open bootstrap window after startup error: {}",
                         window_err
                     );
@@ -446,9 +457,9 @@ fn main() {
                 let app_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     if let Err(e) = wait_for_health(initial_port, 30).await {
-                        eprintln!("Pi failed to start: {}", e);
+                        log::error!("Pi failed to start: {}", e);
                     } else if let Err(e) = open_workspace_window(&app_handle, initial_port) {
-                        eprintln!("Failed to open window: {}", e);
+                        log::error!("Failed to open window: {}", e);
                     }
                 });
             }
@@ -477,6 +488,7 @@ fn main() {
             cmd_get_pi_version,
             cmd_get_app_version,
             cmd_is_dev,
+            cmd_open_devtools,
             cmd_retry_startup,
             cmd_spawn_session_process,
         ])

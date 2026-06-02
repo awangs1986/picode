@@ -159,6 +159,9 @@
     isDev: () =>
       invoke('cmd_is_dev'),
 
+    openDevtools: (port) =>
+      invoke('cmd_open_devtools', { port: port ?? currentPort() }),
+
     checkForUpdate,
     downloadAndInstallUpdate,
     relaunchApp,

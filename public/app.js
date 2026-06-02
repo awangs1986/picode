@@ -1312,6 +1312,19 @@ document.addEventListener('keydown', (e) => {
       messageRenderer.renderError(`Failed to start new session: ${err}`);
     });
   }
+
+  // Cmd+Option+I (macOS) / Ctrl+Alt+I (Windows/Linux) — Open webview inspector.
+  if (
+    (e.key === 'i' || e.key === 'I') &&
+    (e.metaKey || e.ctrlKey) &&
+    e.altKey &&
+    !e.shiftKey
+  ) {
+    e.preventDefault();
+    window.tauriNative?.openDevtools?.().catch((err) => {
+      messageRenderer.renderError(`Failed to open inspector: ${err}`);
+    });
+  }
 });
 
 function isInInput() {

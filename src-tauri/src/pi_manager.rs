@@ -231,7 +231,7 @@ impl PiManager {
         // "Failed to load sessions" / "Disconnected" — a confusing soft
         // failure that hides the real bundling bug.
         let extension = self.resolve_embedded_extension_path()?;
-        eprintln!(
+        log::info!(
             "[pi-desktop] embedded-server resolved: source={} path={}",
             extension.source, extension.path
         );
@@ -247,7 +247,7 @@ impl PiManager {
             args.push(session.to_string());
         }
 
-        eprintln!(
+        log::info!(
             "[pi-desktop] spawning pi: bin={} args={:?} cwd={} port={} static_dir={}",
             pi_bin.display(),
             args,
@@ -282,7 +282,7 @@ impl PiManager {
                 e,
             )
         })?;
-        eprintln!(
+        log::info!(
             "[pi-desktop] pi process spawned: port={} pid={} elapsed_ms={}",
             port,
             child.id(),

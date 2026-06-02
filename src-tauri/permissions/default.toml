@@ -44,6 +44,11 @@ description = "Allow checking whether this is a debug build"
 commands.allow = ["cmd_is_dev"]
 
 [[permission]]
+identifier = "allow-cmd-open-devtools"
+description = "Allow opening the webview devtools inspector for a workspace window"
+commands.allow = ["cmd_open_devtools"]
+
+[[permission]]
 identifier = "allow-cmd-retry-startup"
 description = "Allow retrying startup after a failed embedded pi launch (used by the bootstrap error window)"
 commands.allow = ["cmd_retry_startup"]
@@ -62,5 +67,6 @@ permissions = [
   "allow-cmd-get-pi-version",
   "allow-cmd-get-app-version",
   "allow-cmd-is-dev",
+  "allow-cmd-open-devtools",
   "allow-cmd-retry-startup",
 ]
