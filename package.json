@@ -26,6 +26,13 @@
     "release:mac:dmg": "bash scripts/release-macos-dmg.sh",
     "test": "vitest run && bun run scripts/check-tauri-permissions.js",
     "test:watch": "vitest",
+    "lint": "biome lint .",
+    "lint:fix": "biome lint --write . --unsafe",
+    "format": "biome format .",
+    "format:oxfmt": "oxfmt",
+    "format:fix": "biome format --write .",
+    "check": "biome check .",
+    "check:fix": "biome check --write . --unsafe --formatter-enabled=false --linter-enabled=false",
     "check:permissions": "bun run scripts/check-tauri-permissions.js",
     "check:rust": "bash scripts/check-rust.sh"
   },
@@ -40,6 +47,7 @@
     "ws": "^8.16.0"
   },
   "devDependencies": {
+    "@biomejs/biome": "latest",
     "@tauri-apps/cli": "^2.11.2",
     "esbuild": "^0.28.0",
     "jsdom": "^26.1.0",

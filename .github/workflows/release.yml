@@ -85,16 +85,19 @@ jobs:
           PI_TARGET_PLATFORM: ${{ matrix.pi_target_platform }}
         run: bun run fetch:pi
 
-      # Sanity-check that the host-platform binary actually runs. We only
-      # run this on the matching host (mac runner can exec the mac binary,
-      # etc.); cross-platform binaries are exercised by `pi --version` on
-      # their respective runners.
+      # Sanity-check that the embedded binary actually runs. We can only do
+      # this when the embedded binary's architecture matches the runner's:
+      # the macos-14 job cross-compiles an x86_64 (darwin-x64) binary on an
+      # Apple Silicon runner, which would SIGILL ("Illegal instruction",
+      # exit 132) if executed here. That cross-built binary is exercised on
+      # its own native runner instead. `matrix.rust_target` is only set for
+      # the cross-compile job, so its absence means host arch == target arch.
       - name: Verify embedded pi runs (Unix)
-        if: runner.os != 'Windows'
+        if: runner.os != 'Windows' && matrix.rust_target == ''
         run: ./src-tauri/resources/pi/pi --version
 
       - name: Verify embedded pi runs (Windows)
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && matrix.rust_target == ''
         run: .\src-tauri\resources\pi\pi.exe --version
 
       - name: Build pi extensions bundle
