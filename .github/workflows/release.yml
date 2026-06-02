@@ -17,9 +17,11 @@ jobs:
         include:
           # macOS Apple Silicon (arm64) host build.
           - os: macos-latest
-          # macOS Intel (x64) host build — macos-13 is the last Intel runner.
-          - os: macos-13
+          # macOS Intel (x64) build. The macos-13 Intel runner was retired by
+          # GitHub, so we cross-compile x86_64 from an Apple Silicon runner.
+          - os: macos-14
             pi_target_platform: darwin-x64
+            rust_target: x86_64-apple-darwin
           # Linux deb/rpm bundling is currently more stable on 22.04 than
           # 24.04 for GTK/WebKit bundles in CI.
           - os: ubuntu-22.04
@@ -44,6 +46,8 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
 
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
@@ -150,6 +154,9 @@ jobs:
             Download the installer for your platform from the assets below.
           releaseDraft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
+          # When a Rust target is set (Intel cross-build on an Apple Silicon
+          # runner), pass it through so the bundler emits an x86_64 app.
+          args: ${{ matrix.rust_target && format('--target {0}', matrix.rust_target) || '' }}
           # tauri-action will only attach `latest.json` (the updater
           # manifest) when this is `true`. Combined with
           # `bundle.createUpdaterArtifacts` in tauri.conf.json, the
