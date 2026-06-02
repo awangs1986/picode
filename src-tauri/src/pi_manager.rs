@@ -61,6 +61,27 @@ pub fn locked_pi_version() -> &'static str {
     })
 }
 
+/// Strip a Windows verbatim / extended-length path prefix (`\\?\` or
+/// `\\?\UNC\`) from a path string.
+///
+/// Tauri's `resource_dir()` returns extended-length paths (e.g.
+/// `\\?\C:\Users\...\PiStudio\pi\pi.exe`). The embedded pi (Bun 1.3.10,
+/// Windows arm64, compiled standalone) segfaults (`Segmentation fault at
+/// address 0x18`) when it is launched with — or asked to load an
+/// `--extension` from — a `\\?\`-prefixed path. Passing the plain
+/// `C:\Users\...` form avoids the crash. This is a no-op on non-Windows
+/// platforms and for paths without the prefix.
+fn strip_verbatim_prefix(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
+        // `\\?\UNC\server\share` -> `\\server\share`
+        format!(r"\\{}", rest)
+    } else if let Some(rest) = path.strip_prefix(r"\\?\") {
+        rest.to_string()
+    } else {
+        path.to_string()
+    }
+}
+
 /// Return a path to the embedded-server extension that is safe to pass as a
 /// `--extension` argument to the embedded pi binary.
 ///
@@ -317,7 +338,13 @@ impl PiManager {
 
     pub fn spawn(&self, cwd: &str, port: u16, session_path: Option<&str>) -> Result<(), String> {
         let pi_bin = self.resolve_bundled_pi()?;
-        let static_dir = self.static_dir.to_string_lossy().to_string();
+        // Tauri resolves resource paths as `\\?\`-prefixed extended-length
+        // paths. Bun (the embedded pi runtime) segfaults on Windows arm64 when
+        // launched from such a path, so normalize the binary path and every
+        // path-shaped argument/env we hand to it back to the plain form.
+        let pi_bin_str = strip_verbatim_prefix(&pi_bin.to_string_lossy());
+        let static_dir = strip_verbatim_prefix(&self.static_dir.to_string_lossy());
+        let cwd = strip_verbatim_prefix(cwd);
 
         // We treat a missing embedded-server extension as a hard error
         // rather than continuing to spawn pi without `--extension`. Without
@@ -342,7 +369,11 @@ impl PiManager {
         // can still contain spaces out of our control (e.g. a Windows username
         // like `C:\Users\Shi Xin\...`). Work around it by mirroring the
         // extension into a space-free directory and passing that path instead.
-        let extension_path = sanitize_extension_path_for_pi(&extension.path);
+        //
+        // Also strip the `\\?\` verbatim prefix first: Bun on Windows arm64
+        // segfaults when loading an extension from an extended-length path.
+        let extension_path =
+            sanitize_extension_path_for_pi(&strip_verbatim_prefix(&extension.path));
 
         let mut args: Vec<String> = vec![
             "--extension".to_string(),
@@ -357,17 +388,17 @@ impl PiManager {
 
         log::info!(
             "[pi-desktop] spawning pi: bin={} args={:?} cwd={} port={} static_dir={}",
-            pi_bin.display(),
+            pi_bin_str,
             args,
             cwd,
             port,
             static_dir
         );
 
-        let mut child = Command::new(&pi_bin);
+        let mut child = Command::new(&pi_bin_str);
         child
             .args(&args)
-            .current_dir(cwd)
+            .current_dir(&cwd)
             .env("PI_STUDIO_STATIC_DIR", &static_dir)
             .env("PI_STUDIO_PORT", port.to_string())
             .env("PI_STUDIO_PI_VERSION", locked_pi_version())
