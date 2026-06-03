@@ -6,37 +6,40 @@
  */
 
 export function renderMarkdown(text) {
-  if (!text) return '';
+  if (!text) return "";
 
   // Normalize line endings
-  text = text.replace(/\r\n/g, '\n');
+  text = text.replace(/\r\n/g, "\n");
 
   // Extract code blocks first to protect them
   const codeBlocks = [];
   text = text.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
     const idx = codeBlocks.length;
-    codeBlocks.push({ lang, code: code.replace(/\n$/, '') });
+    codeBlocks.push({ lang, code: code.replace(/\n$/, "") });
     return `%%CODEBLOCK_${idx}%%`;
   });
 
   // Split into lines and process block-level elements
-  const lines = text.split('\n');
-  let html = '';
+  const lines = text.split("\n");
+  let html = "";
   let inList = false;
-  let listType = '';
+  let listType = "";
   let inBlockquote = false;
   let blockquoteLines = [];
 
   function flushBlockquote() {
     if (inBlockquote) {
-      html += '<blockquote>' + blockquoteLines.map(l => renderInline(l)).join('<br>') + '</blockquote>';
+      html += `<blockquote>${blockquoteLines.map((l) => renderInline(l)).join("<br>")}</blockquote>`;
       inBlockquote = false;
       blockquoteLines = [];
     }
   }
 
   function flushList() {
-    if (inList) { html += `</${listType}>`; inList = false; }
+    if (inList) {
+      html += `</${listType}>`;
+      inList = false;
+    }
   }
 
   // Check if a line is a table separator (e.g. |---|---|)
@@ -46,29 +49,32 @@ export function renderMarkdown(text) {
 
   // Check if a line looks like a table row
   function isTableRow(line) {
-    return line.trim().startsWith('|') && line.trim().endsWith('|');
+    return line.trim().startsWith("|") && line.trim().endsWith("|");
   }
 
   // Parse alignment from separator row
   function parseAlignments(line) {
-    return line.split('|').filter(c => c.trim()).map(cell => {
-      const trimmed = cell.trim();
-      if (trimmed.startsWith(':') && trimmed.endsWith(':')) return 'center';
-      if (trimmed.endsWith(':')) return 'right';
-      return 'left';
-    });
+    return line
+      .split("|")
+      .filter((c) => c.trim())
+      .map((cell) => {
+        const trimmed = cell.trim();
+        if (trimmed.startsWith(":") && trimmed.endsWith(":")) return "center";
+        if (trimmed.endsWith(":")) return "right";
+        return "left";
+      });
   }
 
   for (let i = 0; i < lines.length; i++) {
-    let line = lines[i];
+    const line = lines[i];
 
     // Code block placeholder
     const codeMatch = line.match(/^%%CODEBLOCK_(\d+)%%$/);
     if (codeMatch) {
       flushList();
       flushBlockquote();
-      const block = codeBlocks[parseInt(codeMatch[1])];
-      const langLabel = block.lang || 'code';
+      const block = codeBlocks[parseInt(codeMatch[1], 10)];
+      const langLabel = block.lang || "code";
       html += `<div class="code-block-wrapper">`;
       html += `<div class="code-block-header"><span>${escapeHtml(langLabel)}</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>`;
       html += `<pre><code>${escapeHtml(block.code)}</code></pre></div>`;
@@ -83,33 +89,33 @@ export function renderMarkdown(text) {
       const alignments = parseAlignments(lines[i + 1]);
 
       // Parse header
-      const headerCells = line.split('|').filter(c => c.trim() !== '' || line.trim() === '|');
+      const _headerCells = line.split("|").filter((c) => c.trim() !== "" || line.trim() === "|");
       // More robust: split between first and last pipe
-      const headerRow = line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|');
+      const headerRow = line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|");
 
       html += '<div class="table-wrapper"><table><thead><tr>';
       headerRow.forEach((cell, idx) => {
-        const align = alignments[idx] || 'left';
+        const align = alignments[idx] || "left";
         html += `<th style="text-align:${align}">${renderInline(cell.trim())}</th>`;
       });
-      html += '</tr></thead><tbody>';
+      html += "</tr></thead><tbody>";
 
       // Skip separator
       i += 2;
 
       // Parse body rows
       while (i < lines.length && isTableRow(lines[i])) {
-        const rowCells = lines[i].trim().replace(/^\|/, '').replace(/\|$/, '').split('|');
-        html += '<tr>';
+        const rowCells = lines[i].trim().replace(/^\|/, "").replace(/\|$/, "").split("|");
+        html += "<tr>";
         rowCells.forEach((cell, idx) => {
-          const align = alignments[idx] || 'left';
+          const align = alignments[idx] || "left";
           html += `<td style="text-align:${align}">${renderInline(cell.trim())}</td>`;
         });
-        html += '</tr>';
+        html += "</tr>";
         i++;
       }
 
-      html += '</tbody></table></div>';
+      html += "</tbody></table></div>";
       i--; // back up since the for loop will increment
       continue;
     }
@@ -118,7 +124,7 @@ export function renderMarkdown(text) {
     if (/^(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
       flushList();
       flushBlockquote();
-      html += '<hr>';
+      html += "<hr>";
       continue;
     }
 
@@ -135,11 +141,14 @@ export function renderMarkdown(text) {
     // Blockquote — handle `>` with or without trailing space, and empty `>` lines
     if (/^>\s?/.test(line)) {
       flushList();
-      if (!inBlockquote) { inBlockquote = true; blockquoteLines = []; }
-      const content = line.replace(/^>\s?/, '');
-      if (content === '') {
+      if (!inBlockquote) {
+        inBlockquote = true;
+        blockquoteLines = [];
+      }
+      const content = line.replace(/^>\s?/, "");
+      if (content === "") {
         // Empty blockquote line acts as paragraph break within quote
-        blockquoteLines.push('');
+        blockquoteLines.push("");
       } else {
         blockquoteLines.push(content);
       }
@@ -151,14 +160,14 @@ export function renderMarkdown(text) {
     // Task list (must check before regular list)
     const taskMatch = line.match(/^(\s*)[*\-+]\s+\[([ xX])\]\s+(.+)$/);
     if (taskMatch) {
-      if (!inList || listType !== 'ul') {
+      if (!inList || listType !== "ul") {
         flushList();
         html += '<ul class="task-list">';
         inList = true;
-        listType = 'ul';
+        listType = "ul";
       }
-      const checked = taskMatch[2] !== ' ';
-      html += `<li class="task-list-item"><input type="checkbox" disabled ${checked ? 'checked' : ''}> ${renderInline(taskMatch[3])}</li>`;
+      const checked = taskMatch[2] !== " ";
+      html += `<li class="task-list-item"><input type="checkbox" disabled ${checked ? "checked" : ""}> ${renderInline(taskMatch[3])}</li>`;
       continue;
     }
 
@@ -166,11 +175,11 @@ export function renderMarkdown(text) {
     const ulMatch = line.match(/^(\s*)[*\-+]\s+(.+)$/);
     if (ulMatch) {
       flushBlockquote();
-      if (!inList || listType !== 'ul') {
+      if (!inList || listType !== "ul") {
         if (inList) html += `</${listType}>`;
-        html += '<ul>';
+        html += "<ul>";
         inList = true;
-        listType = 'ul';
+        listType = "ul";
       }
       html += `<li>${renderInline(ulMatch[2])}</li>`;
       continue;
@@ -180,11 +189,11 @@ export function renderMarkdown(text) {
     const olMatch = line.match(/^(\s*)\d+\.\s+(.+)$/);
     if (olMatch) {
       flushBlockquote();
-      if (!inList || listType !== 'ol') {
+      if (!inList || listType !== "ol") {
         if (inList) html += `</${listType}>`;
-        html += '<ol>';
+        html += "<ol>";
         inList = true;
-        listType = 'ol';
+        listType = "ol";
       }
       html += `<li>${renderInline(olMatch[2])}</li>`;
       continue;
@@ -194,7 +203,7 @@ export function renderMarkdown(text) {
     flushList();
 
     // Empty line
-    if (line.trim() === '') {
+    if (line.trim() === "") {
       continue;
     }
 
@@ -214,17 +223,17 @@ export function renderMarkdown(text) {
  * Preserves whitespace/newlines for everything else.
  */
 export function renderUserMarkdown(text) {
-  if (!text) return '';
-  text = text.replace(/\r\n/g, '\n');
+  if (!text) return "";
+  text = text.replace(/\r\n/g, "\n");
 
-  const lines = text.split('\n');
-  let html = '';
+  const lines = text.split("\n");
+  let html = "";
   let inBlockquote = false;
   let bqLines = [];
 
   function flushBq() {
     if (inBlockquote) {
-      html += '<blockquote>' + bqLines.map(l => renderInline(l)).join('<br>') + '</blockquote>';
+      html += `<blockquote>${bqLines.map((l) => renderInline(l)).join("<br>")}</blockquote>`;
       inBlockquote = false;
       bqLines = [];
     }
@@ -232,16 +241,19 @@ export function renderUserMarkdown(text) {
 
   for (const line of lines) {
     if (/^>\s?/.test(line)) {
-      if (!inBlockquote) { inBlockquote = true; bqLines = []; }
-      bqLines.push(line.replace(/^>\s?/, ''));
+      if (!inBlockquote) {
+        inBlockquote = true;
+        bqLines = [];
+      }
+      bqLines.push(line.replace(/^>\s?/, ""));
       continue;
     }
     flushBq();
-    html += renderInline(line) + '\n';
+    html += `${renderInline(line)}\n`;
   }
   flushBq();
 
-  return html.replace(/\n$/, '');
+  return html.replace(/\n$/, "");
 }
 
 function renderInline(text) {
@@ -257,49 +269,55 @@ function renderInline(text) {
   text = text.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1" class="inline-image">');
 
   // Bold + italic
-  text = text.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
+  text = text.replace(/\*\*\*(.+?)\*\*\*/g, "<strong><em>$1</em></strong>");
 
   // Bold
-  text = text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-  text = text.replace(/__(.+?)__/g, '<strong>$1</strong>');
+  text = text.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  text = text.replace(/__(.+?)__/g, "<strong>$1</strong>");
 
   // Italic
-  text = text.replace(/\*(.+?)\*/g, '<em>$1</em>');
-  text = text.replace(/_(.+?)_/g, '<em>$1</em>');
+  text = text.replace(/\*(.+?)\*/g, "<em>$1</em>");
+  text = text.replace(/_(.+?)_/g, "<em>$1</em>");
 
   // Strikethrough
-  text = text.replace(/~~(.+?)~~/g, '<del>$1</del>');
+  text = text.replace(/~~(.+?)~~/g, "<del>$1</del>");
 
   // Links
-  text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  text = text.replace(
+    /\[([^\]]+)\]\(([^)]+)\)/g,
+    '<a href="$2" target="_blank" rel="noopener">$1</a>',
+  );
 
   // Auto-link bare URLs
-  text = text.replace(/(^|[^"'])(https?:\/\/[^\s<]+)/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>');
+  text = text.replace(
+    /(^|[^"'])(https?:\/\/[^\s<]+)/g,
+    '$1<a href="$2" target="_blank" rel="noopener">$2</a>',
+  );
 
   // Restore inline code
-  text = text.replace(/%%ICODE(\d+)%%/g, (_, idx) => codeSpans[parseInt(idx)]);
+  text = text.replace(/%%ICODE(\d+)%%/g, (_, idx) => codeSpans[parseInt(idx, 10)]);
 
   return text;
 }
 
 function escapeHtml(text) {
   return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 // Global copy function for code blocks
-window.copyCode = function(btn) {
-  const codeBlock = btn.closest('.code-block-wrapper').querySelector('code');
+window.copyCode = (btn) => {
+  const codeBlock = btn.closest(".code-block-wrapper").querySelector("code");
   const text = codeBlock.textContent;
   navigator.clipboard.writeText(text).then(() => {
-    btn.textContent = 'Copied!';
-    btn.classList.add('copied');
+    btn.textContent = "Copied!";
+    btn.classList.add("copied");
     setTimeout(() => {
-      btn.textContent = 'Copy';
-      btn.classList.remove('copied');
+      btn.textContent = "Copy";
+      btn.classList.remove("copied");
     }, 2000);
   });
 };

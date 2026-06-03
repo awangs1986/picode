@@ -30,7 +30,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
-const os = require("node:os");
+const _os = require("node:os");
 const crypto = require("node:crypto");
 const https = require("node:https");
 const { spawnSync } = require("node:child_process");
@@ -157,9 +157,7 @@ function downloadTo(url, dest) {
       file.on("finish", () => file.close(() => resolve()));
       file.on("error", cleanup);
     };
-    https
-      .get(url, { headers: { "User-Agent": "pi-studio-fetch" } }, handle)
-      .on("error", cleanup);
+    https.get(url, { headers: { "User-Agent": "pi-studio-fetch" } }, handle).on("error", cleanup);
   });
 }
 
@@ -252,7 +250,9 @@ function extractZipWindows(archivePath, outDir) {
       );
       sleepSync(1000);
     } else {
-      fail(`zip extraction failed on Windows after ${maxAttempts} attempts (exit ${psResult.status})`);
+      fail(
+        `zip extraction failed on Windows after ${maxAttempts} attempts (exit ${psResult.status})`,
+      );
     }
   }
 }
@@ -368,7 +368,7 @@ async function main() {
   // ones with SIGKILL when it re-validates and finds a bad signature.
   if (process.platform === "darwin") {
     try {
-      const { execFileSync } = await import("child_process");
+      const { execFileSync } = await import("node:child_process");
       execFileSync("codesign", ["--force", "--deep", "--sign", "-", binPath]);
       info(`codesign: ad-hoc signed ${binPath}`);
     } catch (e) {

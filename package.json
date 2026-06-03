@@ -29,7 +29,6 @@
     "lint": "biome lint .",
     "lint:fix": "biome lint --write . --unsafe",
     "format": "biome format .",
-    "format:oxfmt": "oxfmt",
     "format:fix": "biome format --write .",
     "check": "biome check .",
     "check:fix": "biome check --write . --unsafe --formatter-enabled=false --linter-enabled=false",

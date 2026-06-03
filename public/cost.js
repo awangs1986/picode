@@ -1,25 +1,25 @@
-const scopeSelect = document.getElementById('scope-select');
-const rangeSelect = document.getElementById('range-select');
+const scopeSelect = document.getElementById("scope-select");
+const rangeSelect = document.getElementById("range-select");
 
-const applyFiltersBtn = document.getElementById('apply-filters-btn');
-const resetFiltersBtn = document.getElementById('reset-filters-btn');
+const applyFiltersBtn = document.getElementById("apply-filters-btn");
+const resetFiltersBtn = document.getElementById("reset-filters-btn");
 
-const kpiTotalCost = document.getElementById('kpi-total-cost');
-const kpiTotalTokens = document.getElementById('kpi-total-tokens');
-const kpiCostSession = document.getElementById('kpi-cost-session');
-const kpiCostMessage = document.getElementById('kpi-cost-message');
+const kpiTotalCost = document.getElementById("kpi-total-cost");
+const kpiTotalTokens = document.getElementById("kpi-total-tokens");
+const kpiCostSession = document.getElementById("kpi-cost-session");
+const kpiCostMessage = document.getElementById("kpi-cost-message");
 
-const trendBarsEl = document.getElementById('trend-bars');
-const trendEmptyEl = document.getElementById('trend-empty');
-const modelBreakdownEl = document.getElementById('model-breakdown');
-const toolBreakdownEl = document.getElementById('tool-breakdown');
+const trendBarsEl = document.getElementById("trend-bars");
+const trendEmptyEl = document.getElementById("trend-empty");
+const modelBreakdownEl = document.getElementById("model-breakdown");
+const toolBreakdownEl = document.getElementById("tool-breakdown");
 
-const allSessionsEl = document.getElementById('all-sessions');
+const allSessionsEl = document.getElementById("all-sessions");
 
-let currentPayload = null;
+let _currentPayload = null;
 
 if (window.self !== window.top) {
-  document.body.classList.add('embedded-cost-view');
+  document.body.classList.add("embedded-cost-view");
   syncThemeFromParent();
 }
 
@@ -34,16 +34,16 @@ function syncThemeFromParent() {
 
   const applyTheme = (themeId) => {
     if (!themeId) return;
-    document.documentElement.setAttribute('data-theme', themeId);
+    document.documentElement.setAttribute("data-theme", themeId);
   };
 
   if (parentRoot) {
-    applyTheme(parentRoot.getAttribute('data-theme'));
+    applyTheme(parentRoot.getAttribute("data-theme"));
     try {
       const observer = new MutationObserver(() => {
-        applyTheme(parentRoot.getAttribute('data-theme'));
+        applyTheme(parentRoot.getAttribute("data-theme"));
       });
-      observer.observe(parentRoot, { attributes: true, attributeFilter: ['data-theme'] });
+      observer.observe(parentRoot, { attributes: true, attributeFilter: ["data-theme"] });
     } catch {
       // ignore observer setup failure
     }
@@ -56,23 +56,23 @@ function syncThemeFromParent() {
   // uses for each workspace — see public/themes.js for details.)
   try {
     const saved = readThemeCookie();
-    if (saved === 'dark') applyTheme('night');
-    else if (saved === 'light') applyTheme('terracotta');
+    if (saved === "dark") applyTheme("night");
+    else if (saved === "light") applyTheme("terracotta");
     else if (saved) applyTheme(saved);
-    else if (window.matchMedia?.('(prefers-color-scheme: light)').matches) applyTheme('terracotta');
-    else applyTheme('night');
+    else if (window.matchMedia?.("(prefers-color-scheme: light)").matches) applyTheme("terracotta");
+    else applyTheme("night");
   } catch {
-    applyTheme('night');
+    applyTheme("night");
   }
 }
 
 function readThemeCookie() {
   try {
-    const cookies = document.cookie ? document.cookie.split('; ') : [];
+    const cookies = document.cookie ? document.cookie.split("; ") : [];
     for (const entry of cookies) {
-      const eq = entry.indexOf('=');
+      const eq = entry.indexOf("=");
       if (eq === -1) continue;
-      if (entry.slice(0, eq) !== 'pi-studio-theme') continue;
+      if (entry.slice(0, eq) !== "pi-studio-theme") continue;
       const raw = entry.slice(eq + 1);
       try {
         return decodeURIComponent(raw);
@@ -96,28 +96,30 @@ function formatInt(value) {
 
 function loadSavedFilters() {
   try {
-    const raw = localStorage.getItem('pi-studio-cost-filters');
+    const raw = localStorage.getItem("pi-studio-cost-filters");
     if (!raw) return;
     const saved = JSON.parse(raw);
     if (saved.range) rangeSelect.value = saved.range;
     if (saved.scope) scopeSelect.value = saved.scope;
-
   } catch {
     // ignore
   }
 }
 
 function saveFilters() {
-  localStorage.setItem('pi-studio-cost-filters', JSON.stringify({
-    range: rangeSelect.value,
-    scope: scopeSelect.value,
-  }));
+  localStorage.setItem(
+    "pi-studio-cost-filters",
+    JSON.stringify({
+      range: rangeSelect.value,
+      scope: scopeSelect.value,
+    }),
+  );
 }
 
 function buildQuery() {
   const params = new URLSearchParams({
     range: rangeSelect.value,
-    granularity: 'day',
+    granularity: "day",
     scope: scopeSelect.value,
   });
   return params.toString();
@@ -132,22 +134,24 @@ function renderKpis(summary = {}) {
 
 function renderTrend(series = []) {
   if (!Array.isArray(series) || series.length === 0) {
-    trendBarsEl.innerHTML = '';
-    trendEmptyEl.classList.remove('hidden');
+    trendBarsEl.innerHTML = "";
+    trendEmptyEl.classList.remove("hidden");
     return;
   }
-  trendEmptyEl.classList.add('hidden');
+  trendEmptyEl.classList.add("hidden");
   const max = Math.max(...series.map((s) => Number(s.cost || 0)), 0.0001);
-  trendBarsEl.innerHTML = series.map((s) => {
-    const width = Math.max(2, Math.round((Number(s.cost || 0) / max) * 100));
-    return `
+  trendBarsEl.innerHTML = series
+    .map((s) => {
+      const width = Math.max(2, Math.round((Number(s.cost || 0) / max) * 100));
+      return `
       <div class="trend-row">
         <span>${s.bucket}</span>
         <div class="trend-bar-wrap"><div class="trend-bar" style="width:${width}%"></div></div>
         <span>${formatUsd(s.cost)}</span>
       </div>
     `;
-  }).join('');
+    })
+    .join("");
 }
 
 function renderBreakdown(target, rows = []) {
@@ -155,12 +159,17 @@ function renderBreakdown(target, rows = []) {
     target.innerHTML = '<div class="empty">No data</div>';
     return;
   }
-  target.innerHTML = rows.slice(0, 12).map((row) => `
+  target.innerHTML = rows
+    .slice(0, 12)
+    .map(
+      (row) => `
     <div class="breakdown-row">
-      <span>${row.name || 'unknown'}</span>
+      <span>${row.name || "unknown"}</span>
       <span>${formatUsd(row.cost)}</span>
     </div>
-  `).join('');
+  `,
+    )
+    .join("");
 }
 
 function renderSessionsTable(target, sessions = []) {
@@ -183,18 +192,22 @@ function renderSessionsTable(target, sessions = []) {
         </tr>
       </thead>
       <tbody>
-        ${sessions.map((s) => `
+        ${sessions
+          .map(
+            (s) => `
           <tr>
             <td>${new Date(s.time).toLocaleString()}</td>
-            <td>${escapeHtml(s.title || 'Untitled')}</td>
-            <td>${escapeHtml(s.workspace || '')}</td>
-            <td>${escapeHtml(s.model || 'unknown')}</td>
+            <td>${escapeHtml(s.title || "Untitled")}</td>
+            <td>${escapeHtml(s.workspace || "")}</td>
+            <td>${escapeHtml(s.model || "unknown")}</td>
             <td>${formatUsd(s.totalCost)}</td>
             <td>${formatInt(s.totalTokens)}</td>
             <td>${formatInt(s.toolCalls)}</td>
             <td>${formatUsd(s.costPerUserMessage)}</td>
           </tr>
-        `).join('')}
+        `,
+          )
+          .join("")}
       </tbody>
     </table>
   `;
@@ -202,15 +215,15 @@ function renderSessionsTable(target, sessions = []) {
 
 function escapeHtml(str) {
   return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
 }
 
 function renderAll(payload) {
-  currentPayload = payload;
+  _currentPayload = payload;
   renderKpis(payload.summary || {});
   renderTrend(payload.series || []);
   renderBreakdown(modelBreakdownEl, payload.breakdown?.byModel || []);
@@ -227,22 +240,21 @@ async function loadDashboard() {
   renderAll(payload);
 }
 
-
-applyFiltersBtn.addEventListener('click', () => {
+applyFiltersBtn.addEventListener("click", () => {
   loadDashboard().catch((error) => {
-    console.error('[Cost] Failed to load dashboard:', error);
+    console.error("[Cost] Failed to load dashboard:", error);
   });
 });
 
-resetFiltersBtn.addEventListener('click', () => {
-  rangeSelect.value = '30d';
-  scopeSelect.value = 'current';
+resetFiltersBtn.addEventListener("click", () => {
+  rangeSelect.value = "30d";
+  scopeSelect.value = "current";
   loadDashboard().catch((error) => {
-    console.error('[Cost] Failed to reset dashboard:', error);
+    console.error("[Cost] Failed to reset dashboard:", error);
   });
 });
 
 loadSavedFilters();
 loadDashboard().catch((error) => {
-  console.error('[Cost] Initial load failed:', error);
+  console.error("[Cost] Initial load failed:", error);
 });

@@ -1,5 +1,15 @@
 {
   "$schema": "https://biomejs.dev/schemas/2.4.16/schema.json",
+  "files": {
+    "includes": [
+      "**",
+      "!src-tauri/resources",
+      "!src-tauri/target",
+      "!dist",
+      "!extensions/dist",
+      "!node_modules"
+    ]
+  },
   "formatter": {
     "enabled": true,
     "indentStyle": "space",
@@ -11,10 +21,13 @@
     "rules": {
       "recommended": true,
       "a11y": {
-        "recommended": true
+        "recommended": true,
+        "noSvgWithoutTitle": "off",
+        "useButtonType": "off"
       },
       "complexity": {
-        "recommended": true
+        "recommended": true,
+        "noImportantStyles": "off"
       },
       "correctness": {
         "recommended": true
