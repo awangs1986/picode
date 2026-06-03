@@ -14,51 +14,51 @@
 
 export const themes = {
   night: {
-    name: 'Dusk',
+    name: "Dusk",
     dark: true,
-    colors: ['#212121', '#a0a0a0', '#777777', '#666666'],
+    colors: ["#212121", "#a0a0a0", "#777777", "#666666"],
     vars: {},
   },
   dawn: {
-    name: 'Dawn',
+    name: "Dawn",
     dark: true,
-    colors: ['#1a1d26', '#7a8ab0', '#6a5a80', '#5a7a9a'],
+    colors: ["#1a1d26", "#7a8ab0", "#6a5a80", "#5a7a9a"],
     vars: {},
   },
   midnight: {
-    name: 'Midnight',
+    name: "Midnight",
     dark: true,
-    colors: ['#000000', '#5a7a9a', '#4a5565', '#4a5a72'],
+    colors: ["#000000", "#5a7a9a", "#4a5565", "#4a5a72"],
     vars: {},
   },
   clean: {
-    name: 'Clean',
+    name: "Clean",
     dark: false,
-    colors: ['#ffffff', '#0580c4', '#007aff', '#5ac8fa'],
+    colors: ["#ffffff", "#0580c4", "#007aff", "#5ac8fa"],
     vars: {},
   },
   terracotta: {
-    name: 'Terracotta',
+    name: "Terracotta",
     dark: false,
-    colors: ['#f4f1ec', '#b06a48', '#5c2860', '#3a6a9b'],
+    colors: ["#f4f1ec", "#b06a48", "#5c2860", "#3a6a9b"],
     vars: {},
   },
   sage: {
-    name: 'Sage',
+    name: "Sage",
     dark: false,
-    colors: ['#f0f2ec', '#6a7d5a', '#4a3860', '#3a6a7a'],
+    colors: ["#f0f2ec", "#6a7d5a", "#4a3860", "#3a6a7a"],
     vars: {},
   },
 };
 
-const THEME_COOKIE = 'pi-studio-theme';
+const THEME_COOKIE = "pi-studio-theme";
 const THEME_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 365 * 10; // 10 years
 
 function readThemeCookie() {
   try {
-    const cookies = document.cookie ? document.cookie.split('; ') : [];
+    const cookies = document.cookie ? document.cookie.split("; ") : [];
     for (const entry of cookies) {
-      const eq = entry.indexOf('=');
+      const eq = entry.indexOf("=");
       if (eq === -1) continue;
       const name = entry.slice(0, eq);
       if (name !== THEME_COOKIE) continue;
@@ -78,6 +78,7 @@ function readThemeCookie() {
 function writeThemeCookie(themeId) {
   try {
     const value = encodeURIComponent(themeId);
+    // biome-ignore lint/suspicious/noDocumentCookie: Cookie Store API is async and not suitable for synchronous theme persistence
     document.cookie = `${THEME_COOKIE}=${value}; Max-Age=${THEME_COOKIE_MAX_AGE_SECONDS}; Path=/; SameSite=Lax`;
   } catch {
     // ignore — same fallback as the read path
@@ -101,28 +102,28 @@ migrateLegacyLocalStorageValue();
 
 export function applyTheme(themeId) {
   const root = document.documentElement;
-  if (!themes[themeId]) themeId = 'night';
-  root.setAttribute('data-theme', themeId);
+  if (!themes[themeId]) themeId = "night";
+  root.setAttribute("data-theme", themeId);
   writeThemeCookie(themeId);
 }
 
 export function getCurrentTheme() {
   const saved = readThemeCookie();
-  if (saved === 'dark') return 'night';
-  if (saved === 'light') return 'terracotta';
+  if (saved === "dark") return "night";
+  if (saved === "light") return "terracotta";
   if (saved && themes[saved]) return saved;
-  if (window.matchMedia?.('(prefers-color-scheme: light)').matches) return 'terracotta';
-  return 'night';
+  if (window.matchMedia?.("(prefers-color-scheme: light)").matches) return "terracotta";
+  return "night";
 }
 
 // Track OS theme changes only when the user hasn't picked a theme yet.
 // As soon as a cookie exists (set by applyTheme) this listener becomes a
 // no-op, so the user's explicit choice wins.
 if (!readThemeCookie()) {
-  window.matchMedia?.('(prefers-color-scheme: light)').addEventListener('change', (e) => {
+  window.matchMedia?.("(prefers-color-scheme: light)").addEventListener("change", (e) => {
     if (!readThemeCookie()) {
       const root = document.documentElement;
-      root.setAttribute('data-theme', e.matches ? 'terracotta' : 'night');
+      root.setAttribute("data-theme", e.matches ? "terracotta" : "night");
     }
   });
 }

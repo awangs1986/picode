@@ -61,7 +61,6 @@ echo ""
 run_background "lint:fix" bun run lint:fix
 run_background "format:fix" bun run format:fix
 run_background "check:fix" bun run check:fix
-run_background "format:css" bun run format:oxfmt
 
 # Wait for all background jobs to complete
 echo ""

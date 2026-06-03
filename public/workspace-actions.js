@@ -30,7 +30,7 @@
 // straight into it (see index.html bootstrap script).
 
 function runOnBeforeSwap(onBeforeSwap, label) {
-  if (typeof onBeforeSwap !== 'function') return () => {};
+  if (typeof onBeforeSwap !== "function") return () => {};
   try {
     return onBeforeSwap(label) || (() => {});
   } catch {
@@ -61,7 +61,7 @@ async function attachToWorkspace({
   const existing = instances.find((i) => i.cwd === targetCwd);
   let targetPort = existing?.port;
 
-  const dismissOverlay = runOnBeforeSwap(onBeforeSwap, 'Opening workspace…');
+  const dismissOverlay = runOnBeforeSwap(onBeforeSwap, "Opening workspace…");
   if (!targetPort) {
     try {
       targetPort = await tauriNative.openWorkspace(targetCwd, {
@@ -97,12 +97,12 @@ export async function startInWindowNewSession({
   renderError,
 }) {
   if (!tauriNative) {
-    renderError('New session is only supported in Tauri mode.');
+    renderError("New session is only supported in Tauri mode.");
     return false;
   }
 
   let targetCwd = null;
-  if (typeof getCurrentCwd === 'function') {
+  if (typeof getCurrentCwd === "function") {
     try {
       targetCwd = getCurrentCwd();
     } catch {
@@ -121,21 +121,22 @@ export async function startInWindowNewSession({
   }
 
   if (!targetCwd) {
-    renderError('Failed to start new session: current workspace path is unavailable');
+    renderError("Failed to start new session: current workspace path is unavailable");
     return false;
   }
 
-  if (typeof navigate !== 'function') {
-    renderError('Failed to start new session: navigation is unavailable');
+  if (typeof navigate !== "function") {
+    renderError("Failed to start new session: navigation is unavailable");
     return false;
   }
 
-  const currentPort = typeof getCurrentPort === 'function' ? getCurrentPort() : null;
-  const wantsParallel = typeof shouldSpawnParallel === 'function' ? Boolean(shouldSpawnParallel()) : false;
-  if (!wantsParallel && typeof currentPort === 'number' && Number.isFinite(currentPort)) {
+  const currentPort = typeof getCurrentPort === "function" ? getCurrentPort() : null;
+  const wantsParallel =
+    typeof shouldSpawnParallel === "function" ? Boolean(shouldSpawnParallel()) : false;
+  if (!wantsParallel && typeof currentPort === "number" && Number.isFinite(currentPort)) {
     try {
       await tauriNative.newSession(currentPort);
-      if (typeof onInPlaceSessionCreated === 'function') {
+      if (typeof onInPlaceSessionCreated === "function") {
         onInPlaceSessionCreated();
       }
       return true;
@@ -145,7 +146,7 @@ export async function startInWindowNewSession({
     }
   }
 
-  const dismissOverlay = runOnBeforeSwap(onBeforeSwap, 'Starting session…');
+  const dismissOverlay = runOnBeforeSwap(onBeforeSwap, "Starting session…");
   try {
     const newPort = await tauriNative.openWorkspace(targetCwd, {
       forceNewSession: false,
@@ -185,30 +186,36 @@ export async function startNewProjectChat({
   renderError,
 }) {
   if (!tauriNative) {
-    renderError('Project new chat is only supported in Tauri mode.');
+    renderError("Project new chat is only supported in Tauri mode.");
     return false;
   }
 
   const targetCwd = resolveProjectCwd(project);
   if (!targetCwd) {
-    renderError('Failed to start new chat: project path is unavailable');
+    renderError("Failed to start new chat: project path is unavailable");
     return false;
   }
 
-  if (typeof navigate !== 'function') {
-    renderError('Failed to start new chat: navigation is unavailable');
+  if (typeof navigate !== "function") {
+    renderError("Failed to start new chat: navigation is unavailable");
     return false;
   }
 
-  const currentCwd = typeof getCurrentCwd === 'function' ? getCurrentCwd() : null;
-  const currentPort = typeof getCurrentPort === 'function' ? getCurrentPort() : null;
+  const currentCwd = typeof getCurrentCwd === "function" ? getCurrentCwd() : null;
+  const currentPort = typeof getCurrentPort === "function" ? getCurrentPort() : null;
   const sameWorkspace = Boolean(currentCwd && targetCwd && currentCwd === targetCwd);
-  const wantsParallel = typeof shouldSpawnParallel === 'function' ? Boolean(shouldSpawnParallel()) : false;
+  const wantsParallel =
+    typeof shouldSpawnParallel === "function" ? Boolean(shouldSpawnParallel()) : false;
 
-  if (sameWorkspace && !wantsParallel && typeof currentPort === 'number' && Number.isFinite(currentPort)) {
+  if (
+    sameWorkspace &&
+    !wantsParallel &&
+    typeof currentPort === "number" &&
+    Number.isFinite(currentPort)
+  ) {
     try {
       await tauriNative.newSession(currentPort);
-      if (typeof onInPlaceSessionCreated === 'function') {
+      if (typeof onInPlaceSessionCreated === "function") {
         onInPlaceSessionCreated();
       }
       return true;
@@ -231,7 +238,7 @@ export async function startNewProjectChat({
     return result !== null;
   }
 
-  const dismissOverlay = runOnBeforeSwap(onBeforeSwap, 'Starting new chat…');
+  const dismissOverlay = runOnBeforeSwap(onBeforeSwap, "Starting new chat…");
   try {
     const newPort = await tauriNative.openWorkspace(targetCwd, {
       forceNewSession: false,
@@ -261,13 +268,13 @@ export async function openProjectWorkspace({
   renderError,
 }) {
   if (!tauriNative) {
-    renderError('Open project is only supported in Tauri mode.');
+    renderError("Open project is only supported in Tauri mode.");
     return false;
   }
 
   const targetCwd = resolveProjectCwd(project);
   if (!targetCwd) {
-    renderError('Failed to open project: project path is unavailable');
+    renderError("Failed to open project: project path is unavailable");
     return false;
   }
 
@@ -297,7 +304,7 @@ export async function openFolderAsWorkspace({
   renderError,
 }) {
   if (!tauriNative) {
-    renderError('Open folder is only supported in Tauri mode.');
+    renderError("Open folder is only supported in Tauri mode.");
     return false;
   }
 

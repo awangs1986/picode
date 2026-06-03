@@ -10,16 +10,16 @@
  *   - stopInstance(port)        → kill a pi instance
  */
 
-(function () {
+(() => {
   const tauriCore = window.__TAURI__?.core;
-  if (!tauriCore || typeof tauriCore.invoke !== 'function') {
-    console.error('[tauri-bridge] Tauri core API unavailable');
+  if (!tauriCore || typeof tauriCore.invoke !== "function") {
+    console.error("[tauri-bridge] Tauri core API unavailable");
     return;
   }
   const invoke = (cmd, args) => tauriCore.invoke(cmd, args);
 
   function currentPort() {
-    return parseInt(location.port) || 47821;
+    return parseInt(location.port, 10) || 47821;
   }
 
   // ── Updater (tauri-plugin-updater + tauri-plugin-process) ────────────────
@@ -39,7 +39,7 @@
   let lastUpdateRid = null;
 
   async function checkForUpdate() {
-    const metadata = await invoke('plugin:updater|check', {});
+    const metadata = await invoke("plugin:updater|check", {});
     lastUpdateRid = metadata?.rid ?? null;
     if (!metadata) return null;
     return {
@@ -48,20 +48,20 @@
       version: metadata.version,
       currentVersion: metadata.currentVersion,
       date: metadata.date ?? null,
-      notes: metadata.body ?? '',
+      notes: metadata.body ?? "",
     };
   }
 
   async function downloadAndInstallUpdate(onProgress) {
     if (!Channel) {
-      throw new Error('Tauri Channel API unavailable; cannot stream update progress');
+      throw new Error("Tauri Channel API unavailable; cannot stream update progress");
     }
 
     // Always check first so we have a fresh resource handle (the plugin
     // closes the previous one as soon as install finishes).
-    const metadata = await invoke('plugin:updater|check', {});
+    const metadata = await invoke("plugin:updater|check", {});
     if (!metadata) {
-      return { installed: false, reason: 'no_update' };
+      return { installed: false, reason: "no_update" };
     }
     lastUpdateRid = metadata.rid;
 
@@ -70,21 +70,21 @@
     let downloaded = 0;
     channel.onmessage = (event) => {
       switch (event.event) {
-        case 'Started':
+        case "Started":
           contentLength = event.data?.contentLength ?? 0;
-          onProgress?.({ phase: 'started', contentLength });
+          onProgress?.({ phase: "started", contentLength });
           break;
-        case 'Progress':
+        case "Progress":
           downloaded += event.data?.chunkLength ?? 0;
-          onProgress?.({ phase: 'progress', downloaded, contentLength });
+          onProgress?.({ phase: "progress", downloaded, contentLength });
           break;
-        case 'Finished':
-          onProgress?.({ phase: 'finished', downloaded: contentLength, contentLength });
+        case "Finished":
+          onProgress?.({ phase: "finished", downloaded: contentLength, contentLength });
           break;
       }
     };
 
-    await invoke('plugin:updater|download_and_install', {
+    await invoke("plugin:updater|download_and_install", {
       onEvent: channel,
       rid: metadata.rid,
     });
@@ -94,16 +94,16 @@
 
   async function relaunchApp() {
     try {
-      await invoke('plugin:process|restart');
+      await invoke("plugin:process|restart");
     } catch (err) {
       // Fall back to exit(0) if restart isn't available — the OS-level
       // installer will have already replaced the binary on disk; the user
       // just needs to re-open the app.
-      console.warn('[tauri-bridge] restart failed, falling back to exit:', err);
+      console.warn("[tauri-bridge] restart failed, falling back to exit:", err);
       try {
-        await invoke('plugin:process|exit', { code: 0 });
+        await invoke("plugin:process|exit", { code: 0 });
       } catch (e2) {
-        console.error('[tauri-bridge] exit also failed:', e2);
+        console.error("[tauri-bridge] exit also failed:", e2);
         throw err;
       }
     }
@@ -118,15 +118,14 @@
   window.tauriNative = {
     isTauri: true,
 
-    pickFolder: () =>
-      invoke('cmd_pick_folder'),
+    pickFolder: () => invoke("cmd_pick_folder"),
 
     // `forceNewSession` defaults to `false`: a freshly-spawned pi already boots
     // into a brand-new session, so the extra `new_session` RPC was redundant
     // and caused a second extension reload (see workspace-actions.js for the
     // longer rationale). Callers that genuinely want a new chat pass `true`.
     openWorkspace: (cwd, options = {}) =>
-      invoke('cmd_open_workspace', {
+      invoke("cmd_open_workspace", {
         cwd,
         sessionPath: options.sessionPath ?? null,
         forceNewSession: options.forceNewSession ?? false,
@@ -134,33 +133,27 @@
         waitForSessions: options.waitForSessions ?? false,
       }),
 
-    newSession: (port) =>
-      invoke('cmd_new_session', { port: port ?? currentPort() }),
+    newSession: (port) => invoke("cmd_new_session", { port: port ?? currentPort() }),
 
     switchSession: (sessionPath, port) =>
-      invoke('cmd_switch_session', { port: port ?? currentPort(), sessionPath }),
+      invoke("cmd_switch_session", { port: port ?? currentPort(), sessionPath }),
 
-    stopInstance: (port) =>
-      invoke('cmd_stop_instance', { port: port ?? currentPort() }),
+    stopInstance: (port) => invoke("cmd_stop_instance", { port: port ?? currentPort() }),
 
     spawnSessionProcess: (sessionFile, cwd) =>
-      invoke('cmd_spawn_session_process', {
+      invoke("cmd_spawn_session_process", {
         workspacePort: currentPort(),
         sessionFile,
         cwd,
       }),
 
-    getPiVersion: () =>
-      invoke('cmd_get_pi_version'),
+    getPiVersion: () => invoke("cmd_get_pi_version"),
 
-    getAppVersion: () =>
-      invoke('cmd_get_app_version'),
+    getAppVersion: () => invoke("cmd_get_app_version"),
 
-    isDev: () =>
-      invoke('cmd_is_dev'),
+    isDev: () => invoke("cmd_is_dev"),
 
-    openDevtools: (port) =>
-      invoke('cmd_open_devtools', { port: port ?? currentPort() }),
+    openDevtools: (port) => invoke("cmd_open_devtools", { port: port ?? currentPort() }),
 
     checkForUpdate,
     downloadAndInstallUpdate,
@@ -170,5 +163,5 @@
     currentPort,
   };
 
-  console.log('[tauri-bridge] Native APIs ready on port', currentPort());
+  console.log("[tauri-bridge] Native APIs ready on port", currentPort());
 })();

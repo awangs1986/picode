@@ -4,34 +4,54 @@
 
 const FILE_ICONS = {
   // Folders
-  directory: '📁',
+  directory: "📁",
   // Code
-  js: '📄', ts: '📄', jsx: '📄', tsx: '📄',
-  py: '🐍', rb: '💎', go: '📄', rs: '🦀',
+  js: "📄",
+  ts: "📄",
+  jsx: "📄",
+  tsx: "📄",
+  py: "🐍",
+  rb: "💎",
+  go: "📄",
+  rs: "🦀",
   // Web
-  html: '🌐', css: '🎨', svg: '🎨',
+  html: "🌐",
+  css: "🎨",
+  svg: "🎨",
   // Data
-  json: '📋', yaml: '📋', yml: '📋', toml: '📋',
-  xml: '📋', csv: '📋',
+  json: "📋",
+  yaml: "📋",
+  yml: "📋",
+  toml: "📋",
+  xml: "📋",
+  csv: "📋",
   // Docs
-  md: '📝', txt: '📝', rst: '📝',
+  md: "📝",
+  txt: "📝",
+  rst: "📝",
   // Images
-  png: '🖼️', jpg: '🖼️', jpeg: '🖼️', gif: '🖼️',
-  webp: '🖼️', ico: '🖼️',
+  png: "🖼️",
+  jpg: "🖼️",
+  jpeg: "🖼️",
+  gif: "🖼️",
+  webp: "🖼️",
+  ico: "🖼️",
   // Config
-  env: '🔒', gitignore: '🔒', lock: '🔒',
+  env: "🔒",
+  gitignore: "🔒",
+  lock: "🔒",
   // Default
-  default: '📄',
+  default: "📄",
 };
 
 function getFileIcon(name, isDirectory) {
   if (isDirectory) return FILE_ICONS.directory;
-  const ext = name.split('.').pop()?.toLowerCase() || '';
+  const ext = name.split(".").pop()?.toLowerCase() || "";
   return FILE_ICONS[ext] || FILE_ICONS.default;
 }
 
 function formatSize(bytes) {
-  if (bytes == null) return '';
+  if (bytes == null) return "";
   if (bytes < 1024) return `${bytes}B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)}K`;
   return `${(bytes / (1024 * 1024)).toFixed(1)}M`;
@@ -51,9 +71,7 @@ export class FileBrowser {
     this.container.innerHTML = '<div class="file-loading">Loading…</div>';
 
     try {
-      const url = dirPath
-        ? `/api/files?path=${encodeURIComponent(dirPath)}`
-        : '/api/files';
+      const url = dirPath ? `/api/files?path=${encodeURIComponent(dirPath)}` : "/api/files";
       const res = await fetch(url);
       const data = await res.json();
 
@@ -66,20 +84,20 @@ export class FileBrowser {
       this.pathEl.textContent = data.path;
       this.pathEl.title = data.path;
       this.render(data.items);
-    } catch (err) {
+    } catch (_err) {
       this.container.innerHTML = '<div class="file-loading">Failed to load</div>';
     }
   }
 
   getParentPath() {
     if (!this.currentPath) return null;
-    const parts = this.currentPath.split('/');
+    const parts = this.currentPath.split("/");
     parts.pop();
-    return parts.join('/') || '/';
+    return parts.join("/") || "/";
   }
 
   render(items) {
-    this.container.innerHTML = '';
+    this.container.innerHTML = "";
 
     if (items.length === 0) {
       this.container.innerHTML = '<div class="file-loading">Empty directory</div>';
@@ -87,31 +105,31 @@ export class FileBrowser {
     }
 
     for (const item of items) {
-      const el = document.createElement('div');
-      el.className = `file-item${item.isDirectory ? ' directory' : ''}`;
+      const el = document.createElement("div");
+      el.className = `file-item${item.isDirectory ? " directory" : ""}`;
       el.draggable = true;
       el.dataset.path = item.path;
       el.dataset.name = item.name;
       el.dataset.isDirectory = item.isDirectory;
 
       const icon = getFileIcon(item.name, item.isDirectory);
-      const size = item.isDirectory ? '' : formatSize(item.size);
+      const size = item.isDirectory ? "" : formatSize(item.size);
 
       el.innerHTML = `
         <span class="file-icon">${icon}</span>
         <span class="file-name" title="${item.name}">${item.name}</span>
-        ${size ? `<span class="file-size">${size}</span>` : ''}
+        ${size ? `<span class="file-size">${size}</span>` : ""}
       `;
 
       // Click: open directory or open file natively
-      el.addEventListener('click', () => {
+      el.addEventListener("click", () => {
         if (item.isDirectory) {
           this.load(item.path);
         }
       });
 
       // Double-click: open file natively
-      el.addEventListener('dblclick', (e) => {
+      el.addEventListener("dblclick", (e) => {
         e.preventDefault();
         if (!item.isDirectory) {
           this.openNatively(item.path);
@@ -119,14 +137,14 @@ export class FileBrowser {
       });
 
       // Drag start
-      el.addEventListener('dragstart', (e) => {
-        e.dataTransfer.setData('text/plain', item.path);
-        e.dataTransfer.effectAllowed = 'copy';
-        el.classList.add('dragging');
+      el.addEventListener("dragstart", (e) => {
+        e.dataTransfer.setData("text/plain", item.path);
+        e.dataTransfer.effectAllowed = "copy";
+        el.classList.add("dragging");
       });
 
-      el.addEventListener('dragend', () => {
-        el.classList.remove('dragging');
+      el.addEventListener("dragend", () => {
+        el.classList.remove("dragging");
       });
 
       this.container.appendChild(el);
@@ -135,35 +153,35 @@ export class FileBrowser {
 
   async openNatively(filePath) {
     try {
-      await fetch('/api/open', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+      await fetch("/api/open", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ filePath }),
       });
     } catch (err) {
-      console.error('[FileBrowser] Failed to open:', err);
+      console.error("[FileBrowser] Failed to open:", err);
     }
   }
 
   setupDropTarget() {
     const input = this.messageInput;
 
-    input.addEventListener('dragover', (e) => {
+    input.addEventListener("dragover", (e) => {
       e.preventDefault();
-      e.dataTransfer.dropEffect = 'copy';
-      input.classList.add('file-drop-hover');
+      e.dataTransfer.dropEffect = "copy";
+      input.classList.add("file-drop-hover");
     });
 
-    input.addEventListener('dragleave', () => {
-      input.classList.remove('file-drop-hover');
+    input.addEventListener("dragleave", () => {
+      input.classList.remove("file-drop-hover");
     });
 
-    input.addEventListener('drop', (e) => {
+    input.addEventListener("drop", (e) => {
       e.preventDefault();
-      input.classList.remove('file-drop-hover');
+      input.classList.remove("file-drop-hover");
 
-      const filePath = e.dataTransfer.getData('text/plain');
-      if (filePath && filePath.startsWith('/')) {
+      const filePath = e.dataTransfer.getData("text/plain");
+      if (filePath?.startsWith("/")) {
         // Insert file path at cursor
         const start = input.selectionStart;
         const end = input.selectionEnd;
@@ -175,7 +193,7 @@ export class FileBrowser {
         input.focus();
 
         // Trigger input event for auto-resize
-        input.dispatchEvent(new Event('input'));
+        input.dispatchEvent(new Event("input"));
       }
     });
   }

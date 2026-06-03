@@ -29,13 +29,17 @@
  *   `PI_STUDIO_PI_VERSION` env var.
  */
 
-import type { ExtensionAPI, ExtensionContext, ModelRegistry } from "@earendil-works/pi-coding-agent";
-import { WebSocketServer, WebSocket } from "ws";
-import * as os from "node:os";
-import * as http from "node:http";
-import * as fs from "node:fs";
-import * as path from "node:path";
 import { execFile } from "node:child_process";
+import * as fs from "node:fs";
+import * as http from "node:http";
+import * as os from "node:os";
+import * as path from "node:path";
+import type {
+  ExtensionAPI,
+  ExtensionContext,
+  ModelRegistry,
+} from "@earendil-works/pi-coding-agent";
+import { type WebSocket, WebSocketServer } from "ws";
 
 // `pi` is compiled with `bun build --compile`. Inside that runtime,
 // `http.createServer(...).on("upgrade", ...)` accepts the upgrade event
@@ -48,9 +52,13 @@ import { execFile } from "node:child_process";
 // work in the bundled binary, so when the global is present we go that
 // route. The plain Node path is kept for dev (jiti/tsx loading the .ts
 // source directly under Node) and as a defensive fallback.
+// biome-ignore lint/suspicious/noExplicitAny: Bun global has no stable type declaration in this context
 declare const Bun: any;
-const HAS_BUN_SERVE = typeof (globalThis as any).Bun !== "undefined"
-  && typeof (globalThis as any).Bun?.serve === "function";
+const HAS_BUN_SERVE =
+  typeof (globalThis as Record<string, unknown>).Bun !== "undefined" &&
+  typeof (globalThis as Record<string, unknown>).Bun !== "undefined" &&
+  typeof ((globalThis as Record<string, unknown>).Bun as Record<string, unknown>)?.serve ===
+    "function";
 
 // Pi Studio settings live under `pistudio` key in ~/.pi/agent/settings.json.
 // We only honor the fields that still make sense in desktop-only mode.
@@ -98,13 +106,14 @@ function resolvePiAgentRoot(): string {
 const PI_AGENT_ROOT = resolvePiAgentRoot();
 
 function loadSettings(): { port: number } {
+  // biome-ignore lint/suspicious/noExplicitAny: settings.json schema is open-ended; port is extracted safely below
   let settings: any = {};
   try {
     const settingsPath = path.join(PI_AGENT_ROOT, "settings.json");
     settings = JSON.parse(fs.readFileSync(settingsPath, "utf8")).pistudio || {};
   } catch {}
   return {
-    port: parseInt(process.env.PI_STUDIO_PORT || settings.port || "47821"),
+    port: parseInt(process.env.PI_STUDIO_PORT || settings.port || "47821", 10),
   };
 }
 
@@ -114,31 +123,31 @@ const PORT = SETTINGS.port;
 // do not call `pi --version` here: this extension always runs *inside* the pi
 // binary Pi Studio spawned, so the version is known.
 const EMBEDDED_PI_VERSION = process.env.PI_STUDIO_PI_VERSION || "";
-// @ts-ignore — __dirname is provided by jiti at runtime
+
 const STATIC_DIR = process.env.PI_STUDIO_STATIC_DIR || findPublicDir();
 
 function findPublicDir(): string {
-    const candidates: string[] = [];
-    const seen = new Set<string>();
-    const addCandidate = (dir: string) => {
-      const normalized = path.resolve(dir);
-      if (seen.has(normalized)) return;
-      seen.add(normalized);
-      candidates.push(normalized);
-    };
+  const candidates: string[] = [];
+  const seen = new Set<string>();
+  const addCandidate = (dir: string) => {
+    const normalized = path.resolve(dir);
+    if (seen.has(normalized)) return;
+    seen.add(normalized);
+    candidates.push(normalized);
+  };
 
-    // Common extension-relative paths. Pi Studio's Rust side always sets
-    // PI_STUDIO_STATIC_DIR, so this fallback chain is only exercised in
-    // weird dev scenarios (e.g. loading the extension directly via pi -e).
-    addCandidate(path.resolve(__dirname, "public"));
-    addCandidate(path.resolve(__dirname, "../public"));
-    addCandidate(path.resolve(process.cwd(), "public"));
+  // Common extension-relative paths. Pi Studio's Rust side always sets
+  // PI_STUDIO_STATIC_DIR, so this fallback chain is only exercised in
+  // weird dev scenarios (e.g. loading the extension directly via pi -e).
+  addCandidate(path.resolve(__dirname, "public"));
+  addCandidate(path.resolve(__dirname, "../public"));
+  addCandidate(path.resolve(process.cwd(), "public"));
 
-    for (const candidate of candidates) {
-      if (fs.existsSync(path.join(candidate, "index.html"))) return candidate;
-    }
+  for (const candidate of candidates) {
+    if (fs.existsSync(path.join(candidate, "index.html"))) return candidate;
+  }
 
-    return path.resolve(process.cwd(), "public");
+  return path.resolve(process.cwd(), "public");
 }
 const SESSIONS_DIR = path.join(PI_AGENT_ROOT, "sessions");
 const INSTANCES_DIR = path.join(path.dirname(PI_AGENT_ROOT), "pistudio-instances");
@@ -165,11 +174,12 @@ function updateInstanceSession(sessionFile: string) {
   } catch {}
 }
 
-function unregisterInstance() {
-  try { fs.unlinkSync(path.join(INSTANCES_DIR, `${process.pid}.json`)); } catch {}
-}
-
-function getRunningInstances(): Array<{ port: number; pid: number; sessionFile: string; cwd: string }> {
+function getRunningInstances(): Array<{
+  port: number;
+  pid: number;
+  sessionFile: string;
+  cwd: string;
+}> {
   if (!fs.existsSync(INSTANCES_DIR)) return [];
   const instances: any[] = [];
   for (const file of fs.readdirSync(INSTANCES_DIR)) {
@@ -182,7 +192,9 @@ function getRunningInstances(): Array<{ port: number; pid: number; sessionFile: 
         instances.push(info);
       } catch {
         // Process dead — clean up stale file
-        try { fs.unlinkSync(path.join(INSTANCES_DIR, file)); } catch {}
+        try {
+          fs.unlinkSync(path.join(INSTANCES_DIR, file));
+        } catch {}
       }
     } catch {}
   }
@@ -382,7 +394,9 @@ export default function (pi: ExtensionAPI) {
     } catch {}
     try {
       const entries = ctx.sessionManager.getEntries();
-      const sessionEntry = entries.find((e: any) => e?.type === "session" && typeof e?.id === "string");
+      const sessionEntry = entries.find(
+        (e: any) => e?.type === "session" && typeof e?.id === "string",
+      );
       if (sessionEntry?.id) return sessionEntry.id;
     } catch {}
     return null;
@@ -402,7 +416,9 @@ export default function (pi: ExtensionAPI) {
 
   function sendTo(ws: UnifiedWS, data: any) {
     if (ws.readyState === WS_OPEN) {
-      try { ws.send(JSON.stringify(withRouteMeta(data))); } catch {}
+      try {
+        ws.send(JSON.stringify(withRouteMeta(data)));
+      } catch {}
     }
   }
 
@@ -413,7 +429,9 @@ export default function (pi: ExtensionAPI) {
     const json = JSON.stringify(withRouteMeta(data));
     for (const client of globalState.clients) {
       if (client.readyState === WS_OPEN) {
-        try { client.send(json); } catch {}
+        try {
+          client.send(json);
+        } catch {}
       }
     }
   }
@@ -428,12 +446,20 @@ export default function (pi: ExtensionAPI) {
   // Event forwarding — subscribe to all Pi events
   // ═══════════════════════════════════════
   const eventTypes = [
-    "agent_start", "agent_end",
-    "turn_start", "turn_end",
-    "message_start", "message_update", "message_end",
-    "tool_execution_start", "tool_execution_update", "tool_execution_end",
-    "auto_compaction_start", "auto_compaction_end",
-    "auto_retry_start", "auto_retry_end",
+    "agent_start",
+    "agent_end",
+    "turn_start",
+    "turn_end",
+    "message_start",
+    "message_update",
+    "message_end",
+    "tool_execution_start",
+    "tool_execution_update",
+    "tool_execution_end",
+    "auto_compaction_start",
+    "auto_compaction_end",
+    "auto_retry_start",
+    "auto_retry_end",
     "model_select",
   ] as const;
 
@@ -480,7 +506,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("message_start", async (event, _ctx) => {
     if (titleSet) return;
     const msg = event.message;
-    if (!msg || msg.role !== "user") return;
+    if (msg?.role !== "user") return;
     const content = msg.content;
     let text = "";
     if (typeof content === "string") text = content;
@@ -537,14 +563,17 @@ export default function (pi: ExtensionAPI) {
 
     if (!bestMessage) {
       // Fall back to first message with any content
-      bestMessage = messages.find(m => m.trim().length > 0) || "";
+      bestMessage = messages.find((m) => m.trim().length > 0) || "";
     }
 
     if (!bestMessage) return null;
 
     // Extract a clean title: first sentence or clause, max ~60 chars
     let title = bestMessage
-      .replace(/^(ok |okay |so |actually |hey |please |can you |could you |i want(ed)? to |i wanna |let'?s )/i, "")
+      .replace(
+        /^(ok |okay |so |actually |hey |please |can you |could you |i want(ed)? to |i wanna |let'?s )/i,
+        "",
+      )
       .replace(/\n.*/s, "") // first line only
       .trim();
 
@@ -557,7 +586,7 @@ export default function (pi: ExtensionAPI) {
     // Truncate cleanly
     if (title.length > 60) {
       const spaceIdx = title.lastIndexOf(" ", 57);
-      title = title.substring(0, spaceIdx > 20 ? spaceIdx : 57) + "…";
+      title = `${title.substring(0, spaceIdx > 20 ? spaceIdx : 57)}…`;
     }
 
     // Capitalize first letter
@@ -643,7 +672,9 @@ export default function (pi: ExtensionAPI) {
             // Build content with optional images
             if (command.images?.length) {
               const validMimes = ["image/png", "image/jpeg", "image/gif", "image/webp"];
-              const content: any[] = [{ type: "text", text: command.message || "(see attached image)" }];
+              const content: any[] = [
+                { type: "text", text: command.message || "(see attached image)" },
+              ];
               for (const img of command.images) {
                 if (!img.data || typeof img.data !== "string") {
                   console.error("[embedded-server] Skipping image: missing or invalid data");
@@ -651,8 +682,14 @@ export default function (pi: ExtensionAPI) {
                 }
                 // Strip data URL prefix if accidentally included
                 const data = img.data.includes(",") ? img.data.split(",")[1] : img.data;
-                const mimeType = (validMimes.includes(img.mimeType) ? img.mimeType : "image/png") as "image/png" | "image/jpeg" | "image/gif" | "image/webp";
-                console.log(`[embedded-server] Image: mimeType=${mimeType}, dataLen=${data.length}, rawMimeType=${img.mimeType}`);
+                const mimeType = (validMimes.includes(img.mimeType) ? img.mimeType : "image/png") as
+                  | "image/png"
+                  | "image/jpeg"
+                  | "image/gif"
+                  | "image/webp";
+                console.log(
+                  `[embedded-server] Image: mimeType=${mimeType}, dataLen=${data.length}, rawMimeType=${img.mimeType}`,
+                );
                 const imageBlock = {
                   type: "image" as const,
                   data: data,
@@ -660,7 +697,9 @@ export default function (pi: ExtensionAPI) {
                 };
                 // Defensive: verify mimeType is actually set (debug crash where it was missing)
                 if (!imageBlock.mimeType) {
-                  console.error(`[embedded-server] BUG: mimeType is falsy after assignment! img.mimeType=${img.mimeType}, falling back to image/png`);
+                  console.error(
+                    `[embedded-server] BUG: mimeType is falsy after assignment! img.mimeType=${img.mimeType}, falling back to image/png`,
+                  );
                   imageBlock.mimeType = "image/png";
                 }
                 content.push(imageBlock);
@@ -770,23 +809,28 @@ export default function (pi: ExtensionAPI) {
           // EmbeddedServerGlobal.modelRegistry comment for the full why.
           const registry = ctx?.modelRegistry ?? globalState.modelRegistry;
           if (!registry) {
-            sendTo(ws, error("list_auth_status", "Model registry not ready yet — try again in a moment."));
+            sendTo(
+              ws,
+              error("list_auth_status", "Model registry not ready yet — try again in a moment."),
+            );
             break;
           }
           // Collect unique providers from all known models (built-in + custom).
           const allModels = registry.getAll();
           const providerNames = new Set<string>();
           for (const m of allModels) providerNames.add(m.provider);
-          const providers = Array.from(providerNames).sort().map((p) => {
-            const status = registry.getProviderAuthStatus(p);
-            return {
-              provider: p,
-              displayName: registry.getProviderDisplayName(p),
-              configured: status.configured,
-              source: status.source, // "stored" | "environment" | "runtime" | "fallback" | undefined
-              label: status.label,
-            };
-          });
+          const providers = Array.from(providerNames)
+            .sort()
+            .map((p) => {
+              const status = registry.getProviderAuthStatus(p);
+              return {
+                provider: p,
+                displayName: registry.getProviderDisplayName(p),
+                configured: status.configured,
+                source: status.source, // "stored" | "environment" | "runtime" | "fallback" | undefined
+                label: status.label,
+              };
+            });
           sendTo(ws, success("list_auth_status", { providers }));
           break;
         }
@@ -794,7 +838,10 @@ export default function (pi: ExtensionAPI) {
         case "set_api_key": {
           const registry = ctx?.modelRegistry ?? globalState.modelRegistry;
           if (!registry) {
-            sendTo(ws, error("set_api_key", "Model registry not ready yet — try again in a moment."));
+            sendTo(
+              ws,
+              error("set_api_key", "Model registry not ready yet — try again in a moment."),
+            );
             break;
           }
           const provider = typeof command.provider === "string" ? command.provider.trim() : "";
@@ -821,7 +868,10 @@ export default function (pi: ExtensionAPI) {
         case "remove_api_key": {
           const registry = ctx?.modelRegistry ?? globalState.modelRegistry;
           if (!registry) {
-            sendTo(ws, error("remove_api_key", "Model registry not ready yet — try again in a moment."));
+            sendTo(
+              ws,
+              error("remove_api_key", "Model registry not ready yet — try again in a moment."),
+            );
             break;
           }
           const provider = typeof command.provider === "string" ? command.provider.trim() : "";
@@ -848,10 +898,13 @@ export default function (pi: ExtensionAPI) {
           if (!a) break;
           const models = await ctx.modelRegistry.getAvailable();
           const model = models.find(
-            (m: any) => m.provider === command.provider && m.id === command.modelId
+            (m: any) => m.provider === command.provider && m.id === command.modelId,
           );
           if (!model) {
-            sendTo(ws, error("set_model", `Model not found: ${command.provider}/${command.modelId}`));
+            sendTo(
+              ws,
+              error("set_model", `Model not found: ${command.provider}/${command.modelId}`),
+            );
             break;
           }
           const ok = await a.setModel(model);
@@ -879,14 +932,17 @@ export default function (pi: ExtensionAPI) {
             break;
           }
           const idx = availModels.findIndex(
-            (m: any) => m.provider === currentModel.provider && m.id === currentModel.id
+            (m: any) => m.provider === currentModel.provider && m.id === currentModel.id,
           );
           const nextModel = availModels[(idx + 1) % availModels.length];
           await a.setModel(nextModel);
-          sendTo(ws, success("cycle_model", {
-            model: nextModel,
-            thinkingLevel: a.getThinkingLevel(),
-          }));
+          sendTo(
+            ws,
+            success("cycle_model", {
+              model: nextModel,
+              thinkingLevel: a.getThinkingLevel(),
+            }),
+          );
           break;
         }
 
@@ -919,7 +975,9 @@ export default function (pi: ExtensionAPI) {
           }
           const usage = ctx.getContextUsage();
           const entries = ctx.sessionManager.getEntries();
-          let userMessages = 0, assistantMessages = 0, toolCalls = 0;
+          let userMessages = 0,
+            assistantMessages = 0,
+            toolCalls = 0;
           for (const e of entries) {
             if (e.type === "message") {
               if (e.message?.role === "user") userMessages++;
@@ -927,14 +985,17 @@ export default function (pi: ExtensionAPI) {
               else if (e.message?.role === "toolResult") toolCalls++;
             }
           }
-          sendTo(ws, success("get_session_stats", {
-            sessionFile: ctx.sessionManager.getSessionFile(),
-            userMessages,
-            assistantMessages,
-            toolCalls,
-            totalMessages: entries.length,
-            tokens: usage ? { input: usage.tokens, total: usage.tokens } : null,
-          }));
+          sendTo(
+            ws,
+            success("get_session_stats", {
+              sessionFile: ctx.sessionManager.getSessionFile(),
+              userMessages,
+              assistantMessages,
+              toolCalls,
+              totalMessages: entries.length,
+              tokens: usage ? { input: usage.tokens, total: usage.tokens } : null,
+            }),
+          );
           break;
         }
 
@@ -990,9 +1051,14 @@ export default function (pi: ExtensionAPI) {
               : `"${sessionFile}"`;
             // process.execPath at runtime is the embedded pi binary, which
             // supports --export when invoked as a top-level CLI.
-            const output = execSync(`"${process.execPath}" --export ${args}`, { cwd: process.cwd(), timeout: 30000, encoding: "utf-8" });
+            const output = execSync(`"${process.execPath}" --export ${args}`, {
+              cwd: process.cwd(),
+              timeout: 30000,
+              encoding: "utf-8",
+            });
             // pi prints the output path
-            const result = output.trim().split("\n").pop() || sessionFile.replace(".jsonl", ".html");
+            const result =
+              output.trim().split("\n").pop() || sessionFile.replace(".jsonl", ".html");
             sendTo(ws, success("export_html", { path: result }));
           } catch (e: any) {
             sendTo(ws, error("export_html", e.message));
@@ -1082,7 +1148,11 @@ export default function (pi: ExtensionAPI) {
   // ═══════════════════════════════════════
   // API routes (sessions list, etc.)
   // ═══════════════════════════════════════
-  async function handleApiRoute(req: http.IncomingMessage, res: http.ServerResponse, urlPath: string) {
+  async function handleApiRoute(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    urlPath: string,
+  ) {
     // CORS headers
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
@@ -1110,7 +1180,10 @@ export default function (pi: ExtensionAPI) {
     }
 
     if (urlPath === "/api/instances") {
-      res.writeHead(200, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" });
+      res.writeHead(200, {
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "*",
+      });
       res.end(JSON.stringify({ instances: getRunningInstances() }));
       return;
     }
@@ -1135,7 +1208,11 @@ export default function (pi: ExtensionAPI) {
 
     // File browser: list directory
     if (urlPath === "/api/files" || urlPath.startsWith("/api/files?")) {
-      if (req.method !== "GET") { res.writeHead(405); res.end(); return; }
+      if (req.method !== "GET") {
+        res.writeHead(405);
+        res.end();
+        return;
+      }
       try {
         const filesUrl = new URL(`http://localhost${req.url}`);
         const explicitPath = filesUrl.searchParams.get("path");
@@ -1158,7 +1235,9 @@ export default function (pi: ExtensionAPI) {
     // File browser: open file natively (or hand a URL off to the OS default browser).
     if (urlPath === "/api/open" && req.method === "POST") {
       let body = "";
-      req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
+      req.on("data", (chunk: Buffer) => {
+        body += chunk.toString();
+      });
       req.on("end", () => {
         try {
           const { filePath: fp } = JSON.parse(body);
@@ -1194,7 +1273,9 @@ export default function (pi: ExtensionAPI) {
     // RPC proxy — handle via WebSocket command handler
     if (urlPath === "/api/rpc" && req.method === "POST") {
       let body = "";
-      req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
+      req.on("data", (chunk: Buffer) => {
+        body += chunk.toString();
+      });
       req.on("end", async () => {
         try {
           const command = JSON.parse(body);
@@ -1222,7 +1303,9 @@ export default function (pi: ExtensionAPI) {
 
     if (urlPath === "/api/sessions/delete-batch" && req.method === "POST") {
       let body = "";
-      req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
+      req.on("data", (chunk: Buffer) => {
+        body += chunk.toString();
+      });
       req.on("end", async () => {
         try {
           const { filePaths } = JSON.parse(body);
@@ -1269,14 +1352,22 @@ export default function (pi: ExtensionAPI) {
     // Session switch — in embedded mode, this is a no-op (session is controlled by Pi Studio).
     if (urlPath === "/api/sessions/switch" && req.method === "POST") {
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ success: true, embedded: true, note: "Session switching is controlled by Pi Studio's Rust side" }));
+      res.end(
+        JSON.stringify({
+          success: true,
+          embedded: true,
+          note: "Session switching is controlled by Pi Studio's Rust side",
+        }),
+      );
       return;
     }
 
     if (urlPath === "/api/workspace/open" && req.method === "POST") {
       console.log("[Embedded] Received workspace open request");
       let body = "";
-      req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
+      req.on("data", (chunk: Buffer) => {
+        body += chunk.toString();
+      });
       req.on("end", () => {
         try {
           const { path: workspacePath } = JSON.parse(body);
@@ -1297,16 +1388,20 @@ export default function (pi: ExtensionAPI) {
           // Note: this still uses the user's PATH `pi`, not the embedded one,
           // because Pi Studio's own workspace flow lives in Tauri commands;
           // this endpoint is the legacy "open in external terminal" affordance.
-          // eslint-disable-next-line @typescript-eslint/no-require-imports
-          // @ts-ignore
           const { execSync } = require("node:child_process");
           const escaped = resolved.replace(/'/g, "'\\''");
           try {
-            execSync(`osascript -e 'tell app "Terminal" to do script "cd '"'"'${escaped}'"'"' && pi"'`);
+            execSync(
+              `osascript -e 'tell app "Terminal" to do script "cd '"'"'${escaped}'"'"' && pi"'`,
+            );
           } catch {
             try {
-              execSync(`osascript -e 'tell app "iTerm2" to create window with default profile command "cd '"'"'${escaped}'"'"' && pi"'`);
-            } catch { /* no terminal app available */ }
+              execSync(
+                `osascript -e 'tell app "iTerm2" to create window with default profile command "cd '"'"'${escaped}'"'"' && pi"'`,
+              );
+            } catch {
+              /* no terminal app available */
+            }
           }
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ ok: true, path: resolved }));
@@ -1334,7 +1429,9 @@ export default function (pi: ExtensionAPI) {
 
     if (urlPath === "/api/agent-config" && req.method === "PUT") {
       let body = "";
-      req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
+      req.on("data", (chunk: Buffer) => {
+        body += chunk.toString();
+      });
       req.on("end", () => {
         try {
           const { content } = JSON.parse(body);
@@ -1387,7 +1484,9 @@ export default function (pi: ExtensionAPI) {
 
     if (urlPath === "/api/models-config" && req.method === "PUT") {
       let body = "";
-      req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
+      req.on("data", (chunk: Buffer) => {
+        body += chunk.toString();
+      });
       req.on("end", () => {
         try {
           const { content } = JSON.parse(body);
@@ -1402,7 +1501,10 @@ export default function (pi: ExtensionAPI) {
           // on reload, but reject the obviously wrong shape early so users
           // get a clear error instead of a silently broken models.json.
           if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-            if ("providers" in parsed && (typeof parsed.providers !== "object" || Array.isArray(parsed.providers))) {
+            if (
+              "providers" in parsed &&
+              (typeof parsed.providers !== "object" || Array.isArray(parsed.providers))
+            ) {
               res.writeHead(400, { "Content-Type": "application/json" });
               res.end(JSON.stringify({ success: false, error: "'providers' must be an object" }));
               return;
@@ -1492,13 +1594,15 @@ export default function (pi: ExtensionAPI) {
     let nextIndex = 0;
     const workerCount = Math.max(1, Math.min(limit, items.length));
 
-    await Promise.all(Array.from({ length: workerCount }, async () => {
-      while (true) {
-        const current = nextIndex++;
-        if (current >= items.length) return;
-        results[current] = await mapper(items[current]);
-      }
-    }));
+    await Promise.all(
+      Array.from({ length: workerCount }, async () => {
+        while (true) {
+          const current = nextIndex++;
+          if (current >= items.length) return;
+          results[current] = await mapper(items[current]);
+        }
+      }),
+    );
 
     return results;
   }
@@ -1519,13 +1623,18 @@ export default function (pi: ExtensionAPI) {
       // live-file set used for cache pruning. Parsing then happens in
       // parallel per project — most cost is fs.read on cold cache, and
       // bun + node handle a few hundred concurrent stream reads cheaply.
-      const projectWork: { dirName: string; projectDir: string; files: string[]; decodedPath: string }[] = [];
+      const projectWork: {
+        dirName: string;
+        projectDir: string;
+        files: string[];
+        decodedPath: string;
+      }[] = [];
       for (const dir of dirEntries) {
         if (!dir.isDirectory()) continue;
         const projectDir = path.join(SESSIONS_DIR, dir.name);
         let files: string[] = [];
         try {
-          files = fs.readdirSync(projectDir).filter(f => f.endsWith(".jsonl"));
+          files = fs.readdirSync(projectDir).filter((f) => f.endsWith(".jsonl"));
         } catch {
           // Ignore inaccessible/removed project directories while listing.
           continue;
@@ -1537,46 +1646,44 @@ export default function (pi: ExtensionAPI) {
 
       pruneSessionCaches(liveFiles);
 
-      const projects = (await mapWithConcurrencyLimit(
-        projectWork,
-        8,
-        async ({ dirName, projectDir, files, decodedPath }) => {
-        const sessions: any[] = [];
-        const results = await mapWithConcurrencyLimit(
-          files,
-          24,
-          async (file) => {
-          const filePath = path.join(projectDir, file);
-          try {
-            const result = await parseSessionFileCached(filePath, readline);
-            if (!result?.parsed) return null;
-            return { ...result.parsed, file, filePath, mtime: result.stat.mtimeMs };
-          } catch {
-            return null;
-          }
+      const projects = (
+        await mapWithConcurrencyLimit(
+          projectWork,
+          8,
+          async ({ dirName, projectDir, files, decodedPath }) => {
+            const sessions: any[] = [];
+            const results = await mapWithConcurrencyLimit(files, 24, async (file) => {
+              const filePath = path.join(projectDir, file);
+              try {
+                const result = await parseSessionFileCached(filePath, readline);
+                if (!result?.parsed) return null;
+                return { ...result.parsed, file, filePath, mtime: result.stat.mtimeMs };
+              } catch {
+                return null;
+              }
+            });
+            for (const r of results) {
+              if (r) sessions.push(r);
+            }
+
+            sessions.sort((a, b) => b.mtime - a.mtime);
+
+            if (sessions.length === 0) return null;
+
+            // Directory-name decoding is lossy for paths containing "-" (e.g. "pi-mono").
+            // Prefer the real cwd recorded in session headers when available.
+            const cwdCounts = new Map<string, number>();
+            for (const s of sessions) {
+              if (!s.cwd) continue;
+              cwdCounts.set(s.cwd, (cwdCounts.get(s.cwd) || 0) + 1);
+            }
+            const inferredPath =
+              Array.from(cwdCounts.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] || decodedPath;
+
+            return { path: inferredPath, dirName, sessions };
           },
-        );
-        for (const r of results) {
-          if (r) sessions.push(r);
-        }
-
-        sessions.sort((a, b) => b.mtime - a.mtime);
-
-        if (sessions.length === 0) return null;
-
-        // Directory-name decoding is lossy for paths containing "-" (e.g. "pi-mono").
-        // Prefer the real cwd recorded in session headers when available.
-        const cwdCounts = new Map<string, number>();
-        for (const s of sessions) {
-          if (!s.cwd) continue;
-          cwdCounts.set(s.cwd, (cwdCounts.get(s.cwd) || 0) + 1);
-        }
-        const inferredPath = Array.from(cwdCounts.entries())
-          .sort((a, b) => b[1] - a[1])[0]?.[0] || decodedPath;
-
-          return { path: inferredPath, dirName, sessions };
-        },
-      )).filter((p): p is { path: string; dirName: string; sessions: any[] } => p !== null);
+        )
+      ).filter((p): p is { path: string; dirName: string; sessions: any[] } => p !== null);
 
       projects.sort((a, b) => {
         const aTime = a.sessions[0]?.mtime || 0;
@@ -1605,7 +1712,12 @@ export default function (pi: ExtensionAPI) {
     const granularity = (parsed.searchParams.get("granularity") || "day").toLowerCase();
     const scope = (parsed.searchParams.get("scope") || "current").toLowerCase();
     const modelsParam = parsed.searchParams.get("models") || "";
-    const models = new Set(modelsParam.split(",").map((v) => v.trim()).filter(Boolean));
+    const models = new Set(
+      modelsParam
+        .split(",")
+        .map((v) => v.trim())
+        .filter(Boolean),
+    );
 
     const now = new Date();
     let from = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
@@ -1649,7 +1761,7 @@ export default function (pi: ExtensionAPI) {
     tmp.setUTCDate(tmp.getUTCDate() + 4 - dayNum);
     const weekYear = tmp.getUTCFullYear();
     const yearStart = new Date(Date.UTC(weekYear, 0, 1));
-    const weekNo = Math.ceil((((tmp.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
+    const weekNo = Math.ceil(((tmp.getTime() - yearStart.getTime()) / 86400000 + 1) / 7);
     return `${weekYear}-W${String(weekNo).padStart(2, "0")}`;
   }
 
@@ -1736,7 +1848,8 @@ export default function (pi: ExtensionAPI) {
         if (toolCalls.length > 0 && cost > 0) {
           const perToolCost = cost / toolCalls.length;
           for (const toolCall of toolCalls) {
-            data.toolCostByName[toolCall.name] = (data.toolCostByName[toolCall.name] || 0) + perToolCost;
+            data.toolCostByName[toolCall.name] =
+              (data.toolCostByName[toolCall.name] || 0) + perToolCost;
           }
         }
       } catch {
@@ -1760,14 +1873,16 @@ export default function (pi: ExtensionAPI) {
     try {
       if (!fs.existsSync(SESSIONS_DIR)) {
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({
-          range: {},
-          summary: { totalCost: 0, totalTokens: 0, sessionCount: 0, userMessageCount: 0 },
-          series: [],
-          breakdown: { byModel: [], byTool: [] },
-          sessions: [],
-          topSessions: [],
-        }));
+        res.end(
+          JSON.stringify({
+            range: {},
+            summary: { totalCost: 0, totalTokens: 0, sessionCount: 0, userMessageCount: 0 },
+            series: [],
+            breakdown: { byModel: [], byTool: [] },
+            sessions: [],
+            topSessions: [],
+          }),
+        );
         return;
       }
 
@@ -1823,7 +1938,12 @@ export default function (pi: ExtensionAPI) {
               return parsed.cwd ? path.resolve(parsed.cwd) : "";
             }
           })();
-          if (params.scope === "current" && sessionCwdResolved && sessionCwdResolved !== currentWorkspace) continue;
+          if (
+            params.scope === "current" &&
+            sessionCwdResolved &&
+            sessionCwdResolved !== currentWorkspace
+          )
+            continue;
           if (params.models.size > 0 && !params.models.has(parsed.model)) continue;
 
           const time = parsed.lastActive || parsed.timestamp;
@@ -1841,7 +1961,8 @@ export default function (pi: ExtensionAPI) {
             totalTokens: parsed.inputTokens + parsed.outputTokens + parsed.cacheRead,
             toolCalls: parsed.toolCalls,
             userMessages: parsed.userMessages,
-            costPerUserMessage: parsed.userMessages > 0 ? parsed.totalCost / parsed.userMessages : parsed.totalCost,
+            costPerUserMessage:
+              parsed.userMessages > 0 ? parsed.totalCost / parsed.userMessages : parsed.totalCost,
             toolCostByName: parsed.toolCostByName || {},
           });
         }
@@ -1876,8 +1997,10 @@ export default function (pi: ExtensionAPI) {
         byBucket.set(bucket, current);
       }
 
-      summary.avgCostPerSession = summary.sessionCount > 0 ? summary.totalCost / summary.sessionCount : 0;
-      summary.avgCostPerUserMessage = summary.userMessageCount > 0 ? summary.totalCost / summary.userMessageCount : 0;
+      summary.avgCostPerSession =
+        summary.sessionCount > 0 ? summary.totalCost / summary.sessionCount : 0;
+      summary.avgCostPerUserMessage =
+        summary.userMessageCount > 0 ? summary.totalCost / summary.userMessageCount : 0;
 
       const series = Array.from(byBucket.entries())
         .map(([bucket, value]) => ({ bucket, cost: value.cost, tokens: value.tokens }))
@@ -1886,27 +2009,29 @@ export default function (pi: ExtensionAPI) {
       const topSessions = [...sessions].sort((a, b) => b.totalCost - a.totalCost).slice(0, 20);
 
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({
-        range: {
-          from: params.from.toISOString(),
-          to: params.to.toISOString(),
-          granularity: params.granularity,
-          scope: params.scope,
-          range: params.range,
-        },
-        summary,
-        series,
-        breakdown: {
-          byModel: Array.from(byModel.entries())
-            .map(([name, cost]) => ({ name, cost }))
-            .sort((a, b) => b.cost - a.cost),
-          byTool: Array.from(byTool.entries())
-            .map(([name, cost]) => ({ name, cost }))
-            .sort((a, b) => b.cost - a.cost),
-        },
-        topSessions,
-        sessions,
-      }));
+      res.end(
+        JSON.stringify({
+          range: {
+            from: params.from.toISOString(),
+            to: params.to.toISOString(),
+            granularity: params.granularity,
+            scope: params.scope,
+            range: params.range,
+          },
+          summary,
+          series,
+          breakdown: {
+            byModel: Array.from(byModel.entries())
+              .map(([name, cost]) => ({ name, cost }))
+              .sort((a, b) => b.cost - a.cost),
+            byTool: Array.from(byTool.entries())
+              .map(([name, cost]) => ({ name, cost }))
+              .sort((a, b) => b.cost - a.cost),
+          },
+          topSessions,
+          sessions,
+        }),
+      );
     } catch (e: any) {
       res.writeHead(500, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: e?.message || "Failed to build cost dashboard" }));
@@ -1935,14 +2060,22 @@ export default function (pi: ExtensionAPI) {
       buffer = lines.pop() || "";
       for (const line of lines) {
         if (line.trim()) {
-          try { entries.push(JSON.parse(line)); } catch { /* skip */ }
+          try {
+            entries.push(JSON.parse(line));
+          } catch {
+            /* skip */
+          }
         }
       }
     });
 
     stream.on("end", () => {
       if (buffer.trim()) {
-        try { entries.push(JSON.parse(buffer)); } catch { /* skip */ }
+        try {
+          entries.push(JSON.parse(buffer));
+        } catch {
+          /* skip */
+        }
       }
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ entries }));
@@ -1986,7 +2119,9 @@ export default function (pi: ExtensionAPI) {
             }
           }
         }
-      } catch { /* skip */ }
+      } catch {
+        /* skip */
+      }
 
       if (lineCount > 50 && firstMessage) break;
     }
@@ -2015,10 +2150,25 @@ export default function (pi: ExtensionAPI) {
   // ═══════════════════════════════════════
 
   const IGNORED_NAMES = new Set([
-    "node_modules", ".git", "__pycache__", ".DS_Store", ".Trash",
-    ".next", ".nuxt", "dist", "build", ".cache", ".turbo",
-    "venv", ".venv", "env", ".env.local",
-    ".pi", "coverage", ".nyc_output", ".parcel-cache",
+    "node_modules",
+    ".git",
+    "__pycache__",
+    ".DS_Store",
+    ".Trash",
+    ".next",
+    ".nuxt",
+    "dist",
+    "build",
+    ".cache",
+    ".turbo",
+    "venv",
+    ".venv",
+    "env",
+    ".env.local",
+    ".pi",
+    "coverage",
+    ".nyc_output",
+    ".parcel-cache",
   ]);
 
   function serveFileList(res: http.ServerResponse, dirPath: string) {
@@ -2047,7 +2197,9 @@ export default function (pi: ExtensionAPI) {
             size: entry.isDirectory() ? null : stat.size,
             mtime: stat.mtimeMs,
           });
-        } catch { /* skip inaccessible */ }
+        } catch {
+          /* skip inaccessible */
+        }
       }
 
       // Directories first, then files, both alphabetical
@@ -2095,7 +2247,7 @@ export default function (pi: ExtensionAPI) {
 
         const projectDir = path.join(SESSIONS_DIR, dir.name);
         const decodedPath = dir.name.replace(/^--/, "/").replace(/--$/, "").replace(/-/g, "/");
-        const files = fs.readdirSync(projectDir).filter(f => f.endsWith(".jsonl"));
+        const files = fs.readdirSync(projectDir).filter((f) => f.endsWith(".jsonl"));
 
         for (const file of files) {
           if (results.length >= MAX_RESULTS) break;
@@ -2128,19 +2280,25 @@ export default function (pi: ExtensionAPI) {
                   let text = "";
                   if (typeof content === "string") text = content;
                   else if (Array.isArray(content)) {
-                    text = content.filter((b: any) => b.type === "text").map((b: any) => b.text).join(" ");
+                    text = content
+                      .filter((b: any) => b.type === "text")
+                      .map((b: any) => b.text)
+                      .join(" ");
                   }
 
                   if (!firstMessage && entry.message?.role === "user" && text) {
                     firstMessage = text.substring(0, 120);
                   }
 
-                  if (text && text.toLowerCase().includes(q)) {
+                  if (text?.toLowerCase().includes(q)) {
                     // Extract a snippet around the match
                     const idx = text.toLowerCase().indexOf(q);
                     const start = Math.max(0, idx - 60);
                     const end = Math.min(text.length, idx + q.length + 60);
-                    const snippet = (start > 0 ? "…" : "") + text.substring(start, end) + (end < text.length ? "…" : "");
+                    const snippet =
+                      (start > 0 ? "…" : "") +
+                      text.substring(start, end) +
+                      (end < text.length ? "…" : "");
 
                     matches.push({
                       role: entry.message?.role || "unknown",
@@ -2150,7 +2308,9 @@ export default function (pi: ExtensionAPI) {
                     if (matches.length >= 3) break; // max 3 matches per session
                   }
                 }
-              } catch { /* skip line */ }
+              } catch {
+                /* skip line */
+              }
             }
 
             rl.close();
@@ -2167,7 +2327,9 @@ export default function (pi: ExtensionAPI) {
                 matches,
               });
             }
-          } catch { /* skip file */ }
+          } catch {
+            /* skip file */
+          }
         }
       }
 
@@ -2223,30 +2385,40 @@ export default function (pi: ExtensionAPI) {
       const currentCtx = globalState.getLatestCtx?.() ?? null;
       const snapshotBuilder = globalState.buildStateSnapshot;
       if (currentCtx && snapshotBuilder) {
-        snapshotBuilder(currentCtx).then((snapshot) => {
-          sendTo(ws, snapshot);
-        }).catch((err) => {
-          console.error("[Embedded] Failed to build initial snapshot:", err);
-        });
+        snapshotBuilder(currentCtx)
+          .then((snapshot) => {
+            sendTo(ws, snapshot);
+          })
+          .catch((err) => {
+            console.error("[Embedded] Failed to build initial snapshot:", err);
+          });
       }
     }
 
     function onClientMessage(ws: UnifiedWS, raw: string | ArrayBuffer | Buffer) {
       try {
-        const text = typeof raw === "string"
-          ? raw
-          : raw instanceof ArrayBuffer
-            ? Buffer.from(raw).toString("utf8")
-            : raw.toString();
+        const text =
+          typeof raw === "string"
+            ? raw
+            : raw instanceof ArrayBuffer
+              ? Buffer.from(raw).toString("utf8")
+              : raw.toString();
         const incoming = JSON.parse(text);
-        const command = incoming?.type === "broker_command"
-          ? { ...(incoming.payload || {}), id: (incoming.payload?.id ?? incoming.requestId) }
-          : incoming;
+        const command =
+          incoming?.type === "broker_command"
+            ? { ...(incoming.payload || {}), id: incoming.payload?.id ?? incoming.requestId }
+            : incoming;
         const dispatch = globalState.handleCommand;
         if (dispatch) {
           dispatch(ws, command);
         } else {
-          sendTo(ws, { type: "response", command: command?.type || "unknown", success: false, error: "No active session", id: command?.id });
+          sendTo(ws, {
+            type: "response",
+            command: command?.type || "unknown",
+            success: false,
+            error: "No active session",
+            id: command?.id,
+          });
         }
       } catch (e) {
         console.error("[Embedded] Failed to parse client message:", e);
@@ -2271,12 +2443,16 @@ export default function (pi: ExtensionAPI) {
           continue;
         }
         if (!client.isAlive) {
-          try { client.terminate(); } catch {}
+          try {
+            client.terminate();
+          } catch {}
           globalState.clients.delete(client);
           continue;
         }
         client.isAlive = false;
-        try { client.ping(); } catch {}
+        try {
+          client.ping();
+        } catch {}
       }
     }, 20000);
 
@@ -2307,7 +2483,9 @@ export default function (pi: ExtensionAPI) {
               close(ws: any) {
                 onClientClosed(ws as UnifiedWS);
               },
-              drain() { /* no-op; backpressure is fine for our small JSON messages */ },
+              drain() {
+                /* no-op; backpressure is fine for our small JSON messages */
+              },
               // Bun marks the client as alive on any pong it receives; we
               // expose a hook to flip the heartbeat sentinel.
               pong(ws: any) {
@@ -2318,7 +2496,11 @@ export default function (pi: ExtensionAPI) {
           onListening(port);
           globalState.server = {
             port,
-            close: () => { try { bunServer.stop?.(true); } catch {} },
+            close: () => {
+              try {
+                bunServer.stop?.(true);
+              } catch {}
+            },
             nodeServer: null,
             bunServer,
           };
@@ -2327,7 +2509,10 @@ export default function (pi: ExtensionAPI) {
           // Bun surfaces EADDRINUSE as both `err.code === "EADDRINUSE"`
           // and as a message containing the literal string, depending on
           // version. Check both.
-          if ((err?.code === "EADDRINUSE" || msg.includes("EADDRINUSE")) && port < PORT + maxAttempts) {
+          if (
+            (err?.code === "EADDRINUSE" || msg.includes("EADDRINUSE")) &&
+            port < PORT + maxAttempts
+          ) {
             console.log(`[Embedded] Port ${port} in use, trying ${port + 1}...`);
             tryBunListen(port + 1, maxAttempts);
           } else {
@@ -2441,7 +2626,11 @@ export default function (pi: ExtensionAPI) {
         onListening(port);
         globalState.server = {
           port,
-          close: () => { try { server.close(); } catch {} },
+          close: () => {
+            try {
+              server.close();
+            } catch {}
+          },
           nodeServer: server,
           bunServer: null,
         };
@@ -2497,7 +2686,9 @@ export default function (pi: ExtensionAPI) {
 
     return await new Promise<Response>((resolve) => {
       const headers: Record<string, string> = {};
-      req.headers.forEach((v, k) => { headers[k.toLowerCase()] = v; });
+      req.headers.forEach((v, k) => {
+        headers[k.toLowerCase()] = v;
+      });
 
       // Build a minimal IncomingMessage-shaped object. Only the fields
       // our handlers actually touch are emulated; everything else is a
@@ -2520,8 +2711,8 @@ export default function (pi: ExtensionAPI) {
 
       let resolved = false;
       let statusCode = 200;
-      let resHeaders: Record<string, string> = {};
-      let bodyChunks: Array<Buffer> = [];
+      const resHeaders: Record<string, string> = {};
+      const bodyChunks: Array<Buffer> = [];
       const resLike: any = {
         setHeader(name: string, value: string) {
           resHeaders[name] = value;

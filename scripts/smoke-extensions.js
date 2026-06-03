@@ -81,9 +81,7 @@ async function waitForHealth(port, maxAttempts = 20) {
 
 async function main() {
   if (!fs.existsSync(BUNDLE)) {
-    fail(
-      `bundle not found at ${BUNDLE}. Run \`bun run build:extensions\` first.`
-    );
+    fail(`bundle not found at ${BUNDLE}. Run \`bun run build:extensions\` first.`);
   }
   info(`bundle: ${BUNDLE} (${(fs.statSync(BUNDLE).size / 1024).toFixed(1)} KB)`);
 
@@ -100,17 +98,13 @@ async function main() {
   const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "pi-smoke-"));
   info(`spawning pi from sandbox cwd: ${sandbox}`);
 
-  const child = spawn(
-    "pi",
-    ["--extension", BUNDLE, "--mode", "rpc"],
-    {
-      cwd: sandbox,
-      env: { ...process.env, PI_STUDIO_PORT: String(PORT) },
-      // pi --mode rpc treats stdin closing as a shutdown signal, so we keep
-      // stdin piped (and never write to it) for the lifetime of the test.
-      stdio: ["pipe", "pipe", "pipe"],
-    }
-  );
+  const child = spawn("pi", ["--extension", BUNDLE, "--mode", "rpc"], {
+    cwd: sandbox,
+    env: { ...process.env, PI_STUDIO_PORT: String(PORT) },
+    // pi --mode rpc treats stdin closing as a shutdown signal, so we keep
+    // stdin piped (and never write to it) for the lifetime of the test.
+    stdio: ["pipe", "pipe", "pipe"],
+  });
 
   let stderrBuf = "";
   child.stderr.on("data", (d) => {
@@ -145,10 +139,7 @@ async function main() {
     fail(err.message);
   } finally {
     child.kill("SIGTERM");
-    await Promise.race([
-      exitPromise,
-      new Promise((r) => setTimeout(r, 3000)),
-    ]);
+    await Promise.race([exitPromise, new Promise((r) => setTimeout(r, 3000))]);
     try {
       fs.rmSync(sandbox, { recursive: true, force: true });
     } catch (_) {}

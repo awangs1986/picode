@@ -11,30 +11,34 @@ export class ToolCardRenderer {
   createToolCard(toolExecution) {
     const { toolCallId, toolName, args, status } = toolExecution;
 
-    const card = document.createElement('div');
-    card.className = 'tool-card';
+    const card = document.createElement("div");
+    card.className = "tool-card";
     card.dataset.toolCallId = toolCallId;
 
     const argsPreview = this.getArgsPreview(toolName, args);
     const argsJson = this.formatJson(args);
-    const isExpanded = (status === 'streaming' || status === 'pending');
+    const isExpanded = status === "streaming" || status === "pending";
 
-    const isEdit = (toolName === 'edit' || toolName === 'Edit') && args && (args.oldText || args.old_text) && (args.newText || args.new_text);
+    const isEdit =
+      (toolName === "edit" || toolName === "Edit") &&
+      args &&
+      (args.oldText || args.old_text) &&
+      (args.newText || args.new_text);
 
     card.innerHTML = `
       <div class="tool-card-header" onclick="this.parentElement.querySelector('.tool-card-body').classList.toggle('expanded'); this.querySelector('.tool-card-chevron').classList.toggle('expanded')">
         <div class="tool-header-left">
-          <span class="tool-card-chevron${isExpanded ? ' expanded' : ''}"><svg width="8" height="8" viewBox="0 0 8 8" fill="currentColor"><path d="M2 1l4 3-4 3z"/></svg></span>
+          <span class="tool-card-chevron${isExpanded ? " expanded" : ""}"><svg width="8" height="8" viewBox="0 0 8 8" fill="currentColor"><path d="M2 1l4 3-4 3z"/></svg></span>
           <span class="tool-name">${this.escapeHtml(toolName)}</span>
-          ${argsPreview ? `<span class="tool-args-preview">${this.escapeHtml(argsPreview)}</span>` : ''}
+          ${argsPreview ? `<span class="tool-args-preview">${this.escapeHtml(argsPreview)}</span>` : ""}
         </div>
         <div class="tool-header-right">
           <button class="tool-action-btn copy-output-btn" title="Copy output" onclick="event.stopPropagation(); var t=this.closest('.tool-card').querySelector('.tool-output'); if(!t||!t.textContent.trim())return; var s=t.textContent,b=this; (navigator.clipboard?navigator.clipboard.writeText(s):new Promise(function(r){var a=document.createElement('textarea');a.value=s;a.style.cssText='position:fixed;left:-9999px';document.body.appendChild(a);a.select();document.execCommand('copy');document.body.removeChild(a);r()})).then(function(){b.classList.add('copied');setTimeout(function(){b.classList.remove('copied')},1500)})"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg></button>
           <div class="tool-status ${status}">${status}</div>
         </div>
       </div>
-      <div class="tool-card-body${isExpanded ? ' expanded' : ''}">
-        ${!isEdit && argsJson ? `<div class="tool-args">${this.escapeHtml(argsJson)}</div>` : ''}
+      <div class="tool-card-body${isExpanded ? " expanded" : ""}">
+        ${!isEdit && argsJson ? `<div class="tool-args">${this.escapeHtml(argsJson)}</div>` : ""}
         <div class="tool-output-wrapper">
           <div class="tool-output"></div>
         </div>
@@ -44,7 +48,7 @@ export class ToolCardRenderer {
     // Insert diff view for Edit tools
     if (isEdit) {
       const diffEl = this.renderDiff(args.oldText || args.old_text, args.newText || args.new_text);
-      const body = card.querySelector('.tool-card-body');
+      const body = card.querySelector(".tool-card-body");
       body.insertBefore(diffEl, body.firstChild);
     }
 
@@ -63,22 +67,22 @@ export class ToolCardRenderer {
     }
 
     // Update status
-    const statusElement = card.querySelector('.tool-status');
+    const statusElement = card.querySelector(".tool-status");
     if (statusElement) {
       statusElement.className = `tool-status ${toolExecution.status}`;
       statusElement.textContent = toolExecution.status;
     }
 
     // Auto-expand when streaming
-    if (toolExecution.status === 'streaming') {
-      const body = card.querySelector('.tool-card-body');
-      const chevron = card.querySelector('.tool-card-chevron');
-      if (body) body.classList.add('expanded');
-      if (chevron) chevron.classList.add('expanded');
+    if (toolExecution.status === "streaming") {
+      const body = card.querySelector(".tool-card-body");
+      const chevron = card.querySelector(".tool-card-chevron");
+      if (body) body.classList.add("expanded");
+      if (chevron) chevron.classList.add("expanded");
     }
 
     // Update output
-    const outputElement = card.querySelector('.tool-output');
+    const outputElement = card.querySelector(".tool-output");
     if (outputElement && toolExecution.output) {
       outputElement.textContent = toolExecution.output;
       this.scrollToBottom();
@@ -90,15 +94,15 @@ export class ToolCardRenderer {
     if (!card) return;
 
     // Update status
-    const statusElement = card.querySelector('.tool-status');
+    const statusElement = card.querySelector(".tool-status");
     if (statusElement) {
-      const status = isError ? 'error' : 'complete';
+      const status = isError ? "error" : "complete";
       statusElement.className = `tool-status ${status}`;
       statusElement.textContent = status;
     }
 
     // Update output with final result
-    const outputElement = card.querySelector('.tool-output');
+    const outputElement = card.querySelector(".tool-output");
     if (outputElement && result) {
       const output = this.formatResult(result);
       outputElement.textContent = output;
@@ -106,10 +110,10 @@ export class ToolCardRenderer {
 
     // Collapse completed cards (less noise)
     if (!isError) {
-      const body = card.querySelector('.tool-card-body');
-      const chevron = card.querySelector('.tool-card-chevron');
-      if (body) body.classList.remove('expanded');
-      if (chevron) chevron.classList.remove('expanded');
+      const body = card.querySelector(".tool-card-body");
+      const chevron = card.querySelector(".tool-card-chevron");
+      if (body) body.classList.remove("expanded");
+      if (chevron) chevron.classList.remove("expanded");
     }
   }
 
@@ -119,31 +123,32 @@ export class ToolCardRenderer {
   createHistoryCard(toolExecution) {
     const { toolCallId, toolName, args } = toolExecution;
 
-    const card = document.createElement('div');
-    card.className = 'tool-card';
+    const card = document.createElement("div");
+    card.className = "tool-card";
     card.dataset.toolCallId = toolCallId;
 
     // Header
-    const header = document.createElement('div');
-    header.className = 'tool-card-header';
+    const header = document.createElement("div");
+    header.className = "tool-card-header";
 
-    const headerLeft = document.createElement('div');
-    headerLeft.className = 'tool-header-left';
+    const headerLeft = document.createElement("div");
+    headerLeft.className = "tool-header-left";
 
-    const chevron = document.createElement('span');
-    chevron.className = 'tool-card-chevron';
-    chevron.innerHTML = '<svg width="8" height="8" viewBox="0 0 8 8" fill="currentColor"><path d="M2 1l4 3-4 3z"/></svg>';
+    const chevron = document.createElement("span");
+    chevron.className = "tool-card-chevron";
+    chevron.innerHTML =
+      '<svg width="8" height="8" viewBox="0 0 8 8" fill="currentColor"><path d="M2 1l4 3-4 3z"/></svg>';
     headerLeft.appendChild(chevron);
 
-    const name = document.createElement('span');
-    name.className = 'tool-name';
+    const name = document.createElement("span");
+    name.className = "tool-name";
     name.textContent = toolName;
     headerLeft.appendChild(name);
 
     const preview = this.getArgsPreview(toolName, args);
     if (preview) {
-      const previewEl = document.createElement('span');
-      previewEl.className = 'tool-args-preview';
+      const previewEl = document.createElement("span");
+      previewEl.className = "tool-args-preview";
       previewEl.textContent = preview;
       headerLeft.appendChild(previewEl);
     }
@@ -151,63 +156,79 @@ export class ToolCardRenderer {
     header.appendChild(headerLeft);
 
     // Right side: copy button + status
-    const headerRight = document.createElement('div');
-    headerRight.className = 'tool-header-right';
+    const headerRight = document.createElement("div");
+    headerRight.className = "tool-header-right";
 
-    const copyBtn = document.createElement('button');
-    copyBtn.className = 'tool-action-btn copy-output-btn';
-    copyBtn.title = 'Copy output';
-    copyBtn.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>';
-    copyBtn.addEventListener('click', (e) => {
+    const copyBtn = document.createElement("button");
+    copyBtn.className = "tool-action-btn copy-output-btn";
+    copyBtn.title = "Copy output";
+    copyBtn.innerHTML =
+      '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>';
+    copyBtn.addEventListener("click", (e) => {
       e.stopPropagation();
-      const output = card.querySelector('.tool-output');
-      if (!output || !output.textContent.trim()) return;
+      const output = card.querySelector(".tool-output");
+      if (!output?.textContent.trim()) return;
       const text = output.textContent;
-      (navigator.clipboard ? navigator.clipboard.writeText(text) : new Promise((r) => {
-        const ta = document.createElement('textarea'); ta.value = text; ta.style.cssText = 'position:fixed;left:-9999px';
-        document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta); r();
-      })).then(() => {
-        copyBtn.classList.add('copied');
-        setTimeout(() => copyBtn.classList.remove('copied'), 1500);
+      (navigator.clipboard
+        ? navigator.clipboard.writeText(text)
+        : new Promise((r) => {
+            const ta = document.createElement("textarea");
+            ta.value = text;
+            ta.style.cssText = "position:fixed;left:-9999px";
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand("copy");
+            document.body.removeChild(ta);
+            r();
+          })
+      ).then(() => {
+        copyBtn.classList.add("copied");
+        setTimeout(() => copyBtn.classList.remove("copied"), 1500);
       });
     });
     headerRight.appendChild(copyBtn);
 
-    const status = document.createElement('div');
-    status.className = 'tool-status complete';
-    status.textContent = 'complete';
+    const status = document.createElement("div");
+    status.className = "tool-status complete";
+    status.textContent = "complete";
     headerRight.appendChild(status);
 
     header.appendChild(headerRight);
 
     // Toggle expand on click
-    header.addEventListener('click', () => {
-      body.classList.toggle('expanded');
-      chevron.classList.toggle('expanded');
+    header.addEventListener("click", () => {
+      body.classList.toggle("expanded");
+      chevron.classList.toggle("expanded");
     });
 
     card.appendChild(header);
 
     // Body (collapsed by default)
-    const body = document.createElement('div');
-    body.className = 'tool-card-body';
+    const body = document.createElement("div");
+    body.className = "tool-card-body";
 
-    const isEdit = (toolName === 'edit' || toolName === 'Edit') && args && (args.oldText || args.old_text) && (args.newText || args.new_text);
+    const isEdit =
+      (toolName === "edit" || toolName === "Edit") &&
+      args &&
+      (args.oldText || args.old_text) &&
+      (args.newText || args.new_text);
 
     if (isEdit) {
-      body.appendChild(this.renderDiff(args.oldText || args.old_text, args.newText || args.new_text));
+      body.appendChild(
+        this.renderDiff(args.oldText || args.old_text, args.newText || args.new_text),
+      );
     } else {
       const argsJson = this.formatJson(args);
       if (argsJson) {
-        const argsEl = document.createElement('div');
-        argsEl.className = 'tool-args';
+        const argsEl = document.createElement("div");
+        argsEl.className = "tool-args";
         argsEl.textContent = argsJson;
         body.appendChild(argsEl);
       }
     }
 
-    const outputEl = document.createElement('div');
-    outputEl.className = 'tool-output';
+    const outputEl = document.createElement("div");
+    outputEl.className = "tool-output";
     body.appendChild(outputEl);
 
     card.appendChild(body);
@@ -226,22 +247,22 @@ export class ToolCardRenderer {
     if (!card) return;
 
     if (isError) {
-      const statusEl = card.querySelector('.tool-status');
+      const statusEl = card.querySelector(".tool-status");
       if (statusEl) {
-        statusEl.className = 'tool-status error';
-        statusEl.textContent = 'error';
+        statusEl.className = "tool-status error";
+        statusEl.textContent = "error";
       }
     }
 
-    const outputElement = card.querySelector('.tool-output');
+    const outputElement = card.querySelector(".tool-output");
     if (outputElement && result) {
       outputElement.textContent = this.formatResult(result);
     }
   }
 
   /** Compact preview for the header line */
-  getArgsPreview(toolName, args) {
-    if (!args || Object.keys(args).length === 0) return '';
+  getArgsPreview(_toolName, args) {
+    if (!args || Object.keys(args).length === 0) return "";
 
     // Show the most relevant arg inline
     if (args.path) return args.path;
@@ -251,16 +272,16 @@ export class ToolCardRenderer {
 
     // Fallback: first string value
     for (const val of Object.values(args)) {
-      if (typeof val === 'string' && val.length > 0) {
+      if (typeof val === "string" && val.length > 0) {
         return val.substring(0, 60);
       }
     }
-    return '';
+    return "";
   }
 
   formatJson(obj) {
     try {
-      if (Object.keys(obj).length === 0) return '';
+      if (Object.keys(obj).length === 0) return "";
       return JSON.stringify(obj, null, 2);
     } catch {
       return String(obj);
@@ -269,25 +290,25 @@ export class ToolCardRenderer {
 
   /** Render a simple inline diff for Edit tool */
   renderDiff(oldText, newText) {
-    const container = document.createElement('div');
-    container.className = 'tool-diff';
+    const container = document.createElement("div");
+    container.className = "tool-diff";
 
-    const oldLines = oldText.split('\n');
-    const newLines = newText.split('\n');
+    const oldLines = oldText.split("\n");
+    const newLines = newText.split("\n");
 
     // Removed lines
     for (const line of oldLines) {
-      const el = document.createElement('div');
-      el.className = 'diff-line diff-removed';
-      el.textContent = '- ' + line;
+      const el = document.createElement("div");
+      el.className = "diff-line diff-removed";
+      el.textContent = `- ${line}`;
       container.appendChild(el);
     }
 
     // Added lines
     for (const line of newLines) {
-      const el = document.createElement('div');
-      el.className = 'diff-line diff-added';
-      el.textContent = '+ ' + line;
+      const el = document.createElement("div");
+      el.className = "diff-line diff-added";
+      el.textContent = `+ ${line}`;
       container.appendChild(el);
     }
 
@@ -295,22 +316,22 @@ export class ToolCardRenderer {
   }
 
   formatResult(result) {
-    if (!result) return '';
+    if (!result) return "";
 
     if (result.content && Array.isArray(result.content)) {
       return result.content
-        .map(block => {
-          if (block.type === 'text') return block.text;
+        .map((block) => {
+          if (block.type === "text") return block.text;
           return JSON.stringify(block);
         })
-        .join('\n');
+        .join("\n");
     }
 
     return JSON.stringify(result, null, 2);
   }
 
   escapeHtml(text) {
-    const div = document.createElement('div');
+    const div = document.createElement("div");
     div.textContent = text;
     return div.innerHTML;
   }
@@ -319,7 +340,8 @@ export class ToolCardRenderer {
     if (this.container) {
       const threshold = 100;
       const isNear =
-        this.container.scrollHeight - this.container.scrollTop - this.container.clientHeight < threshold;
+        this.container.scrollHeight - this.container.scrollTop - this.container.clientHeight <
+        threshold;
       if (isNear) {
         requestAnimationFrame(() => {
           this.container.scrollTop = this.container.scrollHeight;
@@ -329,21 +351,23 @@ export class ToolCardRenderer {
   }
 
   expandAll() {
-    this.toolCards.forEach(card => {
-      card.querySelector('.tool-card-body')?.classList.add('expanded');
-      card.querySelector('.tool-card-chevron')?.classList.add('expanded');
+    this.toolCards.forEach((card) => {
+      card.querySelector(".tool-card-body")?.classList.add("expanded");
+      card.querySelector(".tool-card-chevron")?.classList.add("expanded");
     });
   }
 
   collapseAll() {
-    this.toolCards.forEach(card => {
-      card.querySelector('.tool-card-body')?.classList.remove('expanded');
-      card.querySelector('.tool-card-chevron')?.classList.remove('expanded');
+    this.toolCards.forEach((card) => {
+      card.querySelector(".tool-card-body")?.classList.remove("expanded");
+      card.querySelector(".tool-card-chevron")?.classList.remove("expanded");
     });
   }
 
   clear() {
-    this.toolCards.forEach((card) => card.remove());
+    this.toolCards.forEach((card) => {
+      card.remove();
+    });
     this.toolCards.clear();
   }
 }

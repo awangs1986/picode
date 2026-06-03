@@ -20,7 +20,9 @@ export class StateManager {
   }
 
   notifyListeners() {
-    this.listeners.forEach(callback => callback());
+    this.listeners.forEach((callback) => {
+      callback();
+    });
   }
 
   addMessage(message) {
@@ -56,10 +58,10 @@ export class StateManager {
       toolCallId,
       toolName: data.toolName,
       args: data.args,
-      status: 'pending',
-      output: '',
+      status: "pending",
+      output: "",
       isError: false,
-      ...data
+      ...data,
     });
     this.notifyListeners();
   }
