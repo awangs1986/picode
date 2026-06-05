@@ -52,13 +52,10 @@ import { type WebSocket, WebSocketServer } from "ws";
 // work in the bundled binary, so when the global is present we go that
 // route. The plain Node path is kept for dev (jiti/tsx loading the .ts
 // source directly under Node) and as a defensive fallback.
-// biome-ignore lint/suspicious/noExplicitAny: Bun global has no stable type declaration in this context
 declare const Bun: any;
 const HAS_BUN_SERVE =
-  typeof (globalThis as Record<string, unknown>).Bun !== "undefined" &&
-  typeof (globalThis as Record<string, unknown>).Bun !== "undefined" &&
-  typeof ((globalThis as Record<string, unknown>).Bun as Record<string, unknown>)?.serve ===
-    "function";
+  typeof (globalThis as any).Bun !== "undefined" &&
+  typeof (globalThis as any).Bun?.serve === "function";
 
 // Pi Studio settings live under `pistudio` key in ~/.pi/agent/settings.json.
 // We only honor the fields that still make sense in desktop-only mode.
@@ -106,7 +103,6 @@ function resolvePiAgentRoot(): string {
 const PI_AGENT_ROOT = resolvePiAgentRoot();
 
 function loadSettings(): { port: number } {
-  // biome-ignore lint/suspicious/noExplicitAny: settings.json schema is open-ended; port is extracted safely below
   let settings: any = {};
   try {
     const settingsPath = path.join(PI_AGENT_ROOT, "settings.json");

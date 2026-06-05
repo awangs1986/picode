@@ -11,7 +11,16 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Pi Studio">
   <meta name="theme-color" content="#f5f3ef">
+  <link rel="stylesheet" href="style-theme.css">
   <link rel="stylesheet" href="style.css">
+  <script>
+    // Detect macOS for overlay title bar padding (TitleBarStyle::Overlay in Rust
+    // extends the WebView into the native title bar area; we add padding so
+    // app content clears the traffic-light buttons).
+    if (navigator.platform.startsWith('Mac') || navigator.userAgent.includes('Mac OS')) {
+      document.documentElement.classList.add('macos-overlay');
+    }
+  </script>
   <script>
     // Boot-time instance-swap overlay gate.
     // Set by workspace-actions.js right before window.location.href changes

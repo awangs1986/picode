@@ -1,7 +1,6 @@
 html,
 body {
   height: auto;
-  /* biome-ignore lint/complexity/noImportantStyles: overrides Tauri WebView body scroll lock */
   overflow: auto !important;
 }
 

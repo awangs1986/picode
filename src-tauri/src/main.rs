@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 use tauri::image::Image;
-use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Manager, State, TitleBarStyle, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_dialog::MessageDialogKind;
 
@@ -198,15 +198,26 @@ fn open_workspace_window(app: &AppHandle, port: u16) -> Result<(), String> {
     let icon = Image::from_bytes(include_bytes!("../icons/32x32.png"))
         .map_err(|e| format!("Failed to load window icon: {}", e))?;
 
-    WebviewWindowBuilder::new(app, &label, WebviewUrl::External(url.parse().unwrap()))
-        .title("Pi Studio")
-        .inner_size(1300.0, 860.0)
-        .min_inner_size(800.0, 600.0)
+    let builder =
+        WebviewWindowBuilder::new(app, &label, WebviewUrl::External(url.parse().unwrap()))
+            .title("Pi Studio")
+            .inner_size(1300.0, 860.0)
+            .min_inner_size(800.0, 600.0)
+            .icon(icon)
+            .map_err(|e| e.to_string())?;
+
+    // macOS: extend WebView into title bar; traffic lights float on top.
+    #[cfg(target_os = "macos")]
+    let builder = builder
         .decorations(true)
-        .icon(icon)
-        .map_err(|e| e.to_string())?
-        .build()
-        .map_err(|e| e.to_string())?;
+        .title_bar_style(TitleBarStyle::Overlay)
+        .hidden_title(true);
+
+    // Non-macOS: keep standard native decorations.
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder.decorations(true);
+
+    builder.build().map_err(|e| e.to_string())?;
 
     Ok(())
 }
@@ -221,15 +232,23 @@ fn open_bootstrap_window(app: &AppHandle, startup_error: &str) -> Result<(), Str
         .replace('\n', "%0A");
     let url = format!("bootstrap.html?startupError={}", encoded_error);
 
-    WebviewWindowBuilder::new(app, label, WebviewUrl::App(url.into()))
+    let builder = WebviewWindowBuilder::new(app, label, WebviewUrl::App(url.into()))
         .title("Pi Studio")
         .inner_size(900.0, 640.0)
         .min_inner_size(700.0, 480.0)
-        .decorations(true)
         .icon(icon)
-        .map_err(|e| e.to_string())?
-        .build()
         .map_err(|e| e.to_string())?;
+
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .decorations(true)
+        .title_bar_style(TitleBarStyle::Overlay)
+        .hidden_title(true);
+
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder.decorations(true);
+
+    builder.build().map_err(|e| e.to_string())?;
 
     Ok(())
 }
