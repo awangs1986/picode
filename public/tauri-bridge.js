@@ -155,6 +155,17 @@
 
     openDevtools: (port) => invoke("cmd_open_devtools", { port: port ?? currentPort() }),
 
+    listPiPackages: () => invoke("cmd_list_pi_packages"),
+    installPiPackage: (source) => invoke("cmd_install_pi_package", { source }),
+    removePiPackage: (source) => invoke("cmd_remove_pi_package", { source }),
+
+    // Open a URL in the user's default system browser via the shell plugin.
+    openExternal: (url) => {
+      const open = window.__TAURI__?.shell?.open;
+      if (typeof open === "function") return open(url);
+      return invoke("plugin:shell|open", { path: url });
+    },
+
     checkForUpdate,
     downloadAndInstallUpdate,
     relaunchApp,

@@ -53,6 +53,21 @@ identifier = "allow-cmd-retry-startup"
 description = "Allow retrying startup after a failed embedded pi launch (used by the bootstrap error window)"
 commands.allow = ["cmd_retry_startup"]
 
+[[permission]]
+identifier = "allow-cmd-list-pi-packages"
+description = "Allow listing installed/configured pi packages via embedded pi CLI"
+commands.allow = ["cmd_list_pi_packages"]
+
+[[permission]]
+identifier = "allow-cmd-install-pi-package"
+description = "Allow installing a pi package via embedded pi CLI"
+commands.allow = ["cmd_install_pi_package"]
+
+[[permission]]
+identifier = "allow-cmd-remove-pi-package"
+description = "Allow removing a pi package via embedded pi CLI"
+commands.allow = ["cmd_remove_pi_package"]
+
 # Permission set that bundles all custom command permissions.
 # Referenced from capabilities/default.json as "pi-desktop:default".
 [default]
@@ -69,4 +84,7 @@ permissions = [
   "allow-cmd-is-dev",
   "allow-cmd-open-devtools",
   "allow-cmd-retry-startup",
+  "allow-cmd-list-pi-packages",
+  "allow-cmd-install-pi-package",
+  "allow-cmd-remove-pi-package",
 ]

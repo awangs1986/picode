@@ -2261,6 +2261,9 @@ function selectSettingsTab(tabKey = "general") {
   if (tabKey === "auth") {
     loadApiKeysPanel();
   }
+  if (tabKey === "extensions") {
+    loadBrowsePackages();
+  }
 }
 
 function formatPiVersionError(err, fallback = "unknown error") {
@@ -2307,6 +2310,321 @@ async function loadPiVersion() {
       piVersionInflight = null;
     }
   })();
+}
+
+function setExtensionActionButton(button, label, loading = false) {
+  if (!button) return;
+  if (loading) {
+    button.innerHTML = '<span class="settings-btn-spinner" aria-hidden="true"></span><span></span>';
+    const text = button.querySelector("span:last-child");
+    if (text) text.textContent = label;
+    return;
+  }
+  button.textContent = label;
+}
+
+function summarizePackageError(err) {
+  const raw = String(err?.message || err || "unknown error");
+  if (raw.includes("EACCES") || raw.includes("permission denied")) {
+    return "Permission denied in ~/.pi/agent/npm (check owner/permissions).";
+  }
+  if (raw.includes("ENOENT")) {
+    return "Missing file or directory while running embedded pi command.";
+  }
+  const compact = raw.replace(/\s+/g, " ").trim();
+  if (compact.length <= 120) return compact;
+  return `${compact.slice(0, 120)}...`;
+}
+
+// ═══════════════════════════════════════
+// Browse community packages (pi-packages-api)
+// ═══════════════════════════════════════
+
+const PKG_API_BASE = "https://pi-packages-api.shixin.workers.dev";
+const browseListEl = document.getElementById("pkg-browse-list");
+const browseSearchEl = document.getElementById("pkg-browse-search");
+const browsePillsEl = document.getElementById("pkg-browse-pills");
+const browseCountEl = document.getElementById("pkg-browse-count");
+const browseInstalledOnlyEl = document.getElementById("pkg-browse-installed-only");
+
+let browseAllPackages = null;
+let browseInstalledSet = new Set();
+let browseLoaded = false;
+let browseLoading = false;
+let browseActiveType = "all";
+let browseSearchQuery = "";
+let browseInstalledOnly = false;
+let browseSearchTimer = null;
+
+async function loadBrowsePackages(force = false) {
+  if (!browseListEl) return;
+  if (browseLoading) return;
+  if (browseLoaded && !force) {
+    renderBrowsePackages();
+    return;
+  }
+  browseLoading = true;
+  browseListEl.innerHTML =
+    '<div class="settings-api-keys-loading pkg-browse-full-row">Loading packages...</div>';
+  try {
+    const [packages, installed] = await Promise.all([
+      fetchBrowsePackages(),
+      fetchInstalledSources(),
+    ]);
+    browseAllPackages = packages;
+    browseInstalledSet = installed;
+    browseLoaded = true;
+    renderBrowsePackages();
+  } catch (err) {
+    const message = String(err?.message || err || "Failed to load packages");
+    browseListEl.innerHTML = `<div class="settings-api-keys-empty pkg-browse-full-row">${escapeHtml(message)} <button type="button" class="settings-value-btn" id="pkg-browse-retry">Retry</button></div>`;
+    const retry = document.getElementById("pkg-browse-retry");
+    if (retry) retry.addEventListener("click", () => loadBrowsePackages(true));
+  } finally {
+    browseLoading = false;
+  }
+}
+
+async function fetchBrowsePackages() {
+  const res = await fetch(`${PKG_API_BASE}/packages`);
+  if (!res.ok) throw new Error(`Registry returned ${res.status}`);
+  const data = await res.json();
+  return Array.isArray(data?.packages) ? data.packages : [];
+}
+
+async function fetchInstalledSources() {
+  if (!window.tauriNative?.listPiPackages) return new Set();
+  try {
+    const configured = await window.tauriNative.listPiPackages();
+    return new Set(Array.isArray(configured) ? configured : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function browseSourceFor(pkg) {
+  return `npm:${pkg.name}`;
+}
+
+function normalizeRepoUrl(url) {
+  if (!url) return null;
+  return url
+    .replace(/^git\+/, "")
+    .replace(/^git:\/\//, "https://")
+    .replace(/^git@github\.com:/, "https://github.com/")
+    .replace(/\.git$/, "");
+}
+
+function openExternalLink(url) {
+  if (!url) return;
+  if (window.tauriNative?.openExternal) {
+    window.tauriNative.openExternal(url).catch((err) => {
+      console.error("[browse] failed to open external link:", err);
+    });
+  } else {
+    window.open(url, "_blank", "noopener");
+  }
+}
+
+const BROWSE_LINK_SVGS = {
+  npm: '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M0 0v24h24v-24h-24zm19.2 19.2h-2.4v-9.6h-4.8v9.6h-7.2v-14.4h14.4v14.4z"/></svg>',
+  github:
+    '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>',
+  link: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>',
+};
+
+function createBrowseLinkButton(kind, label, url) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "pkg-browse-link";
+  btn.title = label;
+  btn.setAttribute("aria-label", label);
+  btn.innerHTML = `${BROWSE_LINK_SVGS[kind] || BROWSE_LINK_SVGS.link}<span>${escapeHtml(label)}</span>`;
+  btn.addEventListener("click", (event) => {
+    event.stopPropagation();
+    openExternalLink(url);
+  });
+  return btn;
+}
+
+function buildBrowseLinks(pkg) {
+  const links = pkg.links || {};
+  const container = document.createElement("div");
+  container.className = "pkg-browse-links";
+
+  const npmUrl = links.npm || `https://www.npmjs.com/package/${encodeURIComponent(pkg.name)}`;
+  container.appendChild(createBrowseLinkButton("npm", "npm", npmUrl));
+
+  const repo = normalizeRepoUrl(links.repository);
+  if (repo) {
+    const isGithub = /github\.com/i.test(repo);
+    container.appendChild(
+      createBrowseLinkButton(isGithub ? "github" : "link", isGithub ? "GitHub" : "repo", repo),
+    );
+  }
+
+  const homepage = normalizeRepoUrl(links.homepage);
+  if (homepage && homepage !== repo) {
+    container.appendChild(createBrowseLinkButton("link", "homepage", homepage));
+  }
+
+  return container;
+}
+
+function filterBrowsePackages() {
+  if (!browseAllPackages) return [];
+  const query = browseSearchQuery.toLowerCase().trim();
+  return browseAllPackages.filter((pkg) => {
+    if (browseInstalledOnly && !browseInstalledSet.has(browseSourceFor(pkg))) return false;
+    if (browseActiveType !== "all") {
+      if (!Array.isArray(pkg.types) || !pkg.types.includes(browseActiveType)) return false;
+    }
+    if (query) {
+      const inName = pkg.name.toLowerCase().includes(query);
+      const inDesc = (pkg.description || "").toLowerCase().includes(query);
+      const inAuthor = (pkg.author || "").toLowerCase().includes(query);
+      if (!inName && !inDesc && !inAuthor) return false;
+    }
+    return true;
+  });
+}
+
+function renderBrowsePackages() {
+  if (!browseListEl) return;
+  const results = filterBrowsePackages();
+  if (browseCountEl) {
+    const total = browseAllPackages ? browseAllPackages.length : 0;
+    browseCountEl.textContent = `${results.length} of ${total}`;
+  }
+  browseListEl.innerHTML = "";
+  if (!results.length) {
+    browseListEl.innerHTML =
+      '<div class="settings-api-keys-empty pkg-browse-full-row">No packages match your filters.</div>';
+    return;
+  }
+  for (const pkg of results) {
+    browseListEl.appendChild(createBrowseRow(pkg));
+  }
+}
+
+function createBrowseRow(pkg) {
+  const source = browseSourceFor(pkg);
+  const installed = browseInstalledSet.has(source);
+
+  const row = document.createElement("div");
+  row.className = "settings-extension-row pkg-browse-row";
+
+  const info = document.createElement("div");
+  info.className = "settings-extension-info";
+
+  const name = document.createElement("div");
+  name.className = "settings-extension-name";
+  name.textContent = pkg.name;
+  info.appendChild(name);
+
+  if (pkg.description) {
+    const description = document.createElement("div");
+    description.className = "settings-extension-description";
+    description.textContent = pkg.description;
+    info.appendChild(description);
+  }
+
+  const badges = document.createElement("div");
+  badges.className = "pkg-browse-badges";
+  for (const t of pkg.types || []) {
+    const badge = document.createElement("span");
+    badge.className = "pkg-browse-badge";
+    badge.dataset.type = t;
+    badge.textContent = t;
+    badges.appendChild(badge);
+  }
+  const downloads = document.createElement("span");
+  downloads.className = "pkg-browse-meta";
+  downloads.textContent = `${(pkg.downloads || 0).toLocaleString()}/mo`;
+  badges.appendChild(downloads);
+  info.appendChild(badges);
+
+  const status = document.createElement("div");
+  status.className = "settings-extension-status";
+  status.hidden = true;
+  info.appendChild(status);
+
+  info.appendChild(buildBrowseLinks(pkg));
+
+  const actions = document.createElement("div");
+  actions.className = "settings-extension-actions";
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "settings-value-btn";
+
+  const canManage = Boolean(window.tauriNative?.installPiPackage);
+  if (!canManage) {
+    button.disabled = true;
+    setExtensionActionButton(button, "Desktop only");
+  } else {
+    setExtensionActionButton(button, installed ? "Uninstall" : "Install");
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      button.classList.add("loading");
+      const previous = installed ? "Uninstall" : "Install";
+      setExtensionActionButton(button, installed ? "Uninstalling..." : "Installing...", true);
+      status.hidden = false;
+      status.textContent = installed ? "Removing..." : "Installing...";
+      status.title = status.textContent;
+      try {
+        if (installed) {
+          await window.tauriNative.removePiPackage(source);
+          browseInstalledSet.delete(source);
+        } else {
+          await window.tauriNative.installPiPackage(source);
+          browseInstalledSet.add(source);
+        }
+        renderBrowsePackages();
+      } catch (err) {
+        status.hidden = false;
+        const fullMessage = String(err?.message || err || "unknown error");
+        status.textContent = `Failed: ${summarizePackageError(fullMessage)}`;
+        status.title = fullMessage;
+        button.disabled = false;
+        button.classList.remove("loading");
+        setExtensionActionButton(button, previous);
+      }
+    });
+  }
+  actions.appendChild(button);
+
+  row.appendChild(info);
+  row.appendChild(actions);
+  return row;
+}
+
+if (browsePillsEl) {
+  browsePillsEl.addEventListener("click", (event) => {
+    const pill = event.target.closest(".pkg-browse-pill");
+    if (!pill) return;
+    browseActiveType = pill.dataset.pkgType || "all";
+    for (const p of browsePillsEl.querySelectorAll(".pkg-browse-pill")) {
+      p.classList.toggle("active", p === pill);
+    }
+    renderBrowsePackages();
+  });
+}
+
+if (browseSearchEl) {
+  browseSearchEl.addEventListener("input", () => {
+    clearTimeout(browseSearchTimer);
+    browseSearchTimer = setTimeout(() => {
+      browseSearchQuery = browseSearchEl.value;
+      renderBrowsePackages();
+    }, 180);
+  });
+}
+
+if (browseInstalledOnlyEl) {
+  browseInstalledOnlyEl.addEventListener("change", () => {
+    browseInstalledOnly = browseInstalledOnlyEl.checked;
+    renderBrowsePackages();
+  });
 }
 
 // ═══════════════════════════════════════
@@ -2366,7 +2684,6 @@ async function openSettings() {
   setTimeout(() => {
     if (!settingsPanel.classList.contains("hidden")) loadPiVersion();
   }, 300);
-
   // Fetch current state for toggles
   try {
     const resp = await fetch("/api/rpc", {

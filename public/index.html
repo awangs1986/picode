@@ -207,6 +207,7 @@
     <aside class="settings-nav">
       <div class="settings-nav-title">Settings</div>
       <button class="settings-nav-item active" data-settings-tab="general">General</button>
+      <button class="settings-nav-item" data-settings-tab="extensions">Extensions</button>
       <button class="settings-nav-item" data-settings-tab="usage">Usage</button>
       <button class="settings-nav-item" data-settings-tab="auth">Authentication</button>
       <button class="settings-nav-item" data-settings-tab="configuration">Configuration</button>
@@ -262,6 +263,41 @@
               <span class="settings-label" id="setting-update-install-label">Update available</span>
               <button class="settings-value-btn" id="btn-install-update">Download &amp; install</button>
             </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="settings-tab" data-settings-panel="extensions">
+        <div class="settings-header"><h3>Extensions</h3></div>
+        <div class="settings-body">
+          <div class="settings-section">
+            <div class="settings-section-title">Browse Community Packages</div>
+            <p class="settings-help">
+              Discover extensions, skills, themes, and prompts from the Pi ecosystem. Install with one click.
+            </p>
+            <div class="pkg-browse-filters">
+              <input
+                type="text"
+                id="pkg-browse-search"
+                class="pkg-browse-search"
+                placeholder="Search packages..."
+                autocomplete="off"
+                spellcheck="false"
+              />
+              <div class="pkg-browse-pills" id="pkg-browse-pills">
+                <button type="button" class="pkg-browse-pill active" data-pkg-type="all">All</button>
+                <button type="button" class="pkg-browse-pill" data-pkg-type="extension">Extensions</button>
+                <button type="button" class="pkg-browse-pill" data-pkg-type="skill">Skills</button>
+                <button type="button" class="pkg-browse-pill" data-pkg-type="theme">Themes</button>
+                <button type="button" class="pkg-browse-pill" data-pkg-type="prompt">Prompts</button>
+              </div>
+              <label class="pkg-browse-installed-toggle">
+                <input type="checkbox" id="pkg-browse-installed-only" />
+                <span>Installed only</span>
+              </label>
+              <span class="pkg-browse-count" id="pkg-browse-count"></span>
+            </div>
+            <div class="settings-extension-list pkg-browse-list" id="pkg-browse-list"></div>
           </div>
         </div>
       </div>

@@ -544,6 +544,93 @@ impl PiManager {
         }
         port
     }
+
+    /// Run `pi <args...>` with the embedded binary and return stdout.
+    /// Used by Settings UI package management operations (install/remove/list).
+    pub fn run_pi_command(&self, args: &[String]) -> Result<String, String> {
+        let pi_bin = self.resolve_bundled_pi()?;
+        let pi_bin_str = strip_verbatim_prefix(&pi_bin.to_string_lossy());
+        let mut command = Command::new(&pi_bin_str);
+        configure_child_process_for_windows(&mut command);
+        command
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let output = command.output().map_err(|e| {
+            format!(
+                "Failed to run embedded pi command ({} {:?}): {}",
+                pi_bin_str, args, e
+            )
+        })?;
+        if output.status.success() {
+            return Ok(String::from_utf8_lossy(&output.stdout).trim().to_string());
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let details = if !stderr.is_empty() {
+            stderr
+        } else if !stdout.is_empty() {
+            stdout
+        } else {
+            format!("exit status {}", output.status)
+        };
+        Err(format!(
+            "Embedded pi command failed: {} {:?}: {}",
+            pi_bin_str, args, details
+        ))
+    }
+
+    /// Parse `pi list` output and extract package sources.
+    pub fn list_configured_package_sources(&self) -> Result<Vec<String>, String> {
+        let args = vec!["list".to_string()];
+        let output = self.run_pi_command(&args)?;
+        let mut sources = Vec::new();
+        for line in output.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if trimmed.eq_ignore_ascii_case("No packages installed.") {
+                continue;
+            }
+            if trimmed.ends_with(':') {
+                continue;
+            }
+            if let Some(rest) = trimmed.strip_prefix('-') {
+                let value = rest.trim();
+                if !value.is_empty() {
+                    sources.push(value.to_string());
+                }
+                continue;
+            }
+            // `pi list` currently emits entries prefixed with two spaces.
+            if let Some(value) = trimmed.strip_prefix("npm:") {
+                sources.push(format!("npm:{}", value));
+                continue;
+            }
+            if let Some(value) = trimmed.strip_prefix("git:") {
+                sources.push(format!("git:{}", value));
+                continue;
+            }
+            if trimmed.starts_with('/') || trimmed.starts_with("./") || trimmed.starts_with("../") {
+                sources.push(trimmed.to_string());
+            }
+        }
+        Ok(sources)
+    }
+
+    pub fn install_package_source(&self, source: &str) -> Result<(), String> {
+        let args = vec!["install".to_string(), source.to_string()];
+        let _ = self.run_pi_command(&args)?;
+        Ok(())
+    }
+
+    pub fn remove_package_source(&self, source: &str) -> Result<(), String> {
+        let args = vec!["remove".to_string(), source.to_string()];
+        let _ = self.run_pi_command(&args)?;
+        Ok(())
+    }
 }
 
 pub fn is_port_in_use(port: u16) -> bool {

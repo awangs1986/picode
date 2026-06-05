@@ -190,6 +190,27 @@ fn cmd_open_devtools(port: u16, app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+fn cmd_list_pi_packages(manager: State<PiManagerState>) -> Result<Vec<String>, String> {
+    manager.list_configured_package_sources()
+}
+
+#[tauri::command]
+fn cmd_install_pi_package(source: String, manager: State<PiManagerState>) -> Result<(), String> {
+    if source.trim().is_empty() {
+        return Err("Package source cannot be empty".to_string());
+    }
+    manager.install_package_source(source.trim())
+}
+
+#[tauri::command]
+fn cmd_remove_pi_package(source: String, manager: State<PiManagerState>) -> Result<(), String> {
+    if source.trim().is_empty() {
+        return Err("Package source cannot be empty".to_string());
+    }
+    manager.remove_package_source(source.trim())
+}
+
 // ─── Window helpers ───────────────────────────────────────────────────────────
 
 fn open_workspace_window(app: &AppHandle, port: u16) -> Result<(), String> {
@@ -509,6 +530,9 @@ fn main() {
             cmd_get_app_version,
             cmd_is_dev,
             cmd_open_devtools,
+            cmd_list_pi_packages,
+            cmd_install_pi_package,
+            cmd_remove_pi_package,
             cmd_retry_startup,
             cmd_spawn_session_process,
         ])

@@ -1634,6 +1634,251 @@ body {
   gap: 6px;
 }
 
+.settings-extension-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings-extension-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  background: var(--bg-glass-strong, var(--bg-glass));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  transition: all var(--duration) var(--ease);
+}
+
+.settings-extension-row:hover {
+  border-color: var(--border-hover);
+  background: var(--bg-glass-hover);
+}
+
+.settings-extension-info {
+  min-width: 0;
+  flex: 1;
+}
+
+.settings-extension-name {
+  font-size: 13px;
+  color: var(--text-primary);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-extension-description {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.settings-extension-source {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--text-dim);
+  font-family: "SF Mono", "Menlo", "Monaco", monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-extension-status {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-extension-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* Browse community packages */
+.pkg-browse-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.pkg-browse-search {
+  flex: 1 1 200px;
+  min-width: 160px;
+  padding: 7px 11px;
+  font-size: 12px;
+  color: var(--text-primary);
+  background: var(--bg-glass);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  outline: none;
+}
+
+.pkg-browse-search:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.pkg-browse-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.pkg-browse-pill {
+  padding: 5px 11px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: var(--bg-glass);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.pkg-browse-pill:hover {
+  border-color: var(--border-hover);
+  color: var(--text-primary);
+}
+
+.pkg-browse-pill.active {
+  color: var(--accent-text);
+  background: var(--accent-subtle);
+  border-color: var(--accent);
+}
+
+.pkg-browse-installed-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.pkg-browse-installed-toggle input {
+  cursor: pointer;
+  accent-color: var(--accent);
+}
+
+.pkg-browse-count {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.pkg-browse-badges {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 5px;
+}
+
+.pkg-browse-badge {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 7px;
+  border-radius: 999px;
+  color: var(--accent-text);
+  background: var(--accent-subtle);
+  border: 1px solid var(--accent);
+}
+
+.pkg-browse-meta {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.pkg-browse-list.pkg-browse-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  align-items: stretch;
+}
+
+.pkg-browse-row {
+  align-items: flex-start;
+}
+
+.pkg-browse-full-row {
+  grid-column: 1 / -1;
+}
+
+@media (max-width: 720px) {
+  .pkg-browse-list.pkg-browse-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.pkg-browse-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 7px;
+}
+
+.pkg-browse-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: var(--bg-glass);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.pkg-browse-link:hover {
+  color: var(--text-primary);
+  border-color: var(--border-hover);
+  background: var(--bg-glass-hover);
+}
+
+.pkg-browse-link svg {
+  flex-shrink: 0;
+}
+
+.settings-value-btn.loading {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.settings-btn-spinner {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--text-primary) 20%, transparent);
+  border-top-color: var(--accent);
+  animation: settings-btn-spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes settings-btn-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .settings-api-keys-loading,
 .settings-api-keys-empty {
   font-size: 12px;
@@ -4384,4 +4629,14 @@ html.macos-overlay .header {
 
 html.macos-overlay .sidebar-header {
   padding-top: calc(12px + 28px);
+}
+
+/* Settings panel also occupies the full window and needs the same macOS
+   overlay safe area, otherwise the first row sits under traffic lights. */
+html.macos-overlay .settings-nav {
+  padding-top: calc(8px + 28px);
+}
+
+html.macos-overlay .settings-content {
+  padding-top: calc(24px + 28px);
 }
