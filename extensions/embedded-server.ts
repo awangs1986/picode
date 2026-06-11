@@ -34,13 +34,16 @@ import * as fs from "node:fs";
 import * as http from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
-import { buildCostDashboardPayload, buildEmptyCostDashboardPayload } from "./cost-dashboard-data.ts";
 import type {
   ExtensionAPI,
   ExtensionContext,
   ModelRegistry,
 } from "@earendil-works/pi-coding-agent";
 import { type WebSocket, WebSocketServer } from "ws";
+import {
+  buildCostDashboardPayload,
+  buildEmptyCostDashboardPayload,
+} from "./cost-dashboard-data.ts";
 
 // `pi` is compiled with `bun build --compile`. Inside that runtime,
 // `http.createServer(...).on("upgrade", ...)` accepts the upgrade event

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   isDeadPortError,
   startInWindowNewSession,
@@ -101,9 +101,7 @@ describe("isDeadPortError", () => {
 describe("in-place dead-port recovery", () => {
   it("startInWindowNewSession spawns a fresh process when the port is dead", async () => {
     const tauriNative = makeTauri();
-    tauriNative.newSession = vi
-      .fn()
-      .mockRejectedValue(new Error("No pi instance on port 47823"));
+    tauriNative.newSession = vi.fn().mockRejectedValue(new Error("No pi instance on port 47823"));
     const onParallelSessionCreated = vi.fn().mockResolvedValue(undefined);
     const onInPlaceSessionCreated = vi.fn();
     const renderError = vi.fn();
@@ -154,9 +152,7 @@ describe("in-place dead-port recovery", () => {
 
   it("startNewProjectChat spawns a fresh process when the port is dead", async () => {
     const tauriNative = makeTauri();
-    tauriNative.newSession = vi
-      .fn()
-      .mockRejectedValue(new Error("No pi instance on port 47823"));
+    tauriNative.newSession = vi.fn().mockRejectedValue(new Error("No pi instance on port 47823"));
     const onParallelSessionCreated = vi.fn().mockResolvedValue(undefined);
     const renderError = vi.fn();
 

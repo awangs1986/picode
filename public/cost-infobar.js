@@ -33,37 +33,29 @@ function renderEmpty(target, message = "No data in selected range.") {
   target.innerHTML = `<div class="empty">${escapeHtml(message)}</div>`;
 }
 
+const STAT_ICONS = {
+  Sessions: `<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M2 2.5A1.5 1.5 0 0 1 3.5 1h9A1.5 1.5 0 0 1 14 2.5v6A1.5 1.5 0 0 1 12.5 10H9l-3 3v-3H3.5A1.5 1.5 0 0 1 2 8.5v-6z" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/></svg>`,
+  Messages: `<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M1 3a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5l-4 4V3z" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/><circle cx="5.5" cy="6.5" r="1" fill="currentColor"/><circle cx="8" cy="6.5" r="1" fill="currentColor"/><circle cx="10.5" cy="6.5" r="1" fill="currentColor"/></svg>`,
+  "Total tokens": `<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><ellipse cx="8" cy="4" rx="5.5" ry="2" stroke="currentColor" stroke-width="1.25"/><path d="M2.5 4v4c0 1.1 2.46 2 5.5 2s5.5-.9 5.5-2V4" stroke="currentColor" stroke-width="1.25"/><path d="M2.5 8v4c0 1.1 2.46 2 5.5 2s5.5-.9 5.5-2V8" stroke="currentColor" stroke-width="1.25"/></svg>`,
+  "Active days": `<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="1" y="3" width="14" height="12" rx="2" stroke="currentColor" stroke-width="1.25"/><path d="M5 1v3M11 1v3M1 7h14" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/><circle cx="5" cy="10.5" r="1" fill="currentColor"/><circle cx="8" cy="10.5" r="1" fill="currentColor"/><circle cx="11" cy="10.5" r="1" fill="currentColor"/></svg>`,
+  "Current streak": `<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M8 1S4 5 4 9a4 4 0 0 0 8 0c0-4-4-8-4-8z" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/><path d="M8 11.5c-.83 0-1.5-.67-1.5-1.5S8 7.5 8 7.5s1.5 1 1.5 2.5-.67 1.5-1.5 1.5z" fill="currentColor"/></svg>`,
+  "Longest streak": `<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M3.5 2.5h9v5.5a4.5 4.5 0 0 1-9 0V2.5z" stroke="currentColor" stroke-width="1.25"/><path d="M3.5 5.5H2a1.5 1.5 0 0 0 1.5 1.5M12.5 5.5H14a1.5 1.5 0 0 1-1.5 1.5" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/><path d="M8 12.5v2M5.5 14.5h5" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/></svg>`,
+  "Peak hour": `<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.25"/><path d="M8 4v4l3 3" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  Input: `<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M8 2v9M4.5 7.5 8 11l3.5-3.5" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/><path d="M2.5 13.5h11" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/></svg>`,
+  Output: `<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M8 14V5M4.5 8.5 8 5l3.5 3.5" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/><path d="M2.5 2.5h11" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/></svg>`,
+  "Cache Read": `<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M9.5 1.5 5 8.5h4.5L6.5 14.5l6-8.5H8l1.5-4.5z" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/></svg>`,
+  "Cache Write": `<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M2 4a2 2 0 0 1 2-2h6l4 4v6a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V4z" stroke="currentColor" stroke-width="1.25"/><path d="M5 2v3.5h5V2M5 15v-4h6v4" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/></svg>`,
+  "Tool Calls": `<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M10 1.5a3.5 3.5 0 0 1 .5 5.5L4 13.5a1.5 1.5 0 0 1-2-2L8.5 5A3.5 3.5 0 0 1 10 1.5z" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/><circle cx="10.5" cy="3.5" r="1" fill="currentColor"/></svg>`,
+};
+
 function buildStatCard(title, value, tone, extraClass = "") {
+  const icon = STAT_ICONS[title] || "";
   return `
     <article class="infobar-stat-card infobar-card-tone-${tone} ${extraClass}">
-      <div class="infobar-stat-title">${escapeHtml(title)}</div>
+      <div class="infobar-stat-title">${icon ? `<span class="infobar-stat-icon">${icon}</span>` : ""}${escapeHtml(title)}</div>
       <div class="infobar-stat-value">${escapeHtml(value)}</div>
     </article>
   `;
-}
-
-function buildRankRows(rows, subtitleBuilder) {
-  if (!Array.isArray(rows) || rows.length === 0) {
-    return '<div class="empty">No data in selected range.</div>';
-  }
-  return rows
-    .map(
-      (row, index) => `
-        <div class="infobar-rank-row">
-          <div class="infobar-rank-head">
-            <div class="infobar-rank-title-group">
-              <span class="infobar-rank-index">${index + 1}</span>
-              <div>
-                <div class="infobar-rank-title">${escapeHtml(row.name || "unknown")}</div>
-                <div class="infobar-rank-subtitle">${escapeHtml(subtitleBuilder(row))}</div>
-              </div>
-            </div>
-            <div class="infobar-rank-value">${formatUsd(row.cost)}</div>
-          </div>
-        </div>
-      `,
-    )
-    .join("");
 }
 
 export function renderInfobarOverview(target, overview = {}, usage = {}) {
@@ -126,14 +118,41 @@ export function renderInfobarProjects(target, rows = []) {
     renderEmpty(target);
     return;
   }
+  const top = rows.slice(0, 6);
+  const totalCost = top.reduce((sum, r) => sum + Number(r.cost || 0), 0);
   target.innerHTML = `
     <div class="infobar-projects-card">
-      <div class="infobar-projects-chart-wrap">
-        <canvas class="infobar-projects-chart" width="960" height="360"></canvas>
+      <div class="infobar-tool-chart-layout">
+        <div class="infobar-tool-chart-wrap">
+          <canvas class="infobar-projects-chart" width="240" height="240"></canvas>
+        </div>
+        <div class="infobar-tool-legend">
+          ${top
+            .map((row, index) => {
+              const percent =
+                totalCost > 0 ? Math.round((Number(row.cost || 0) / totalCost) * 100) : 0;
+              return `
+                <div class="infobar-tool-legend-row">
+                  <div class="infobar-tool-legend-main">
+                    <span class="infobar-tool-legend-dot" data-tool-color="${index}"></span>
+                    <div>
+                      <div class="infobar-tool-legend-title">${escapeHtml(row.name || "unknown")}</div>
+                      <div class="infobar-tool-legend-subtitle">${formatInt(row.sessions || 0)} sessions</div>
+                    </div>
+                  </div>
+                  <div class="infobar-tool-legend-values">
+                    <span>${formatUsd(row.cost)}</span>
+                    <span>${percent}%</span>
+                  </div>
+                </div>
+              `;
+            })
+            .join("")}
+        </div>
       </div>
     </div>
   `;
-  renderProjectsChart(target.querySelector(".infobar-projects-chart"), rows.slice(0, 8));
+  renderProjectsChart(target.querySelector(".infobar-projects-chart"), top);
 }
 
 export function renderInfobarUsage(target, usage = {}) {
@@ -202,25 +221,11 @@ export function renderInfobarToolCost(target, usage = {}, metaTarget = null) {
   }
 }
 
-function getCssVar(name, fallback) {
-  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
-}
-
-function buildSessionCard(session) {
-  return `
-    <article class="infobar-session-card">
-      <div class="infobar-session-head">
-        <div class="infobar-session-title">${escapeHtml(session.title || "Untitled")}</div>
-        <div class="infobar-session-cost">${formatUsd(session.totalCost)}</div>
-      </div>
-      <div class="infobar-session-meta">
-        <span>${escapeHtml(session.model || "unknown")}</span>
-        <span>${formatCompact(session.totalTokens)} tokens</span>
-        <span>${formatInt(session.toolCalls)} tools</span>
-      </div>
-      <div class="infobar-session-workspace">${escapeHtml(session.workspace || "")}</div>
-    </article>
-  `;
+function formatSessionDate(timeStr) {
+  if (!timeStr) return "";
+  const d = new Date(timeStr);
+  if (!Number.isFinite(d.getTime())) return "";
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
 function renderSessionsPanel(target, sessions = []) {
@@ -229,8 +234,38 @@ function renderSessionsPanel(target, sessions = []) {
     return;
   }
   target.innerHTML = `
-    <div class="infobar-session-list">
-      ${sessions.map(buildSessionCard).join("")}
+    <div class="infobar-sessions-table-wrap">
+      <table class="infobar-sessions-table">
+        <thead>
+          <tr>
+            <th>Session</th>
+            <th>Model</th>
+            <th class="num">Tokens</th>
+            <th class="num">Tools</th>
+            <th class="num">Cost</th>
+            <th>Date</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${sessions
+            .map(
+              (session) => `
+            <tr>
+              <td class="infobar-sessions-td-title">
+                <div class="infobar-sessions-title">${escapeHtml(session.title || "Untitled")}</div>
+                ${session.workspace ? `<div class="infobar-sessions-workspace">${escapeHtml(session.workspace)}</div>` : ""}
+              </td>
+              <td class="infobar-sessions-td-model">${escapeHtml(session.model || "—")}</td>
+              <td class="num">${formatCompact(session.totalTokens)}</td>
+              <td class="num">${formatInt(session.toolCalls)}</td>
+              <td class="num infobar-sessions-cost">${formatUsd(session.totalCost)}</td>
+              <td class="infobar-sessions-td-date">${formatSessionDate(session.time)}</td>
+            </tr>
+          `,
+            )
+            .join("")}
+        </tbody>
+      </table>
     </div>
   `;
 }
@@ -239,10 +274,6 @@ function formatRangeLabel(range = "30d") {
   if (range === "7d") return "7d";
   if (range === "90d") return "90d";
   return "30d";
-}
-
-function formatScopeLabel(scope = "all") {
-  return scope === "current" ? "Current Project" : "All Projects";
 }
 
 function deriveOverviewMetrics(payload, overview) {
@@ -282,7 +313,7 @@ function deriveOverviewMetrics(payload, overview) {
 
   if (sortedDays.length > 0) {
     const todayKey = new Date().toISOString().slice(0, 10);
-    let cursor = new Date(`${todayKey}T00:00:00`);
+    const cursor = new Date(`${todayKey}T00:00:00`);
     while (dayCounts.has(cursor.toISOString().slice(0, 10))) {
       currentStreak += 1;
       cursor.setDate(cursor.getDate() - 1);
@@ -307,7 +338,7 @@ function deriveOverviewMetrics(payload, overview) {
   };
 }
 
-function buildActivityDays(payload) {
+function _buildActivityDays(payload) {
   const from = payload.range?.from ? new Date(payload.range.from) : null;
   const to = payload.range?.to ? new Date(payload.range.to) : null;
   const sessions = Array.isArray(payload.sessions) ? payload.sessions : [];
@@ -338,13 +369,28 @@ function buildActivityDays(payload) {
 }
 
 function renderActivityPanel(target, payload) {
-  const days = buildActivityDays(payload);
-  if (days.length === 0) {
-    renderEmpty(target);
-    return;
+  const sessions = Array.isArray(payload.sessions) ? payload.sessions : [];
+  const intensityByDay = new Map();
+  for (const session of sessions) {
+    const time = new Date(session.time);
+    if (!Number.isFinite(time.getTime())) continue;
+    const key = time.toISOString().slice(0, 10);
+    intensityByDay.set(key, (intensityByDay.get(key) || 0) + Number(session.totalTokens || 0));
   }
+
+  const TOTAL_DAYS = 365;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const days = [];
+  for (let i = TOTAL_DAYS - 1; i >= 0; i--) {
+    const d = new Date(today);
+    d.setDate(d.getDate() - i);
+    const key = d.toISOString().slice(0, 10);
+    days.push({ key, value: intensityByDay.get(key) || 0 });
+  }
+
   const max = Math.max(...days.map((day) => day.value), 0);
-  const weekColumns = Math.max(1, Math.ceil(days.length / 7));
+  const weekColumns = Math.ceil(TOTAL_DAYS / 7);
   target.innerHTML = `
     <div class="infobar-activity-grid" style="--activity-columns:${weekColumns}">
       ${days
@@ -411,8 +457,23 @@ function buildModelSummary(rows, payload) {
   };
 }
 
+function hexToRgba(hex, alpha) {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
+function _makeBarGradient(ctx, chartArea, color) {
+  if (!chartArea) return color;
+  const gradient = ctx.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
+  gradient.addColorStop(0, color);
+  gradient.addColorStop(1, hexToRgba(color, 0.5));
+  return gradient;
+}
+
 function getModelChartPalette() {
-  return ["#4f8ff7", "#67c587", "#f3a64f"];
+  return ["#3b82f6", "#10b981", "#f59e0b"];
 }
 
 function getStackSegmentRadius(seriesList, datasetIndex, dataIndex) {
@@ -532,29 +593,32 @@ function getToolChartPalette() {
 
 function renderProjectsChart(canvas, rows) {
   if (!canvas || !Array.isArray(rows) || rows.length === 0) return;
+  const labels = rows.map((row) => row.name || "unknown");
+  const data = rows.map((row) => Number(row.cost || 0));
+  const colors = getToolChartPalette().slice(0, rows.length);
+
   if (typeof window.Chart === "function") {
     const previous = canvas._projectsChart;
     if (previous && typeof previous.destroy === "function") {
       previous.destroy();
     }
     canvas._projectsChart = new window.Chart(canvas, {
-      type: "bar",
+      type: "doughnut",
       data: {
-        labels: rows.map((row) => row.name || "unknown"),
+        labels,
         datasets: [
           {
-            data: rows.map((row) => Number(row.cost || 0)),
-            backgroundColor: "#4f8ff7",
-            borderRadius: 8,
-            borderSkipped: false,
-            barThickness: 14,
+            data,
+            backgroundColor: colors,
+            borderWidth: 0,
+            hoverOffset: 2,
           },
         ],
       },
       options: {
-        indexAxis: "y",
         responsive: true,
         maintainAspectRatio: false,
+        cutout: "62%",
         plugins: {
           legend: {
             display: false,
@@ -562,35 +626,8 @@ function renderProjectsChart(canvas, rows) {
           tooltip: {
             callbacks: {
               label(context) {
-                return `${formatUsd(context.raw)}`;
+                return `${context.label}: ${formatUsd(context.raw)}`;
               },
-            },
-          },
-        },
-        scales: {
-          x: {
-            grid: {
-              color: "rgba(255,255,255,0.08)",
-            },
-            border: {
-              display: false,
-            },
-            ticks: {
-              color: "#8f959e",
-              callback(value) {
-                return formatUsd(value);
-              },
-            },
-          },
-          y: {
-            grid: {
-              display: false,
-            },
-            border: {
-              display: false,
-            },
-            ticks: {
-              color: "#8f959e",
             },
           },
         },
@@ -679,7 +716,6 @@ export function renderCostInfobar(section, payload = {}) {
   const overviewNoteEl = section.querySelector("#infobar-overview-note");
   const modelsEl = section.querySelector("#infobar-models-list");
   const toolCostEl = section.querySelector("#infobar-tool-cost-panel");
-  const toolCostMetaEl = section.querySelector("#infobar-tool-cost-meta");
   const projectsEl = section.querySelector("#infobar-projects-list");
   const sessionsEl = section.querySelector("#infobar-sessions-panel");
   const metaEl = section.querySelector("#infobar-range-meta");
@@ -713,19 +749,17 @@ export function renderCostInfobar(section, payload = {}) {
     renderEmpty(projectsEl);
     renderEmpty(sessionsEl);
     metaEl.textContent = "No data";
-    if (toolCostMetaEl) toolCostMetaEl.textContent = "0 tracked";
     return;
   }
 
   const rangeLabel = formatRangeLabel(payload.range?.range);
-  const scopeLabel = formatScopeLabel(payload.range?.scope);
   const overviewMetrics = deriveOverviewMetrics(payload, overview);
-  metaEl.textContent = `${rangeLabel} · ${scopeLabel} · ${formatInt(overview.sessionCount)} sessions`;
+  metaEl.textContent = rangeLabel;
   renderInfobarOverview(overviewEl, overviewMetrics, infobar.usage || {});
   renderActivityPanel(activityEl, payload);
   renderOverviewNote(overviewNoteEl, overviewMetrics.totalTokens);
   renderInfobarModels(modelsEl, infobar.models || [], payload);
-  renderInfobarToolCost(toolCostEl, infobar.usage || {}, toolCostMetaEl);
+  renderInfobarToolCost(toolCostEl, infobar.usage || {});
   renderInfobarProjects(projectsEl, infobar.projects || []);
   renderSessionsPanel(sessionsEl, payload.sessions || payload.topSessions || []);
 }

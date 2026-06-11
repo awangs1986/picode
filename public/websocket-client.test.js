@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { WebSocketClient, resolveWebSocketUrl } from "./websocket-client.js";
+import { resolveWebSocketUrl, WebSocketClient } from "./websocket-client.js";
 
 describe("resolveWebSocketUrl", () => {
   test("uses the Tauri broker URL when available", () => {

@@ -111,7 +111,7 @@ describe("cost infobar renderers", () => {
       );
 
       expect(models.querySelectorAll(".infobar-model-legend-row")).toHaveLength(2);
-    expect(projects.querySelector(".infobar-projects-chart")).not.toBeNull();
+      expect(projects.querySelector(".infobar-projects-chart")).not.toBeNull();
       expect(usage.textContent).toContain("Total Tokens");
       expect(usage.textContent).toContain("3.6K");
       expect(toolCost.textContent).toContain("read_file");
@@ -202,7 +202,6 @@ describe("cost infobar renderers", () => {
         <div id="infobar-overview-note"></div>
       </div>
       <div class="infobar-panel is-active" data-infobar-panel="tool-cost">
-        <span id="infobar-tool-cost-meta"></span>
         <div id="infobar-tool-cost-panel"></div>
       </div>
       <div class="infobar-panel is-active" data-infobar-panel="models"><div id="infobar-models-list"></div></div>
@@ -290,7 +289,6 @@ describe("cost infobar renderers", () => {
     expect(section.querySelector("#infobar-overview-note").textContent).toContain("War and Peace");
     expect(section.querySelector("#infobar-models-list").textContent).toContain("gpt-4.1");
     expect(section.querySelector("#infobar-tool-cost-panel").textContent).toContain("read_file");
-    expect(section.querySelector("#infobar-tool-cost-meta").textContent).toContain("1 tracked");
     expect(section.querySelector("#infobar-sessions-panel").textContent).toContain("Session 1");
   });
 });

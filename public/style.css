@@ -1868,7 +1868,10 @@ body {
   color: var(--text);
   font-size: 12px;
   cursor: pointer;
-  transition: border-color 0.15s, background 0.15s, color 0.15s;
+  transition:
+    border-color 0.15s,
+    background 0.15s,
+    color 0.15s;
 }
 
 .pkg-browse-page-btn:hover:not(:disabled) {

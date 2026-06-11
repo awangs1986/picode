@@ -79,7 +79,10 @@ export function buildCostDashboardPayload(sessions: any[], params: any, now = ne
   const byModel = new Map<string, { cost: number; count: number }>();
   const byTool = new Map<string, number>();
   const byBucket = new Map<string, { cost: number; tokens: number }>();
-  const byProject = new Map<string, { name: string; path: string; cost: number; sessions: number }>();
+  const byProject = new Map<
+    string,
+    { name: string; path: string; cost: number; sessions: number }
+  >();
   const infobarTools = new Map<string, { cost: number; count: number }>();
   const activeDays = new Set<string>();
   const todayKey = dayKey(now);
@@ -158,7 +161,9 @@ export function buildCostDashboardPayload(sessions: any[], params: any, now = ne
   payload.breakdown.byTool = Array.from(byTool.entries())
     .map(([name, cost]) => ({ name, cost }))
     .sort((a, b) => b.cost - a.cost);
-  payload.topSessions = [...payload.sessions].sort((a, b) => b.totalCost - a.totalCost).slice(0, 20);
+  payload.topSessions = [...payload.sessions]
+    .sort((a, b) => b.totalCost - a.totalCost)
+    .slice(0, 20);
 
   payload.infobar.overview.daysActive = activeDays.size;
   payload.infobar.overview.avgCostPerDay =

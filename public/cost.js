@@ -71,9 +71,9 @@ function loadSavedFilters() {
     const saved = JSON.parse(raw);
     if (saved.range) currentRange = saved.range;
     if (saved.scope === "all") {
-      scopeSelect.value = "all";
+      if (scopeSelect) scopeSelect.value = "all";
     } else if (saved.scope === "current") {
-      scopeSelect.value = "all";
+      if (scopeSelect) scopeSelect.value = "all";
     }
   } catch {}
 }
@@ -83,7 +83,7 @@ function saveFilters() {
     "pi-studio-cost-filters",
     JSON.stringify({
       range: currentRange,
-      scope: scopeSelect.value,
+      scope: scopeSelect?.value ?? "all",
     }),
   );
 }
@@ -100,7 +100,7 @@ function buildQuery() {
   const params = new URLSearchParams({
     range: currentRange,
     granularity: "day",
-    scope: scopeSelect.value,
+    scope: scopeSelect?.value ?? "all",
   });
   return params.toString();
 }
