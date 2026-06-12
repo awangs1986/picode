@@ -7,7 +7,8 @@
       "!src-tauri/target",
       "!dist",
       "!extensions/dist",
-      "!node_modules"
+      "!node_modules",
+      "!public/vendor"
     ]
   },
   "formatter": {

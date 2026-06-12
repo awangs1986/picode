@@ -5,6 +5,33 @@
  * task lists, images, paragraphs.
  */
 
+import remend from "./vendor/remend.js";
+
+/**
+ * Streaming-tolerant renderer for partial markdown. remend closes unterminated
+ * inline syntax (bold, italic, inline code, links, strikethrough) so mid-stream
+ * text previews cleanly instead of showing raw markers. Falls back to escaped
+ * plain text if repair or rendering throws.
+ */
+export function renderStreamingMarkdown(text) {
+  if (!text) return "";
+  try {
+    let repaired = remend(text);
+    // remend marks links whose URL hasn't finished streaming; show just the
+    // label until the URL is complete.
+    repaired = repaired.replace(/\[([^\]]*)\]\(streamdown:incomplete-link\)/g, "$1");
+    // remend leaves an unterminated ``` fence open (remark-style renderers
+    // tolerate that), but renderMarkdown only matches paired fences.
+    const fences = repaired.match(/```/g);
+    if (fences && fences.length % 2 === 1) {
+      repaired += "\n```";
+    }
+    return renderMarkdown(repaired);
+  } catch {
+    return `<p>${escapeHtml(text)}</p>`;
+  }
+}
+
 export function renderMarkdown(text) {
   if (!text) return "";
 

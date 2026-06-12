@@ -2,7 +2,7 @@
  * Message Renderer - Renders chat messages with markdown support
  */
 
-import { renderMarkdown, renderUserMarkdown } from "./markdown.js";
+import { renderMarkdown, renderStreamingMarkdown, renderUserMarkdown } from "./markdown.js";
 
 export class MessageRenderer {
   constructor(container) {
@@ -87,19 +87,29 @@ export class MessageRenderer {
 
     let contentHtml = "";
     let usageHtml = "";
+    let rawStreamingText = "";
 
     if (typeof message.content === "string") {
+      rawStreamingText = message.content;
       contentHtml = isStreaming
-        ? this.escapeHtml(message.content)
+        ? renderStreamingMarkdown(message.content)
         : renderMarkdown(message.content);
     } else if (Array.isArray(message.content)) {
       for (const block of message.content) {
         if (block.type === "text") {
-          contentHtml += isStreaming ? this.escapeHtml(block.text) : renderMarkdown(block.text);
+          rawStreamingText += block.text;
+          contentHtml += isStreaming
+            ? renderStreamingMarkdown(block.text)
+            : renderMarkdown(block.text);
         } else if (block.type === "thinking") {
           contentHtml += this.renderThinkingBlock(block.thinking);
         }
       }
+    }
+    // Markdown is rendered live during streaming, so the raw text (with its
+    // syntax markers) can't be recovered from the DOM at finalize time.
+    if (isStreaming) {
+      div._streamingRawText = rawStreamingText;
     }
 
     // Usage/cost info
@@ -161,9 +171,10 @@ export class MessageRenderer {
   updateStreamingMessage(messageElement, content) {
     const contentDiv = messageElement.querySelector(".message-content");
     if (contentDiv) {
+      messageElement._streamingRawText = content;
       // Keep any thinking block, update only the text part
       const thinkingBlock = contentDiv.querySelector(".streaming-thinking");
-      const escaped = this.escapeHtml(content);
+      const rendered = renderStreamingMarkdown(content);
       if (thinkingBlock) {
         // Remove everything after the thinking block and re-add text
         let textNode = contentDiv.querySelector(".streaming-text");
@@ -172,9 +183,9 @@ export class MessageRenderer {
           textNode.className = "streaming-text";
           contentDiv.appendChild(textNode);
         }
-        textNode.innerHTML = escaped;
+        textNode.innerHTML = rendered;
       } else {
-        contentDiv.innerHTML = escaped;
+        contentDiv.innerHTML = rendered;
       }
       this.scrollToBottom();
     }
@@ -184,9 +195,15 @@ export class MessageRenderer {
     const contentDiv = messageElement.querySelector(".message-content");
     if (contentDiv) {
       contentDiv.classList.remove("streaming");
-      // Get the raw text (exclude thinking block text)
+      // Prefer the raw text stashed during streaming — the DOM now holds
+      // rendered markdown, so textContent has lost the syntax markers.
       const streamingText = contentDiv.querySelector(".streaming-text");
-      const rawText = streamingText ? streamingText.textContent : contentDiv.textContent;
+      const domText = streamingText ? streamingText.textContent : contentDiv.textContent;
+      const rawText =
+        typeof messageElement._streamingRawText === "string"
+          ? messageElement._streamingRawText
+          : domText;
+      messageElement._streamingRawText = null;
 
       // Rebuild with thinking block (if any) + markdown text
       let html = "";
