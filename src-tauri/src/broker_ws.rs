@@ -46,7 +46,7 @@ pub struct BrokerWs {
 
 impl BrokerWs {
     pub fn start() -> Result<Self, String> {
-        let std_listener = std::net::TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
+        let std_listener = std::net::TcpListener::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0))
             .map_err(|e| format!("Failed to bind broker websocket: {}", e))?;
         std_listener
             .set_nonblocking(true)
@@ -75,6 +75,10 @@ impl BrokerWs {
 
     pub fn url(&self) -> String {
         format!("ws://127.0.0.1:{}/ui-ws", self.port)
+    }
+
+    pub fn port(&self) -> u16 {
+        self.port
     }
 
     pub fn set_active_port(&self, port: u16) {

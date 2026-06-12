@@ -17,8 +17,8 @@
  * - Generate session titles from user messages
  *
  * What's intentionally NOT here anymore (vs the old mirror-server.ts):
- * - QR / Tailscale advertising — desktop WebView is always localhost
- * - Basic auth — desktop WebView is always localhost
+ * - QR / pairing flow — LAN mobile access is advertised as a plain URL
+ * - Basic auth — the mobile entry point is an explicit local-network dev mode
  * - `/studiostart` / `/studiostop` / `/qr` commands — server lifecycle is
  *   tied 1:1 to the pi process Pi Studio spawns
  * - Cross-process instance discovery via `~/.pi/pistudio-instances/` —
@@ -106,6 +106,46 @@ function resolvePiAgentRoot(): string {
 
 const PI_AGENT_ROOT = resolvePiAgentRoot();
 
+export const LAN_BIND_HOST = "0.0.0.0";
+
+function isLoopbackHost(host: string): boolean {
+  return host === "127.0.0.1" || host === "localhost" || host === "::1";
+}
+
+function findLanHosts(): string[] {
+  const hosts = new Set<string>();
+  try {
+    const interfaces = os.networkInterfaces();
+    for (const details of Object.values(interfaces)) {
+      if (!details) continue;
+      for (const detail of details) {
+        if (detail.family === "IPv4" && !detail.internal && detail.address) {
+          hosts.add(detail.address);
+        }
+      }
+    }
+  } catch {}
+  return [...hosts].sort();
+}
+
+export function buildLanAccessUrls(port: number, hosts: string[]): string[] {
+  const brokerPort = Number.parseInt(process.env.PI_STUDIO_BROKER_PORT || "", 10);
+  return hosts.map((host) => {
+    const url = new URL(`http://${host}:${port}/`);
+    url.searchParams.set("mobile", "1");
+    if (Number.isFinite(brokerPort) && brokerPort > 0) {
+      url.searchParams.set("brokerWs", `ws://${host}:${brokerPort}/ui-ws`);
+    }
+    return url.toString();
+  });
+}
+
+function buildLanUrls(port: number): string[] {
+  if (isLoopbackHost(BIND_HOST)) return [];
+  const hosts = BIND_HOST === "0.0.0.0" ? findLanHosts() : [BIND_HOST];
+  return buildLanAccessUrls(port, hosts);
+}
+
 function loadSettings(): { port: number } {
   let settings: any = {};
   try {
@@ -119,6 +159,7 @@ function loadSettings(): { port: number } {
 
 const SETTINGS = loadSettings();
 const PORT = SETTINGS.port;
+const BIND_HOST = LAN_BIND_HOST;
 // Forwarded by Pi Studio (Rust side) from `scripts/pi-version.json`. We deliberately
 // do not call `pi --version` here: this extension always runs *inside* the pi
 // binary Pi Studio spawned, so the version is known.
@@ -282,6 +323,7 @@ type EmbeddedServerGlobal = {
   clients: Set<UnifiedWS>;
   heartbeatTimer: NodeJS.Timeout | null;
   localUrl: string;
+  lanUrl: string;
   // Re-published by every extension instance on session_start so the
   // connection handler dispatches to the new session's pi/ctx.
   handleCommand: ((ws: WebSocket, command: any) => Promise<void>) | null;
@@ -331,6 +373,7 @@ function getOrCreateGlobalState(): EmbeddedServerGlobal {
       clients: new Set<UnifiedWS>(),
       heartbeatTimer: null,
       localUrl: "",
+      lanUrl: "",
       handleCommand: null,
       buildStateSnapshot: null,
       getLatestCtx: null,
@@ -738,6 +781,50 @@ export default function (pi: ExtensionAPI) {
         case "abort": {
           if (ctx) ctx.abort();
           sendTo(ws, success("abort"));
+          break;
+        }
+
+        case "new_session": {
+          if (!ctx) {
+            sendTo(ws, error("new_session", "No context available"));
+            break;
+          }
+          if (typeof (ctx as any).newSession !== "function") {
+            sendTo(
+              ws,
+              error(
+                "new_session",
+                "New session requires the desktop broker with this embedded pi version.",
+              ),
+            );
+            break;
+          }
+          const result = await ctx.newSession();
+          sendTo(ws, success("new_session", result || {}));
+          break;
+        }
+
+        case "switch_session": {
+          if (!ctx) {
+            sendTo(ws, error("switch_session", "No context available"));
+            break;
+          }
+          if (!command.sessionPath || typeof command.sessionPath !== "string") {
+            sendTo(ws, error("switch_session", "sessionPath is required"));
+            break;
+          }
+          if (typeof (ctx as any).switchSession !== "function") {
+            sendTo(
+              ws,
+              error(
+                "switch_session",
+                "Session switching requires the desktop broker with this embedded pi version.",
+              ),
+            );
+            break;
+          }
+          const result = await ctx.switchSession(command.sessionPath);
+          sendTo(ws, success("switch_session", result || {}));
           break;
         }
 
@@ -1169,7 +1256,18 @@ export default function (pi: ExtensionAPI) {
       // still reads it via the old name, and renaming is a churn-without-
       // benefit change scoped out of this migration.
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ status: "ok", mode: "embedded", mirrorUrl: globalState.localUrl }));
+      const healthPayload: Record<string, any> = {
+        status: "ok",
+        mode: "embedded",
+        mirrorUrl: globalState.localUrl,
+      };
+      const lanUrls = buildLanUrls(globalState.server?.port || PORT);
+      if (!isLoopbackHost(BIND_HOST)) {
+        healthPayload.bindHost = BIND_HOST;
+        healthPayload.lanUrl = lanUrls[0] || null;
+        healthPayload.lanUrls = lanUrls;
+      }
+      res.end(JSON.stringify(healthPayload));
       return;
     }
 
@@ -2408,7 +2506,7 @@ export default function (pi: ExtensionAPI) {
         try {
           const bunServer: any = Bun.serve({
             port,
-            hostname: "127.0.0.1",
+            hostname: BIND_HOST,
             // Sustained streaming responses (e.g. SSE / long polls hitting
             // our REST surface) should not be killed by Bun's default 10s
             // idle timeout. 0 = disable.
@@ -2561,9 +2659,8 @@ export default function (pi: ExtensionAPI) {
     });
 
     const tryListen = (port: number, maxAttempts = 10) => {
-      // Bind to 127.0.0.1 only — Pi Studio is a local desktop app and
-      // never needs to be reachable from other hosts.
-      server.listen(port, "127.0.0.1", () => {
+      // Pi Studio's mobile dev mode is always reachable from the local network.
+      server.listen(port, BIND_HOST, () => {
         onListening(port);
         globalState.server = {
           port,
@@ -2588,9 +2685,15 @@ export default function (pi: ExtensionAPI) {
     };
 
     function onListening(port: number) {
-      globalState.localUrl = `http://127.0.0.1:${port}`;
+      const localHost = isLoopbackHost(BIND_HOST) ? BIND_HOST : "127.0.0.1";
+      globalState.localUrl = `http://${localHost}:${port}`;
+      const lanUrls = buildLanUrls(port);
+      globalState.lanUrl = lanUrls[0] || "";
       console.log(`[Embedded] Pi Studio embedded server running on ${globalState.localUrl}`);
-      ctx.ui.setStatus("embedded", `Embedded: 127.0.0.1:${port}`);
+      const statusTarget = !isLoopbackHost(BIND_HOST)
+        ? `${BIND_HOST}:${port}${globalState.lanUrl ? ` (${globalState.lanUrl})` : ""}`
+        : `${BIND_HOST}:${port}`;
+      ctx.ui.setStatus("embedded", `Embedded: ${statusTarget}`);
       const sessionFile = ctx.sessionManager.getSessionFile() || "";
       registerInstance(port, sessionFile, ctx.cwd || process.cwd());
     }

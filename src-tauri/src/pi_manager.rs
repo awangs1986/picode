@@ -298,22 +298,11 @@ impl PiManager {
         }
 
         let mut candidates: Vec<(PathBuf, &'static str)> = Vec::new();
-        if let Some(parent) = self.static_dir.parent() {
-            candidates.push((
-                parent.join("extensions").join("embedded-server.mjs"),
-                "bundled",
-            ));
-            candidates.push((
-                parent.join("extensions").join("embedded-server.ts"),
-                "dev:source",
-            ));
-        }
 
         // Compile-time path fallbacks: only useful while developing locally.
-        // Release builds must rely on the bundled .mjs; if that is missing we
-        // want a loud error, not a silent fallback to the build machine's
-        // hard-coded path (the previous behaviour, which made the same .app
-        // "work" on the developer's machine and fail everywhere else).
+        // Prefer the live source in debug builds before any target/debug bundle:
+        // that bundle can be stale after frontend/extension edits and causes the
+        // dev app to serve old API behavior until a full resource copy happens.
         if cfg!(debug_assertions) {
             candidates.push((
                 PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -325,6 +314,17 @@ impl PiManager {
             if let Ok(cwd) = std::env::current_dir() {
                 candidates.push((cwd.join("extensions").join("embedded-server.ts"), "dev:cwd"));
             }
+        }
+
+        if let Some(parent) = self.static_dir.parent() {
+            candidates.push((
+                parent.join("extensions").join("embedded-server.mjs"),
+                "bundled",
+            ));
+            candidates.push((
+                parent.join("extensions").join("embedded-server.ts"),
+                "dev:source",
+            ));
         }
 
         for (candidate, source) in &candidates {

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  buildWorkspaceUrl,
   isDeadPortError,
   startInWindowNewSession,
   startNewProjectChat,
@@ -205,6 +206,16 @@ describe("withBrokerWs", () => {
       },
     };
     expect(withBrokerWs("http://localhost:47826/", transport)).toBe("http://localhost:47826/");
+  });
+});
+
+describe("buildWorkspaceUrl", () => {
+  it("uses http for per-workspace embedded servers even when current page is https", () => {
+    expect(
+      buildWorkspaceUrl(47826, {
+        location: { protocol: "https:", hostname: "studio.example.test" },
+      }),
+    ).toBe("http://studio.example.test:47826/");
   });
 });
 

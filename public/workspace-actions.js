@@ -48,6 +48,12 @@ export function withBrokerWs(url, transport) {
   return `${url}${sep}brokerWs=${encodeURIComponent(brokerUrl)}`;
 }
 
+export function buildWorkspaceUrl(port, env = globalThis.window || globalThis) {
+  const loc = env?.location || globalThis.location;
+  const host = loc?.hostname || "localhost";
+  return `http://${host}:${port}/`;
+}
+
 // True when an in-place `new_session(port)` / `switch_session(port)` RPC
 // failed because the target port is no longer backed by a pi process the
 // Rust PiManager owns. This happens when `foregroundPort` drifts to a stale
@@ -106,7 +112,7 @@ async function attachToWorkspace({
     }
   }
 
-  navigate(withBrokerWs(`http://localhost:${targetPort}/`, transport));
+  navigate(withBrokerWs(buildWorkspaceUrl(targetPort), transport));
   return { samePort: false, port: targetPort };
 }
 
@@ -220,11 +226,10 @@ async function spawnFreshSession({
 }) {
   const dismissOverlay = runOnBeforeSwap(onBeforeSwap, label);
   try {
-    // For in-place parallel activation (no full-page navigation) we MUST wait
-    // for the freshly-spawned pi to be healthy before switching the UI/broker
-    // routing to its port — otherwise the broker connects to a not-yet-listening
-    // port (Connection refused) and the UI is stuck attached to a dead instance.
-    const waitForHealth = typeof onParallelSessionCreated === "function";
+    // Wait before both in-place activation and full-page navigation. Otherwise
+    // remote/mobile clients can land on a not-yet-listening embedded port and
+    // get stuck behind the swap overlay.
+    const waitForHealth = true;
     const newPort = await transport.openWorkspace(targetCwd, {
       forceNewSession: false,
       openWindow: false,
@@ -246,7 +251,7 @@ async function spawnFreshSession({
       }
       return true;
     }
-    navigate(withBrokerWs(`http://localhost:${newPort}/`, transport));
+    navigate(withBrokerWs(buildWorkspaceUrl(newPort), transport));
     return true;
   } catch (e) {
     dismissOverlay();

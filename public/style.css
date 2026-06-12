@@ -4422,6 +4422,26 @@ body.hide-thinking .thinking-block {
     height: 36px;
     font-size: 18px;
   }
+
+  /* ── Compose input ── */
+
+  /* Stay above browser chrome (iOS Safari address bar, etc.) */
+  .input-area {
+    padding: 8px 12px max(10px, env(safe-area-inset-bottom, 10px));
+  }
+
+  /* Switch left-action buttons from column → row to save vertical space */
+  .input-left-actions {
+    flex-direction: row;
+    align-self: flex-end;
+    padding-bottom: 4px;
+    gap: 2px;
+  }
+
+  /* Slightly reduce max textarea height on small screens */
+  #message-input {
+    max-height: 120px;
+  }
 }
 
 /* ═══════════════════════════════════════════════════════

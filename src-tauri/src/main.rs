@@ -916,6 +916,7 @@ fn main() {
             let static_dir = find_static_dir(app);
             let manager = Arc::new(PiManager::new(static_dir));
             let broker = Arc::new(BrokerWs::start().expect("failed to start broker websocket"));
+            std::env::set_var("PI_STUDIO_BROKER_PORT", broker.port().to_string());
             install_control_handler(&broker, manager.clone(), app.handle().clone());
 
             let home_cwd = dirs::home_dir()

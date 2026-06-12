@@ -47,15 +47,24 @@ const getCurrentPort = () => {
   const fromLocation = Number(location.port);
   return Number.isFinite(fromLocation) && fromLocation > 0 ? fromLocation : 47821;
 };
+const mobileClientMode = new URLSearchParams(window.location.search).get("mobile") === "1";
 const navigateInWindow = (url) => {
-  window.location.href = url;
+  let target = url;
+  if (mobileClientMode) {
+    try {
+      const nextUrl = new URL(url, window.location.href);
+      nextUrl.searchParams.set("mobile", "1");
+      target = nextUrl.toString();
+    } catch {}
+  }
+  window.location.href = target;
 };
 
 // ──────────────────────────────────────────────────────────────────────
 // Instance-swap overlay
 // ──────────────────────────────────────────────────────────────────────
 // `+ New Session`, `start new chat`, `Open Project`, and `Open Folder`
-// all end with `window.location.href = http://localhost:<newPort>/`,
+// all end with `window.location.href = http://<current-host>:<newPort>/`,
 // which is a full-page navigation and would otherwise show a 1–2s
 // freeze (while pi spawns) and then a white flash (while the WebView
 // reloads). To make this look like a single smooth transition we:
@@ -137,7 +146,10 @@ const transport = initTransport({ wsClient, env: window });
 // True once the broker advertises a native (OS/window) control handler — i.e.
 // we're attached to the desktop host. Drives native-only UI gating. Starts
 // false and flips when the `capabilities` frame arrives (see listener below).
-const nativeAvailable = () => transport.capabilities.native;
+// `?mobile=1` is a browser client even if it reaches the desktop broker, so it
+// must not use native workspace/window controls.
+const nativeAvailable = () => !mobileClientMode && transport.capabilities.native;
+const canUseSessionControl = () => transport.capabilities.native;
 const state = new StateManager();
 const messageRenderer = new MessageRenderer(document.getElementById("messages"));
 const toolCardRenderer = new ToolCardRenderer(document.getElementById("messages"));
@@ -219,6 +231,7 @@ let lastRenderedWelcomeWorkspacePath = null;
 const portSessionMap = new Map();
 // The port that wsClient is currently connected to (the "foreground" session)
 let foregroundPort = getCurrentPort();
+let foregroundWorkspacePath = "";
 const getActivePort = () => foregroundPort;
 function logSessionRoute(label, details = {}) {
   console.debug(`[Session route] ${label}`, {
@@ -295,12 +308,19 @@ function updateWorkspaceIndicator(path = "") {
 }
 
 function syncWorkspaceIndicatorFromInstances() {
-  updateWorkspaceIndicator(getWorkspacePathForPort(liveInstances, foregroundPort));
+  const workspacePath = getWorkspacePathForPort(liveInstances, foregroundPort);
+  if (workspacePath) foregroundWorkspacePath = workspacePath;
+  updateWorkspaceIndicator(workspacePath || foregroundWorkspacePath);
   refreshGitBranch();
 }
 
 function getCurrentWorkspacePath() {
-  return getWorkspacePathForPort(liveInstances, foregroundPort);
+  return getWorkspacePathForPort(liveInstances, foregroundPort) || foregroundWorkspacePath;
+}
+
+function workspacePathFromId(workspaceId) {
+  if (typeof workspaceId !== "string") return "";
+  return workspaceId.startsWith("workspace:") ? workspaceId.slice("workspace:".length) : "";
 }
 
 function renderWorkspaceWelcome({ force = false } = {}) {
@@ -1715,7 +1735,9 @@ async function resetUiForNewSession() {
   sidebar.clearActive();
   mirrorActiveSessionFile = null;
   viewingActiveSession = true;
+  pendingSessionSwitchPath = null;
   updateMirrorInputState();
+  updateUI();
 
   // Mark that the next assistant turn should refresh the sidebar, since pi
   // doesn't persist a brand-new session to disk until the first message round-trip.
@@ -1729,7 +1751,10 @@ async function activateNewParallelSession(port, cwd) {
   logSessionRoute("activateNewParallelSession:start", { port, cwd });
   foregroundPort = port;
   portSessionMap.delete(port);
-  if (cwd) updateWorkspaceIndicator(cwd);
+  if (cwd) {
+    foregroundWorkspacePath = cwd;
+    updateWorkspaceIndicator(cwd);
+  }
   wsClient.setRoutingContext({
     workspaceId: `workspace:${cwd || getCurrentWorkspacePath() || "unknown"}`,
     sessionId: null,
@@ -1762,14 +1787,37 @@ async function newSession() {
     return;
   }
 
+  if (canUseSessionControl()) {
+    sessionTotalCost = 0;
+    lastInputTokens = 0;
+    updateCostDisplay();
+    updateTokenUsage();
+    try {
+      await transport.newSession(getActivePort());
+      await resetUiForNewSession();
+    } catch (err) {
+      messageRenderer.renderError(`Failed to start new session: ${err}`);
+      return;
+    }
+    if (isMobile()) {
+      sidebarEl.classList.add("collapsed");
+      sidebarOverlay.classList.remove("visible");
+    }
+    return;
+  }
+
   // Browser/dev fallback: classic in-place "new session" against the same
   // pi process (no Tauri windows available in this mode).
   sessionTotalCost = 0;
   lastInputTokens = 0;
   updateCostDisplay();
   updateTokenUsage();
-  await switchSession(null);
-  sidebar.clearActive();
+  const data = await rpcCommand({ type: "new_session" }, "Starting new session...");
+  if (data?.success === false || data?.data?.cancelled) {
+    messageRenderer.renderError(data?.error || "New session was cancelled");
+    return;
+  }
+  await resetUiForNewSession();
 
   if (isMobile()) {
     sidebarEl.classList.add("collapsed");
@@ -1782,6 +1830,31 @@ async function handleNewProjectChat(project) {
   if (workspaceLaunchInProgress) return;
   setWorkspaceLaunchInProgress(true);
   try {
+    if (!canUseSessionControl()) {
+      const targetPath = project?.path || "";
+      const currentPath = getCurrentWorkspacePath();
+      const singleProject =
+        Array.isArray(sidebar.projects) && sidebar.projects.length === 1
+          ? sidebar.projects[0]
+          : null;
+      const isCurrentProject =
+        !targetPath ||
+        targetPath === currentPath ||
+        (!currentPath && singleProject?.path === targetPath);
+      if (isCurrentProject) {
+        await newSession();
+      } else {
+        messageRenderer.renderError(
+          "Starting a new chat in another project requires the desktop broker. Reopen the LAN URL from Settings.",
+        );
+      }
+      if (isMobile()) {
+        sidebarEl.classList.add("collapsed");
+        sidebarOverlay.classList.remove("visible");
+      }
+      return;
+    }
+
     // Prefer reuse: same project + no active parallel run => in-place
     // new_session on current process. Spawn dedicated process only when
     // a parallel run is active.
@@ -1790,11 +1863,11 @@ async function handleNewProjectChat(project) {
       transport,
       getCurrentPort: getActivePort,
       getCurrentCwd: getCurrentWorkspacePath,
-      shouldSpawnParallel: () => state.isStreaming,
+      shouldSpawnParallel: () => mobileClientMode || state.isStreaming,
       onInPlaceSessionCreated: () => {
         resetUiForNewSession().catch(() => {});
       },
-      onParallelSessionCreated: activateNewParallelSession,
+      onParallelSessionCreated: mobileClientMode ? null : activateNewParallelSession,
       fetchInstances,
       navigate: navigateInWindow,
       onBeforeSwap: onBeforeInstanceSwap,
@@ -2135,6 +2208,11 @@ function handleMirrorSync(data) {
   // Track the active session
   mirrorActiveSessionFile = data.sessionFile || null;
   if (data.sessionFile) portSessionMap.set(foregroundPort, data.sessionFile);
+  const syncWorkspacePath = workspacePathFromId(data.workspaceId);
+  if (syncWorkspacePath) {
+    foregroundWorkspacePath = syncWorkspacePath;
+    updateWorkspaceIndicator(syncWorkspacePath);
+  }
   wsClient.setRoutingContext({
     workspaceId: data.workspaceId || `workspace:${getCurrentWorkspacePath() || "unknown"}`,
     sessionId: data.sessionId || data.sessionFile || null,
@@ -2444,25 +2522,69 @@ async function fetchContextWindow() {
 }
 
 let tailscaleUrl = "";
+let lanUrl = "";
+let lanUrls = [];
+
+function updateLanUrlDisplay(url = "") {
+  if (!lanUrlValue) return;
+  const value = typeof url === "string" ? url.trim() : "";
+  if (!value) {
+    lanUrlValue.textContent = "Unavailable";
+    lanUrlValue.removeAttribute("href");
+    lanUrlValue.setAttribute("aria-disabled", "true");
+    lanUrlValue.title = "";
+    return;
+  }
+  lanUrlValue.textContent = value;
+  lanUrlValue.href = value;
+  lanUrlValue.title = lanUrls.length > 1 ? lanUrls.join("\n") : value;
+  lanUrlValue.removeAttribute("aria-disabled");
+}
+
+async function refreshLanUrl() {
+  try {
+    const res = await fetch("/api/health");
+    if (!res.ok) {
+      updateLanUrlDisplay("");
+      return;
+    }
+    const data = await res.json();
+    tailscaleUrl = typeof data?.tailscaleUrl === "string" ? data.tailscaleUrl : tailscaleUrl;
+    lanUrls = Array.isArray(data?.lanUrls)
+      ? data.lanUrls.filter((value) => typeof value === "string" && value.trim())
+      : [];
+    lanUrl = typeof data?.lanUrl === "string" ? data.lanUrl : "";
+    if (!lanUrl && lanUrls.length > 0) lanUrl = lanUrls[0];
+    if (tailscaleUrl) {
+      statusText.textContent = "Connected • TS";
+      statusText.title = tailscaleUrl;
+    } else if (lanUrl) {
+      statusText.textContent = "Connected • LAN";
+      statusText.title = lanUrl;
+    }
+    updateLanUrlDisplay(lanUrl);
+  } catch {
+    updateLanUrlDisplay("");
+  }
+}
 
 function updateConnectionStatus(status) {
   statusIndicator.className = `status-indicator ${status}`;
 
   if (status === "connected") {
-    statusText.textContent = tailscaleUrl ? "Connected • TS" : "Connected";
-    statusText.title = tailscaleUrl || "";
-    // Fetch tailscale info on first connect
-    if (!tailscaleUrl) {
-      fetch("/api/health")
-        .then((r) => r.json())
-        .then((data) => {
-          if (data.tailscaleUrl) {
-            tailscaleUrl = data.tailscaleUrl;
-            statusText.textContent = "Connected • TS";
-            statusText.title = tailscaleUrl;
-          }
-        })
-        .catch(() => {});
+    if (tailscaleUrl) {
+      statusText.textContent = "Connected • TS";
+      statusText.title = tailscaleUrl;
+    } else if (lanUrl) {
+      statusText.textContent = "Connected • LAN";
+      statusText.title = lanUrl;
+    } else {
+      statusText.textContent = "Connected";
+      statusText.title = "";
+    }
+    // Fetch network link metadata on first connect
+    if (!tailscaleUrl && !lanUrl) {
+      void refreshLanUrl();
     }
   } else if (status === "disconnected") {
     statusText.textContent = "Disconnected";
@@ -2502,7 +2624,7 @@ function updateUI() {
     abortBtn.classList.add("hidden");
     messageInput.placeholder = "Waiting for current session to finish…";
   } else {
-    messageInput.placeholder = "Type a message... (Enter to send, Shift+Enter for newline)";
+    messageInput.placeholder = "Type a message...";
   }
 }
 
@@ -2532,6 +2654,7 @@ const toggleShowThinking = document.getElementById("toggle-show-thinking");
 const toggleAuth = document.getElementById("toggle-auth");
 const authSection = document.getElementById("settings-auth-section");
 const piVersionValue = document.getElementById("setting-pi-version-value");
+const lanUrlValue = document.getElementById("setting-lan-url-value");
 let piVersionCache = null;
 let piVersionInflight = null;
 let loadInlineConfigEditor = async () => {};
@@ -3110,6 +3233,7 @@ async function openSettings() {
   setTimeout(() => {
     if (!settingsPanel.classList.contains("hidden")) loadPiVersion();
   }, 300);
+  void refreshLanUrl();
   // Fetch current state for toggles
   try {
     const resp = await fetch("/api/rpc", {

@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>Pi Studio</title>
   <link rel="icon" type="image/svg+xml" href="icons/logo-dark.svg">
   <meta name="theme-color" content="#f5f3ef">
@@ -12,7 +12,10 @@
     // Detect macOS for overlay title bar padding (TitleBarStyle::Overlay in Rust
     // extends the WebView into the native title bar area; we add padding so
     // app content clears the traffic-light buttons).
-    if (navigator.platform.startsWith('Mac') || navigator.userAgent.includes('Mac OS')) {
+    if (
+      ('__TAURI_INTERNALS__' in window) &&
+      (navigator.platform.startsWith('Mac') || navigator.userAgent.includes('Mac OS'))
+    ) {
       document.documentElement.classList.add('macos-overlay');
     }
   </script>
@@ -170,7 +173,7 @@
           <div class="input-bubble">
             <textarea
               id="message-input"
-              placeholder="Type a message... (Enter to send, Shift+Enter for newline)"
+              placeholder="Type a message..."
               autocomplete="off"
               rows="2"
 
@@ -245,6 +248,10 @@
           </div>
           <div class="settings-section" id="setting-updater-section">
             <div class="settings-section-title">Updates</div>
+            <div class="settings-row">
+              <span class="settings-label">LAN URL</span>
+              <a class="settings-static-value" id="setting-lan-url-value" href="#" target="_blank" rel="noopener noreferrer">Unavailable</a>
+            </div>
             <div class="settings-row" id="setting-pi-version">
               <span class="settings-label">Pi version</span>
               <span class="settings-static-value" id="setting-pi-version-value">Loading...</span>
