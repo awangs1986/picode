@@ -1630,7 +1630,7 @@ export default function (pi: ExtensionAPI) {
       req.on("data", (chunk: Buffer) => {
         body += chunk.toString();
       });
-      req.on("end", () => {
+      req.on("end", async () => {
         try {
           const { content } = JSON.parse(body);
           if (typeof content !== "string") {
@@ -1662,11 +1662,15 @@ export default function (pi: ExtensionAPI) {
           fs.writeFileSync(configPath, content, "utf8");
           // Reload pi's in-memory model registry so the picker sees the new
           // providers/models without restarting the workspace.
+          // IMPORTANT: await refresh() so the registry is fully updated
+          // before we respond — the frontend calls get_available_models
+          // immediately after receiving our response, and without await it
+          // would race against the async reload and return stale models.
           let refreshed = false;
           try {
             const registry = globalState.modelRegistry;
             if (registry && typeof (registry as any).refresh === "function") {
-              (registry as any).refresh();
+              await (registry as any).refresh();
               refreshed = true;
             }
           } catch {

@@ -413,7 +413,7 @@ export function setupSettingsEditors({
       if (!data.success) throw new Error(data.error || "Failed to save models.json");
       showSettingsSaveSuccess(inlineModelsError);
       try {
-        fetchModelInfo?.();
+        await fetchModelInfo?.();
       } catch {}
     } catch (e) {
       showInlineModelsError(e.message || String(e));
