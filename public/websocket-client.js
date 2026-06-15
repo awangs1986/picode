@@ -210,8 +210,12 @@ export class WebSocketClient extends EventTarget {
         sourcePort: payload.sourcePort,
       });
       this.ws.send(JSON.stringify(payload));
+      // Return the requestId so callers can correlate a later
+      // `command_undeliverable` reply back to the message they sent.
+      return payload.requestId || null;
     } else {
       console.error("[WS] Cannot send, not connected");
+      return null;
     }
   }
 
@@ -349,6 +353,14 @@ export class WebSocketClient extends EventTarget {
     if (message.type === "control_response") {
       this.resolveControl(message);
       this.dispatchEvent(new CustomEvent("controlResponse", { detail: message }));
+      return;
+    }
+
+    // The broker could not route/deliver a broker_command we sent (the target
+    // pi process is gone or no session is reachable). Surface it so a dropped
+    // prompt does not vanish silently — callers correlate via requestId.
+    if (message.type === "command_undeliverable") {
+      this.dispatchEvent(new CustomEvent("commandUndeliverable", { detail: message }));
       return;
     }
 

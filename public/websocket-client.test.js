@@ -267,6 +267,42 @@ describe("WebSocketClient broker routing", () => {
     expect(syncs[0].port).toBe(47822);
   });
 
+  test("send returns the requestId so callers can correlate delivery failures", () => {
+    const client = new WebSocketClient("ws://127.0.0.1:49000/ui-ws");
+    client.ws = { readyState: WebSocket.OPEN, send: () => {} };
+
+    expect(client.send({ type: "prompt", message: "hello" })).toBe("req-1");
+    // Pre-wrapped broker_command envelopes keep their own requestId.
+    expect(client.send({ type: "broker_command", requestId: "req-custom" })).toBe("req-custom");
+    // Not connected: nothing is sent and there is no requestId to track.
+    client.ws = { readyState: WebSocket.CLOSED, send: () => {} };
+    expect(client.send({ type: "prompt", message: "later" })).toBeNull();
+  });
+
+  test("command_undeliverable dispatches a commandUndeliverable event", () => {
+    const client = new WebSocketClient("ws://127.0.0.1:49000/ui-ws");
+    const seen = [];
+    client.addEventListener("commandUndeliverable", (event) => seen.push(event.detail));
+
+    client.handleMessage({
+      type: "command_undeliverable",
+      requestId: "req-7",
+      command: "prompt",
+      reason: "upstream_unavailable",
+      sessionId: "/tmp/project/session-a.jsonl",
+    });
+
+    expect(seen).toEqual([
+      {
+        type: "command_undeliverable",
+        requestId: "req-7",
+        command: "prompt",
+        reason: "upstream_unavailable",
+        sessionId: "/tmp/project/session-a.jsonl",
+      },
+    ]);
+  });
+
   test("wraps commands with the active source port", () => {
     const sent = [];
     const client = new WebSocketClient("ws://127.0.0.1:49000/ui-ws");

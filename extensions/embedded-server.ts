@@ -39,6 +39,7 @@ import type {
   ExtensionContext,
   ModelRegistry,
 } from "@earendil-works/pi-coding-agent";
+import QRCode from "qrcode";
 import { type WebSocket, WebSocketServer } from "ws";
 import {
   buildCostDashboardPayload,
@@ -1291,6 +1292,25 @@ export default function (pi: ExtensionAPI) {
         healthPayload.lanUrls = lanUrls;
       }
       res.end(JSON.stringify(healthPayload));
+      return;
+    }
+
+    if (urlPath === "/api/lan-qr" && req.method === "GET") {
+      const lanUrls = buildLanUrls(globalState.server?.port || PORT);
+      const url = lanUrls[0] || "";
+      if (!url) {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "LAN URL unavailable" }));
+        return;
+      }
+      try {
+        const dataUrl = await QRCode.toDataURL(url, { width: 280, margin: 2 });
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ dataUrl, url }));
+      } catch {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Failed to generate QR code" }));
+      }
       return;
     }
 

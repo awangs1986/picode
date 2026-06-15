@@ -757,7 +757,21 @@ async fn download_and_install_update_core(
 /// Resolve a control command's target port: prefer the explicit port from the
 /// request, else fall back to the broker's active port.
 fn resolve_control_port(port: Option<u16>, broker: &BrokerWs) -> Result<u16, String> {
-    port.or_else(|| broker.active_port())
+    if let Some(port) = port {
+        return Ok(port);
+    }
+    // No explicit target. Falling back to the global active_port is only safe
+    // when a single pi process is live; with several (multi-window) it belongs
+    // to whichever window registered last, so a lifecycle op (new_session /
+    // switch_session / stop_instance) could land on the wrong workspace (F4).
+    if broker.live_upstream_count() > 1 {
+        return Err(
+            "Ambiguous target: multiple pi instances are running; a port must be specified"
+                .to_string(),
+        );
+    }
+    broker
+        .active_port()
         .ok_or_else(|| "No active pi instance".to_string())
 }
 

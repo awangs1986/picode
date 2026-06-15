@@ -649,6 +649,33 @@ wsClient.addEventListener("serverError", (e) => {
   messageRenderer.renderError(e.detail.message);
 });
 
+// The broker could not deliver a command to any live pi process. For a tracked
+// prompt this means the user's message was dropped — surface it, clear the
+// optimistic streaming/typing state, and restore the text so it isn't lost.
+wsClient.addEventListener("commandUndeliverable", (e) => {
+  const { requestId, reason, command } = e.detail || {};
+  const pending = requestId ? inFlightPrompts.get(requestId) : null;
+  if (!pending) {
+    console.warn("[WS] command undeliverable:", { command, reason, requestId });
+    return;
+  }
+  clearTimeout(pending.timer);
+  inFlightPrompts.delete(requestId);
+  state.setStreaming(false);
+  showTypingIndicator(false);
+  const detail =
+    reason === "no_route"
+      ? "no running session to receive it"
+      : "the session process is no longer reachable";
+  messageRenderer.renderError(
+    `Message not delivered (${detail}). The session may have closed — start a new chat or try again.`,
+  );
+  if (pending.message && !messageInput.value.trim()) {
+    messageInput.value = pending.message;
+    messageInput.style.height = "auto";
+  }
+});
+
 // Mirror mode: receive full state snapshot on connect
 wsClient.addEventListener("mirrorSync", (e) => {
   handleMirrorSync(e.detail);
@@ -951,6 +978,14 @@ function handleMessageUpdate(event) {
 }
 
 function handleMessageEnd(message) {
+  if (message?.role === "assistant" && message?.stopReason === "error") {
+    const provider = message?.provider ? String(message.provider) : "unknown";
+    const model = message?.model ? String(message.model) : "unknown";
+    const errorMessage = message?.errorMessage
+      ? String(message.errorMessage)
+      : "Model request failed";
+    messageRenderer.renderError(`[${provider}/${model}] ${errorMessage}`);
+  }
   if (!currentStreamingElement && message?.role === "assistant") {
     ensureStreamingAssistantElement(message);
   }
@@ -1211,6 +1246,21 @@ function clearMessageQueue() {
   renderQueuedMessages();
 }
 
+// Prompts are sent fire-and-forget over the WebSocket. The broker replies with
+// `command_undeliverable` (correlated by requestId) when it cannot route the
+// command to a live pi process. We track in-flight prompt requestIds here so the
+// `commandUndeliverable` handler can tell a real dropped prompt apart from
+// background/system commands and recover the user's text. Entries self-expire:
+// the broker decides deliverability synchronously, so anything not reported
+// undeliverable within a few seconds was forwarded successfully.
+const inFlightPrompts = new Map();
+
+function trackPromptDelivery(requestId, message) {
+  if (!requestId) return;
+  const timer = setTimeout(() => inFlightPrompts.delete(requestId), 8000);
+  inFlightPrompts.set(requestId, { message, timer });
+}
+
 function sendMessage() {
   const message = messageInput.value.trim();
   if (!message) return;
@@ -1248,7 +1298,7 @@ function sendMessage() {
 
   lastSentMessage = message;
   messageRenderer.renderUserMessage({ content: message, images: cmd.images });
-  wsClient.send(cmd);
+  trackPromptDelivery(wsClient.send(cmd), message);
 }
 
 const queuedMessagesEl = document.getElementById("queued-messages");
@@ -1287,7 +1337,7 @@ function flushQueue() {
     const cmd = messageQueue.shift();
     messageRenderer.renderUserMessage({ content: cmd.message, images: cmd.images });
     renderQueuedMessages();
-    wsClient.send(cmd);
+    trackPromptDelivery(wsClient.send(cmd), cmd.message);
   }
 }
 
@@ -2571,6 +2621,54 @@ let tailscaleUrl = "";
 let lanUrl = "";
 let lanUrls = [];
 
+const lanQrBtn = document.getElementById("lan-qr-btn");
+const lanQrModal = document.getElementById("lan-qr-modal");
+const lanQrModalBackdrop = document.getElementById("lan-qr-modal-backdrop");
+const lanQrModalClose = document.getElementById("lan-qr-modal-close");
+const lanQrLoading = document.getElementById("lan-qr-loading");
+const lanQrImage = document.getElementById("lan-qr-image");
+
+function updateLanQrButton(url = "") {
+  if (!lanQrBtn) return;
+  if (url) {
+    lanQrBtn.classList.remove("hidden");
+  } else {
+    lanQrBtn.classList.add("hidden");
+  }
+}
+
+async function openLanQrModal() {
+  if (!lanQrModal) return;
+  lanQrModal.classList.remove("hidden");
+  if (lanQrLoading) lanQrLoading.style.display = "";
+  if (lanQrImage) lanQrImage.classList.add("hidden");
+  try {
+    const res = await fetch("/api/lan-qr");
+    if (!res.ok) throw new Error("unavailable");
+    const data = await res.json();
+    if (lanQrImage) {
+      lanQrImage.src = data.dataUrl;
+      lanQrImage.classList.remove("hidden");
+    }
+    if (lanQrLoading) lanQrLoading.style.display = "none";
+  } catch {
+    if (lanQrLoading) lanQrLoading.textContent = "QR code unavailable";
+  }
+}
+
+function closeLanQrModal() {
+  if (lanQrModal) lanQrModal.classList.add("hidden");
+}
+
+if (lanQrBtn) lanQrBtn.addEventListener("click", openLanQrModal);
+if (lanQrModalBackdrop) lanQrModalBackdrop.addEventListener("click", closeLanQrModal);
+if (lanQrModalClose) lanQrModalClose.addEventListener("click", closeLanQrModal);
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && lanQrModal && !lanQrModal.classList.contains("hidden")) {
+    closeLanQrModal();
+  }
+});
+
 function updateLanUrlDisplay(url = "") {
   if (!lanUrlValue) return;
   const value = typeof url === "string" ? url.trim() : "";
@@ -2609,8 +2707,10 @@ async function refreshLanUrl() {
       statusText.title = lanUrl;
     }
     updateLanUrlDisplay(lanUrl);
+    updateLanQrButton(lanUrl);
   } catch {
     updateLanUrlDisplay("");
+    updateLanQrButton("");
   }
 }
 

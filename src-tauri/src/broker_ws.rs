@@ -89,6 +89,15 @@ impl BrokerWs {
         *self.inner.active_port.lock().unwrap()
     }
 
+    /// Number of pi upstream connections the broker is currently maintaining.
+    /// Used to detect when a global `active_port` fallback would be ambiguous:
+    /// with more than one live pi process (multi-window / multi-workspace) the
+    /// active_port belongs to whichever window registered most recently, so it
+    /// cannot be safely used to guess the target of an unaddressed command.
+    pub fn live_upstream_count(&self) -> usize {
+        self.inner.upstreams.lock().unwrap().len()
+    }
+
     /// Install the handler used to execute `broker_control` requests. Called
     /// once from main.rs after PiManager + BrokerWs exist.
     pub fn set_control_handler(&self, handler: ControlHandler) {
@@ -103,13 +112,7 @@ impl BrokerWs {
         );
         self.inner.disabled_ports.lock().unwrap().remove(&port);
         self.set_active_port(port);
-        if !session_id.trim().is_empty() {
-            self.inner
-                .routes
-                .lock()
-                .unwrap()
-                .insert(session_id.to_string(), port);
-        }
+        self.set_route(port, session_id);
         self.ensure_upstream(port);
     }
 
@@ -118,14 +121,31 @@ impl BrokerWs {
     /// the default command target.
     pub fn track_background_session(&self, port: u16, session_id: &str) {
         self.inner.disabled_ports.lock().unwrap().remove(&port);
-        if !session_id.trim().is_empty() {
-            self.inner
-                .routes
-                .lock()
-                .unwrap()
-                .insert(session_id.to_string(), port);
-        }
+        self.set_route(port, session_id);
         self.ensure_upstream(port);
+    }
+
+    /// Point `session_id` at `port`, first evicting any other session id that
+    /// previously resolved to this port.
+    ///
+    /// A `pi --mode rpc` process drives exactly ONE active session at a time, so
+    /// a port maps to at most one session id. An in-place `new_session` /
+    /// `switch_session` reuses the same port for a *different* session; without
+    /// this eviction the PREVIOUS session id would keep pointing here. Because
+    /// `resolve_command_port` consults the session-id route BEFORE `sourcePort`,
+    /// a command still tagged with that now-defunct session would be silently
+    /// misrouted into whatever session currently occupies the port — and would
+    /// even override a correct `sourcePort` hint. Evicting stale entries keeps
+    /// the routing table 1:1 with live sessions (fixes F1 + F2).
+    fn set_route(&self, port: u16, session_id: &str) {
+        let session_id = session_id.trim();
+        let mut routes = self.inner.routes.lock().unwrap();
+        // Drop every other session id resolving to this port; keep only the
+        // entry for `session_id` itself (so a repeated learn stays idempotent).
+        routes.retain(|existing, routed| *routed != port || existing == session_id);
+        if !session_id.is_empty() {
+            routes.insert(session_id.to_string(), port);
+        }
     }
 
     pub fn unregister_port(&self, port: u16) {
@@ -230,6 +250,7 @@ impl BrokerWs {
 
         let Some(port) = self.resolve_command_port(&value) else {
             log::warn!("[broker-ws] no route for UI command: {}", value);
+            self.notify_undeliverable(client_tx, &value, "no_route");
             return;
         };
         log::info!(
@@ -244,11 +265,44 @@ impl BrokerWs {
         );
         self.ensure_upstream(port);
         let upstream_tx = self.inner.upstreams.lock().unwrap().get(&port).cloned();
-        if let Some(tx) = upstream_tx {
-            let _ = tx.send(text.to_string());
-        } else {
-            log::warn!("[broker-ws] upstream {} not connected", port);
+        // A `broker_command` is fire-and-forget on the wire, so a routing/delivery
+        // failure here would otherwise vanish silently — the user sees their
+        // prompt echoed but the agent never receives it. Reply to the sender with
+        // a `command_undeliverable` frame (tagged with the original requestId) so
+        // the UI can surface the loss instead of hanging (F3). `ensure_upstream`
+        // queues into the channel even while reconnecting, so a `None` tx (or a
+        // closed channel) means the port is genuinely gone (killed/disabled).
+        let delivered = match upstream_tx {
+            Some(tx) => tx.send(text.to_string()).is_ok(),
+            None => false,
+        };
+        if !delivered {
+            log::warn!("[broker-ws] upstream {} unavailable; command dropped", port);
+            self.notify_undeliverable(client_tx, &value, "upstream_unavailable");
         }
+    }
+
+    /// Reply to the originating UI client that a `broker_command` could not be
+    /// delivered. Tagged with the original `requestId` so the frontend can
+    /// correlate it to the in-flight prompt and surface a visible error.
+    fn notify_undeliverable(&self, client_tx: &Tx, value: &Value, reason: &str) {
+        let request_id = value.get("requestId").and_then(Value::as_str).unwrap_or("");
+        let command = value
+            .pointer("/payload/type")
+            .and_then(Value::as_str)
+            .or_else(|| value.get("type").and_then(Value::as_str))
+            .unwrap_or("");
+        let _ = client_tx.send(
+            json!({
+                "type": "command_undeliverable",
+                "protocolVersion": PROTOCOL_VERSION,
+                "requestId": request_id,
+                "command": command,
+                "reason": reason,
+                "sessionId": value.get("sessionId").cloned().unwrap_or(Value::Null),
+            })
+            .to_string(),
+        );
     }
 
     fn dispatch_control(&self, value: &Value, client_tx: &Tx) {
@@ -337,19 +391,48 @@ impl BrokerWs {
                     .pointer("/payload/sessionPath")
                     .and_then(Value::as_str)
             });
+        let source_port = value
+            .get("sourcePort")
+            .and_then(Value::as_u64)
+            .and_then(|port| u16::try_from(port).ok());
         if let Some(session_id) = session_id {
             if let Some(port) = self.inner.routes.lock().unwrap().get(session_id).copied() {
+                // The session route is authoritative — it is learned from real
+                // upstream traffic and kept 1:1 with live sessions by set_route.
+                // A disagreeing sourcePort means the client's foreground-port
+                // hint has drifted; trust the route but make it observable so a
+                // genuine misroute can never hide (F2).
+                if let Some(source_port) = source_port {
+                    if source_port != port {
+                        log::warn!(
+                            "[broker-ws] route/source_port disagree: session_id={} -> port={} but source_port={}; trusting session route",
+                            session_id,
+                            port,
+                            source_port
+                        );
+                    }
+                }
                 return Some(port);
             }
         }
-        if let Some(source_port) = value
-            .get("sourcePort")
-            .and_then(Value::as_u64)
-            .and_then(|port| u16::try_from(port).ok())
-        {
+        if let Some(source_port) = source_port {
             return Some(source_port);
         }
-        *self.inner.active_port.lock().unwrap()
+        // Last resort: the global active_port. Safe only when unambiguous — with
+        // multiple live pi processes it belongs to whichever window registered
+        // most recently, so guessing it would misroute an unaddressed command
+        // into another window's session. When ambiguous, return None so the
+        // command surfaces as undeliverable (F3) instead of misrouting (F4).
+        let active = *self.inner.active_port.lock().unwrap();
+        if self.inner.upstreams.lock().unwrap().len() > 1 {
+            log::warn!(
+                "[broker-ws] refusing ambiguous active_port fallback ({:?}) among {} live upstreams",
+                active,
+                self.inner.upstreams.lock().unwrap().len()
+            );
+            return None;
+        }
+        active
     }
 
     fn ensure_upstream(&self, port: u16) {
@@ -441,11 +524,11 @@ impl BrokerWs {
                 session_id,
                 port
             );
-            self.inner
-                .routes
-                .lock()
-                .unwrap()
-                .insert(session_id.to_string(), port);
+            // Use set_route (not a bare insert) so an in-place `new_session` —
+            // which reuses the port and is only ever observed through this
+            // learn path (`new_session_core` does not call register_session) —
+            // evicts the previous session's now-defunct route on this port.
+            self.set_route(port, session_id);
         }
         let workspace_id = payload.get("workspaceId").cloned().unwrap_or(Value::Null);
         let session_id = payload.get("sessionId").cloned().unwrap_or(Value::Null);
@@ -529,6 +612,85 @@ mod tests {
 
         assert_eq!(
             broker.resolve_command_port(&json!({ "type": "broker_command" })),
+            Some(47821)
+        );
+    }
+
+    #[test]
+    fn in_place_session_swap_evicts_previous_session_route() {
+        let broker = BrokerWs {
+            port: 49000,
+            inner: Arc::new(BrokerInner::default()),
+        };
+        // An unrelated session the user is NOT viewing lives on its own port.
+        broker.register_session(47822, "/tmp/other.jsonl");
+        // Port 47821 first hosts session A...
+        broker.register_session(47821, "/tmp/session-a.jsonl");
+        // ...then swaps in-place to session B (same port reused).
+        broker.register_session(47821, "/tmp/session-b.jsonl");
+
+        let routes = broker.inner.routes.lock().unwrap();
+        // The now-defunct session A must no longer resolve anywhere (F1).
+        assert_eq!(routes.get("/tmp/session-a.jsonl"), None);
+        assert_eq!(routes.get("/tmp/session-b.jsonl"), Some(&47821));
+        // Eviction is scoped to the reused port — unrelated routes are intact.
+        assert_eq!(routes.get("/tmp/other.jsonl"), Some(&47822));
+    }
+
+    #[test]
+    fn evicted_session_id_does_not_override_source_port() {
+        let broker = BrokerWs {
+            port: 49000,
+            inner: Arc::new(BrokerInner::default()),
+        };
+        // Port 50001 hosted session A, then swapped in-place to session B.
+        broker.register_session(50001, "/tmp/session-a.jsonl");
+        broker.register_session(50001, "/tmp/session-b.jsonl");
+
+        // A command still tagged with the defunct session A but carrying the
+        // correct live source port (50002) must fall back to source_port — the
+        // stale A route is gone, so it cannot hijack the command (F2).
+        assert_eq!(
+            broker.resolve_command_port(&json!({
+                "type": "broker_command",
+                "sessionId": "/tmp/session-a.jsonl",
+                "sourcePort": 50002,
+                "payload": { "type": "prompt" }
+            })),
+            Some(50002)
+        );
+    }
+
+    #[test]
+    fn refuses_ambiguous_active_port_fallback_with_multiple_upstreams() {
+        let broker = BrokerWs {
+            port: 49000,
+            inner: Arc::new(BrokerInner::default()),
+        };
+        // Two windows / workspaces are live; active_port is whichever registered
+        // last (47822), which has nothing to do with where an unaddressed command
+        // from the OTHER window should go.
+        broker.register_session(47821, "/tmp/a.jsonl");
+        broker.register_session(47822, "/tmp/b.jsonl");
+
+        // A command with neither a known session route nor a sourcePort must not
+        // be silently routed to the global active_port — it surfaces as
+        // undeliverable instead of misrouting across windows (F4).
+        assert_eq!(
+            broker.resolve_command_port(&json!({
+                "type": "broker_command",
+                "payload": { "type": "prompt" }
+            })),
+            None
+        );
+
+        // An explicit sourcePort is still honored even with multiple upstreams.
+        assert_eq!(
+            broker.resolve_command_port(&json!({
+                "type": "broker_command",
+                "sourcePort": 47821,
+                "payload": { "type": "prompt" }
+            })),
             Some(47821)
         );
     }
