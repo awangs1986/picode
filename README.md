@@ -1,14 +1,8 @@
-# Picot
+# Picot （π-cot(e)）
 
 **English** | [中文](./README.zh.md)
 
 A local desktop GUI for the [Pi](https://github.com/badlogic/pi-mono) coding agent. No cloud, no account — runs entirely on your machine.
-
-## Why "Picot"?
-
-**Picot** (Pi-COT) embodies two layers of meaning:
-
-- **π + cot** — Where the mathematical constant π (infinite, boundless) meets cotangent (the function defining angles and relationships). Just as these functions shape the geometry of circles, Picot shapes the geometry of your code workflow.
 
 
 Picot ships a known-good build of the `pi` runtime **inside the .app bundle**, so there's no separate `pi` install to manage, no PATH shenanigans, and no version drift between Picot and the agent it talks to.
