@@ -17,7 +17,7 @@ Picot ships a known-good build of the `pi` runtime **inside the .app bundle**, s
 
 ## Install
 
-[Download from GitHub Releases](https://github.com/shixin-guo/pi-studio/releases)
+[Download from GitHub Releases](https://github.com/shixin-guo/picot/releases)
 
 You **do not** need to install the `pi` CLI separately — Picot bundles its own pi runtime.
 
@@ -206,8 +206,8 @@ Provide your model credentials via `pi /login` inside any workspace, or by writi
 ## Build from source
 
 ```bash
-git clone https://github.com/shixin-guo/pi-studio.git
-cd pi-studio
+git clone https://github.com/shixin-guo/picot.git
+cd picot
 bun install --frozen-lockfile
 bun run dev      # fetch embedded pi binary + start tauri dev with hot reload
 ```
