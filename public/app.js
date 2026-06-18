@@ -1279,7 +1279,7 @@ function trackPromptDelivery(requestId, message) {
 
 function refreshSidebarAfterUserPrompt() {
   const refresh = () => {
-    sidebar.loadSessions({ quiet: true }).catch(() => {});
+    sidebar.loadSessions().catch(() => {});
     pollInstances().catch(() => {});
   };
   refresh();

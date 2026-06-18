@@ -19,6 +19,7 @@ export class SessionSidebar {
     this.unread = new Set(JSON.parse(localStorage.getItem("pi-studio-unread") || "[]"));
     this.streamingFiles = new Set();
     this.contextMenu = null;
+    this.loadSeq = 0;
 
     // Close context menu on click anywhere
     document.addEventListener("click", () => {
@@ -202,6 +203,7 @@ export class SessionSidebar {
   }
 
   async loadSessions({ retries = 4, retryDelayMs = 250, quiet = false } = {}) {
+    const seq = ++this.loadSeq;
     if (!quiet) {
       this.container.innerHTML = Array.from(
         { length: 6 },
@@ -216,6 +218,7 @@ export class SessionSidebar {
         const res = await fetch("/api/sessions");
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
+        if (seq !== this.loadSeq) return;
         this.projects = data.projects || [];
         this.render();
         return;
@@ -228,6 +231,7 @@ export class SessionSidebar {
     }
 
     console.error("[Sidebar] Failed to load sessions:", lastError);
+    if (seq !== this.loadSeq) return;
     const reason = String(lastError?.message || lastError || "").toLowerCase();
     const likelyRuntimeDown =
       reason.includes("failed to fetch") ||
