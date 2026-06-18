@@ -6,9 +6,10 @@ export function summarizePackageError(err) {
   return raw;
 }
 
-export function renderPackageInstallFailure(status, err) {
+export function renderPackageInstallFailure(status, err, operation = "install") {
   if (!status) return;
   const fullMessage = String(err?.message || err || "unknown error");
+  const isUninstall = operation === "uninstall";
   status.hidden = false;
   status.classList.add("is-error");
   status.title = "";
@@ -16,13 +17,14 @@ export function renderPackageInstallFailure(status, err) {
 
   const title = document.createElement("div");
   title.className = "settings-extension-status-title";
-  title.textContent = "Install failed";
+  title.textContent = isUninstall ? "Uninstall failed" : "Install failed";
   status.appendChild(title);
 
   const npmNote = document.createElement("div");
   npmNote.className = "settings-extension-status-note";
-  npmNote.textContent =
-    "This extension requires npm. Make sure npm is installed and available to Pi Studio, then try again.";
+  npmNote.textContent = isUninstall
+    ? "Pi Studio could not remove this extension package. Check the error details, then try again."
+    : "This extension requires npm. Make sure npm is installed and available to Pi Studio, then try again.";
   status.appendChild(npmNote);
 
   const detail = document.createElement("div");

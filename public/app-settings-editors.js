@@ -1,6 +1,5 @@
 export function setupSettingsEditors({
   rpcCommand,
-  fetchModelInfo,
   closeSettings,
   onModelConfigurationChanged,
   clearSettingsSaveMessage,
@@ -19,7 +18,6 @@ export function setupSettingsEditors({
       return;
     }
     renderApiKeysPanel(data.data.providers);
-    fetchModelInfo();
   }
 
   function renderApiKeysPanelError(message) {
@@ -187,7 +185,10 @@ export function setupSettingsEditors({
       { type: "remove_api_key", provider: p.provider },
       `Removing ${p.provider} key...`,
     );
-    if (resp?.success) loadApiKeysPanel();
+    if (resp?.success) {
+      await onModelConfigurationChanged?.();
+      loadApiKeysPanel();
+    }
   }
 
   const btnOpenConfig = document.getElementById("btn-open-config");

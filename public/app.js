@@ -3270,7 +3270,7 @@ function createBrowseRow(pkg) {
         }
         renderBrowsePackages();
       } catch (err) {
-        renderPackageInstallFailure(status, err);
+        renderPackageInstallFailure(status, err, installed ? "uninstall" : "install");
         button.disabled = false;
         button.classList.remove("loading");
         setExtensionActionButton(button, previous);
@@ -3470,7 +3470,6 @@ setupSettingsToggles({
 
 ({ loadApiKeysPanel, loadInlineConfigEditor, loadInlineModelsEditor } = setupSettingsEditors({
   rpcCommand,
-  fetchModelInfo,
   closeSettings,
   onModelConfigurationChanged: async () => {
     await fetchModelInfo();

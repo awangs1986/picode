@@ -16,6 +16,18 @@ describe("package install failure status", () => {
     expect(status.textContent).toContain("npm executable was not found");
   });
 
+  test("labels uninstall failures as uninstall failures", () => {
+    const status = document.createElement("div");
+    const error = new Error("remove failed");
+
+    renderPackageInstallFailure(status, error, "uninstall");
+
+    expect(status.textContent).toContain("Uninstall failed");
+    expect(status.textContent).not.toContain("Install failed");
+    expect(status.textContent).not.toContain("This extension requires npm");
+    expect(status.textContent).toContain("remove failed");
+  });
+
   test("keeps permission errors actionable", () => {
     expect(summarizePackageError("EACCES: permission denied, open ~/.pi/agent/npm")).toBe(
       "Permission denied in ~/.pi/agent/npm (check owner/permissions).",
