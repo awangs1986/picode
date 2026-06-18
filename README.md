@@ -1,13 +1,20 @@
-# Pi Studio
+# Picot
 
 **English** | [中文](./README.zh.md)
 
 A local desktop GUI for the [Pi](https://github.com/badlogic/pi-mono) coding agent. No cloud, no account — runs entirely on your machine.
 
-Pi Studio ships a known-good build of the `pi` runtime **inside the .app bundle**, so there's no separate `pi` install to manage, no PATH shenanigans, and no version drift between Pi Studio and the agent it talks to.
+## Why "Picot"?
+
+**Picot** (Pi-COT) embodies two layers of meaning:
+
+- **π + cot** — Where the mathematical constant π (infinite, boundless) meets cotangent (the function defining angles and relationships). Just as these functions shape the geometry of circles, Picot shapes the geometry of your code workflow.
+
+
+Picot ships a known-good build of the `pi` runtime **inside the .app bundle**, so there's no separate `pi` install to manage, no PATH shenanigans, and no version drift between Picot and the agent it talks to.
 
 <p align="center">
-  <img width="1200" alt="Pi Studio hero" src="https://github.com/user-attachments/assets/27d1b71e-77e8-420c-84ab-5e56eb48335a" />
+  <img width="1200" alt="Picot hero" src="https://github.com/user-attachments/assets/27d1b71e-77e8-420c-84ab-5e56eb48335a" />
 </p>
 
 
@@ -18,17 +25,17 @@ Pi Studio ships a known-good build of the `pi` runtime **inside the .app bundle*
 
 [Download from GitHub Releases](https://github.com/shixin-guo/pi-studio/releases)
 
-You **do not** need to install the `pi` CLI separately — Pi Studio bundles its own pi runtime.
+You **do not** need to install the `pi` CLI separately — Picot bundles its own pi runtime.
 
 ### macOS unsigned release notice
 
-Pi Studio currently ships macOS builds without Apple Developer ID signing/notarization. Expected Gatekeeper behavior:
+Picot currently ships macOS builds without Apple Developer ID signing/notarization. Expected Gatekeeper behavior:
 
-`"Pi Studio" cannot be opened because the developer cannot be verified.`
+`"Picot" cannot be opened because the developer cannot be verified.`
 
 **To allow it:**
 
-1. Drag `Pi Studio.app` into `/Applications`
+1. Drag `Picot.app` into `/Applications`
 2. Right-click → **Open**
 3. If blocked: **System Settings → Privacy & Security → Open Anyway**
 
@@ -46,7 +53,7 @@ Then click **Done**:
 
 ## What it does
 
-Pi Studio gives you a full visual interface for Pi. Open any project folder, start chatting with the agent, browse sessions and files — no terminal required. Multiple projects run in parallel, each in its own window with its own isolated agent process.
+Picot gives you a full visual interface for Pi. Open any project folder, start chatting with the agent, browse sessions and files — no terminal required. Multiple projects run in parallel, each in its own window with its own isolated agent process.
 
 ---
 
@@ -55,7 +62,7 @@ Pi Studio gives you a full visual interface for Pi. Open any project folder, sta
 ### 📸 UI Preview
 
 <p align="center">
-  <img width="1200" alt="Pi Studio workspace and project UI" src="https://github.com/user-attachments/assets/ffde7b7a-1eb9-4da7-8916-e06b612aaea1" />
+  <img width="1200" alt="Picot workspace and project UI" src="https://github.com/user-attachments/assets/ffde7b7a-1eb9-4da7-8916-e06b612aaea1" />
 </p>
 
 ### 💬 Chat
@@ -81,7 +88,7 @@ Pi Studio gives you a full visual interface for Pi. Open any project folder, sta
 
 - **Multi-project** — each project gets its own window, working directory, session history, and agent
 - Shows the **current git branch** in the project header
-- **Open in external editor** — launch VS Code, Cursor, or any app directly from Pi Studio
+- **Open in external editor** — launch VS Code, Cursor, or any app directly from Picot
 - Native folder picker to open any project without touching the terminal
 
 ### 📱 Mobile & LAN Access
@@ -89,11 +96,11 @@ Pi Studio gives you a full visual interface for Pi. Open any project folder, sta
   <img width="900" alt="LAN and mobile access panel" src="https://github.com/user-attachments/assets/f50ce09d-1ba7-4a67-93dd-f8ff1bc2631f" />
 </p>
 <p align="center">
-  <img width="360" alt="Pi Studio on mobile" src="https://github.com/user-attachments/assets/d1975347-a3d9-49fd-9d66-94942016ed19" />
+  <img width="360" alt="Picot on mobile" src="https://github.com/user-attachments/assets/d1975347-a3d9-49fd-9d66-94942016ed19" />
 </p>
 
 
-- **LAN QR code** — scan to open Pi Studio on any device on the same network
+- **LAN QR code** — scan to open Picot on any device on the same network
 - Mobile-optimised URL handling and App Launcher support (installable as PWA on iOS/Android)
 
 ### 📦 Package Manager
@@ -153,7 +160,7 @@ Pi Studio gives you a full visual interface for Pi. Open any project folder, sta
 
 ## Pi capabilities integrated
 
-Pi Studio does not re-implement agent logic — it embeds Pi and exposes its runtime capabilities through a native UI.
+Picot does not re-implement agent logic — it embeds Pi and exposes its runtime capabilities through a native UI.
 
 - **Embedded `pi --mode rpc` runtime** — one managed process per workspace, isolated by project
 - **Streaming RPC bridge** — token-by-token output, tool-call events, and thinking blocks rendered live
@@ -168,7 +175,7 @@ Pi Studio does not re-implement agent logic — it embeds Pi and exposes its run
 
 ```
 ┌──────────────────────────────────────────────────────┐
-│ Pi Studio .app                                       │
+│ Picot .app                                       │
 │                                                      │
 │   Tauri + PiManager (Rust)                           │
 │      ├─► spawn  pi --mode rpc  (project A, :3001)    │
@@ -188,17 +195,17 @@ Pi Studio does not re-implement agent logic — it embeds Pi and exposes its run
                  └─ settings.json
 ```
 
-The embedded pi process loads `embedded-server.mjs` at startup. That extension owns the HTTP + WebSocket surface the Tauri WebView talks to: static assets, `/api/sessions`, `/api/cost-dashboard`, RPC bridge for prompts, etc. Pi Studio's Rust side controls process lifecycle, port allocation, and window management.
+The embedded pi process loads `embedded-server.mjs` at startup. That extension owns the HTTP + WebSocket surface the Tauri WebView talks to: static assets, `/api/sessions`, `/api/cost-dashboard`, RPC bridge for prompts, etc. Picot's Rust side controls process lifecycle, port allocation, and window management.
 
 ---
 
 ## Usage
 
-1. Launch **Pi Studio**
+1. Launch **Picot**
 2. Click a project bubble or pick a folder
 3. Start chatting — the embedded pi agent starts automatically
 
-Provide your model credentials via `pi /login` inside any workspace, or by writing `~/.pi/agent/auth.json` directly. Pi Studio doesn't manage credentials itself.
+Provide your model credentials via `pi /login` inside any workspace, or by writing `~/.pi/agent/auth.json` directly. Picot doesn't manage credentials itself.
 
 ---
 
@@ -229,10 +236,10 @@ To bump the embedded pi version, edit `scripts/pi-version.json`, run `bun run fe
 
 ## Upstream
 
-Pi Studio is a maintained fork of **Tau**, adapted for Pi-first, local development workflows. Key additions:
+Picot is a maintained fork of **Tau**, adapted for Pi-first, local development workflows. Key additions:
 
 - **Tauri-native PiManager** — spawns one `pi --mode rpc` process per project window
-- **Embedded pi runtime** — no separate global install; Pi Studio ships its own binary
+- **Embedded pi runtime** — no separate global install; Picot ships its own binary
 - **Multi-session without new windows** — headless pi processes, current WebView navigates
 - **LAN + mobile access** — QR code, PWA support, WebSocket broker for multi-client
 
