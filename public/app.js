@@ -12,6 +12,7 @@ import { FileBrowser } from "./file-browser.js";
 import { anchorHistoryToBottom } from "./history-scroll-anchor.js";
 import { setupMessagesInsets } from "./layout-insets.js";
 import { MessageRenderer } from "./message-renderer.js";
+import { resolveNewSessionLiveFile } from "./new-session-refresh.js";
 import { getOnboardingState } from "./onboarding-state.js";
 import { renderPackageInstallFailure } from "./package-install-status.js";
 import { findPortForSession, getWorkspacePathForPort } from "./session-routing.js";
@@ -220,9 +221,10 @@ let viewingActiveSession = true; // Whether we're viewing the live session or a 
 let isMirrorMode = false; // Set when mirror_sync received
 let liveInstances = []; // All running Pi Studio instances [{port, sessionFile, cwd}]
 let workspaceLaunchInProgress = false;
-// When true, the next message_end should trigger a sidebar reload so a freshly
-// created (in-memory only) session shows up in the list as soon as it's persisted.
+// When true, the next foreground message lifecycle events should reload the
+// sidebar until the newly persisted session file appears in the list.
 let pendingNewSessionRefresh = false;
+let pendingNewSessionPreviousFile = null;
 // When set while streaming, holds the session filePath to switch to once the
 // current agent run ends. The history is rendered immediately; pi gets the
 // switch_session RPC only after agent_end so the running call is not aborted.
@@ -727,6 +729,9 @@ function handleRPCEvent(event) {
       break;
     case "agent_end":
       handleAgentEnd(event);
+      if (pendingNewSessionRefresh) {
+        refreshSidebarForNewSession(event).catch(() => {});
+      }
       break;
     case "message_start":
       handleMessageStart(event.message);
@@ -735,8 +740,7 @@ function handleRPCEvent(event) {
       // refreshing on the user message (not just the assistant turn) makes the
       // session — with its first message as the title — show up immediately.
       if (pendingNewSessionRefresh) {
-        pendingNewSessionRefresh = false;
-        refreshSidebarForNewSession(event);
+        refreshSidebarForNewSession(event).catch(() => {});
         pollInstances().catch(() => {});
       }
       break;
@@ -745,6 +749,9 @@ function handleRPCEvent(event) {
       break;
     case "message_end":
       handleMessageEnd(event.message);
+      if (pendingNewSessionRefresh) {
+        refreshSidebarForNewSession(event).catch(() => {});
+      }
       break;
     case "tool_execution_start":
       handleToolExecutionStart(event);
@@ -833,21 +840,27 @@ async function refreshSidebarForNewSession(event = null, attempt = 0) {
     const found = sidebar.projects.some((p) => p.sessions.some((s) => s.filePath === liveFile));
     if (found) {
       sidebar.setActive(liveFile);
+      pendingNewSessionRefresh = false;
+      pendingNewSessionPreviousFile = null;
       return;
     }
   }
 
   if (attempt < 4) {
+    await pollInstances().catch(() => {});
     await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
     return refreshSidebarForNewSession(event, attempt + 1);
   }
 }
 
 function getCurrentLiveSessionFile(event = null) {
-  const routedSession = event?.__broker?.sessionId;
-  if (routedSession) return routedSession;
-  const inst = liveInstances.find((i) => i?.port === foregroundPort);
-  return inst?.sessionFile || mirrorActiveSessionFile || null;
+  return resolveNewSessionLiveFile({
+    event,
+    liveInstances,
+    foregroundPort,
+    mirrorActiveSessionFile,
+    excludedSessionFile: pendingNewSessionPreviousFile,
+  });
 }
 
 function handleAgentStart(event = null) {
@@ -1870,6 +1883,11 @@ sessionSearchInput.addEventListener("input", () => {
  * so the newly created session shows up once pi writes its first message to disk.
  */
 async function resetUiForNewSession() {
+  pendingNewSessionPreviousFile =
+    mirrorActiveSessionFile ||
+    sidebar.activeSessionFile ||
+    liveInstances.find((i) => i?.port === foregroundPort)?.sessionFile ||
+    null;
   state.reset();
   messageRenderer.clear();
   toolCardRenderer.clear();
