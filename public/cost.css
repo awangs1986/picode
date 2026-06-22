@@ -294,6 +294,12 @@ body {
   height: 100%;
 }
 
+/* ── Section blocks ──────────────────────────────────────────────── */
+
+.infobar-cost-block + .infobar-cost-block {
+  margin-top: 20px;
+}
+
 .infobar-section-row > .infobar-panel > .infobar-cost-block {
   display: flex;
   flex-direction: column;
@@ -303,12 +309,6 @@ body {
 .infobar-section-row > .infobar-panel > .infobar-cost-block > :last-child {
   flex: 1;
   min-height: 0;
-}
-
-/* ── Section blocks ──────────────────────────────────────────────── */
-
-.infobar-cost-block + .infobar-cost-block {
-  margin-top: 20px;
 }
 
 .infobar-subsection-head {
@@ -728,28 +728,6 @@ body {
   padding: 10px 12px;
 }
 
-.infobar-project-row .infobar-rank-head {
-  gap: 8px;
-}
-
-.infobar-project-row .infobar-rank-title-group {
-  gap: 8px;
-}
-
-.infobar-project-row .infobar-rank-title {
-  font-size: 12px;
-}
-
-.infobar-project-row .infobar-rank-subtitle,
-.infobar-project-row .infobar-rank-value {
-  font-size: 10px;
-}
-
-.infobar-project-row .infobar-rank-bar {
-  margin-top: 8px;
-  height: 4px;
-}
-
 .infobar-rank-row:hover {
   background: var(--bg-glass-hover);
   border-color: var(--border-hover);
@@ -800,6 +778,28 @@ body {
   overflow: hidden;
   border-radius: 999px;
   background: color-mix(in srgb, var(--text-primary) 8%, transparent);
+}
+
+.infobar-project-row .infobar-rank-head {
+  gap: 8px;
+}
+
+.infobar-project-row .infobar-rank-title-group {
+  gap: 8px;
+}
+
+.infobar-project-row .infobar-rank-title {
+  font-size: 12px;
+}
+
+.infobar-project-row .infobar-rank-subtitle,
+.infobar-project-row .infobar-rank-value {
+  font-size: 10px;
+}
+
+.infobar-project-row .infobar-rank-bar {
+  margin-top: 8px;
+  height: 4px;
 }
 
 /* ── Tool list ───────────────────────────────────────────────────── */
