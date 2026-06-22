@@ -267,7 +267,7 @@ workspaceIndicatorEl.className = "pill workspace-indicator hidden";
 workspaceIndicatorEl.title = "";
 document
   .querySelector(".header-right")
-  ?.insertBefore(workspaceIndicatorEl, document.querySelector(".status"));
+  ?.insertBefore(workspaceIndicatorEl, document.querySelector("#context-viz"));
 
 const gitBranchEl = document.createElement("div");
 gitBranchEl.id = "git-branch-indicator";
@@ -275,7 +275,7 @@ gitBranchEl.className = "pill git-branch-indicator hidden";
 gitBranchEl.title = "Current git branch";
 document
   .querySelector(".header-right")
-  ?.insertBefore(gitBranchEl, document.querySelector(".status"));
+  ?.insertBefore(gitBranchEl, document.querySelector("#context-viz"));
 
 function updateGitBranchIndicator(branch = "") {
   const name = typeof branch === "string" ? branch.trim() : "";
