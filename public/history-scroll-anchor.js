@@ -8,9 +8,11 @@ export function anchorHistoryToBottom(
     setTimeout = window.setTimeout.bind(window),
     settleDelayMs = DEFAULT_SETTLE_DELAY_MS,
     settlePasses = DEFAULT_SETTLE_PASSES,
+    preserveScrollTarget = false,
   } = {},
 ) {
   if (!messagesEl) return;
+  if (preserveScrollTarget) return;
 
   // During history hydration, we want deterministic bottom anchoring.
   messagesEl.style.scrollBehavior = "auto";

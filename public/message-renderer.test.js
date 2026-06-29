@@ -53,4 +53,30 @@ describe("MessageRenderer streaming markdown preview", () => {
     const content = el.querySelector(".message-content");
     expect(content.querySelector("script")).toBeNull();
   });
+
+  it("highlights keyword matches across rendered messages", () => {
+    renderer.renderUserMessage({ content: "Alpha beta gamma" }, true);
+    renderer.renderAssistantMessage({ content: "Beta appears twice: beta." }, false, true);
+
+    const count = renderer.highlightSearchQuery("beta");
+    const marks = container.querySelectorAll("mark");
+
+    expect(count).toBe(3);
+    expect(marks).toHaveLength(3);
+    expect(marks[0].textContent.toLowerCase()).toBe("beta");
+  });
+
+  it("scrolls the first highlighted match into view", () => {
+    renderer.renderAssistantMessage({ content: "jump to keyword" }, false, true);
+
+    let scrolled = false;
+    Element.prototype.scrollIntoView = () => {
+      scrolled = true;
+    };
+
+    const count = renderer.highlightSearchQuery("keyword");
+
+    expect(count).toBe(1);
+    expect(scrolled).toBe(true);
+  });
 });
