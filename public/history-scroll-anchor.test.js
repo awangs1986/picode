@@ -40,4 +40,28 @@ describe("anchorHistoryToBottom", () => {
     timeouts[1].cb();
     expect(messagesEl.scrollTop).toBe(620);
   });
+
+  test("skips bottom anchoring when preserving a search-target scroll position", () => {
+    const messagesEl = {
+      scrollTop: 240,
+      scrollHeight: 620,
+      style: { scrollBehavior: "smooth" },
+    };
+
+    const requestAnimationFrame = vi.fn((cb) => {
+      cb();
+      return 1;
+    });
+    const setTimeoutFn = vi.fn();
+
+    anchorHistoryToBottom(messagesEl, {
+      requestAnimationFrame,
+      setTimeout: setTimeoutFn,
+      preserveScrollTarget: true,
+    });
+
+    expect(messagesEl.scrollTop).toBe(240);
+    expect(setTimeoutFn).not.toHaveBeenCalled();
+    expect(messagesEl.style.scrollBehavior).toBe("smooth");
+  });
 });

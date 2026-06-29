@@ -4,6 +4,8 @@
 
 export class SessionSidebar {
   constructor(container, onSessionSelect, onNewChat, options = {}) {
+    this.projectSessionInitialLimit = 5;
+    this.projectSessionStep = 10;
     this.container = container;
     this.onSessionSelect = onSessionSelect;
     this.onNewChat = onNewChat;
@@ -18,6 +20,7 @@ export class SessionSidebar {
     this.archivedCollapsed = localStorage.getItem("pi-studio-archived-collapsed") !== "false";
     this.unread = new Set(JSON.parse(localStorage.getItem("pi-studio-unread") || "[]"));
     this.streamingFiles = new Set();
+    this.projectVisibleSessionCounts = new Map();
     this.contextMenu = null;
     // `loadSeq` counts issued loads; `loadCommitted` is the highest seq that has
     // actually rendered. We discard a response only when a *newer* one has
@@ -611,6 +614,68 @@ export class SessionSidebar {
     return item;
   }
 
+  getProjectVisibilityKey(project) {
+    return project?.path || project?.dirName || "";
+  }
+
+  getProjectVisibleSessionCount(project, sessionCount) {
+    const key = this.getProjectVisibilityKey(project);
+    const stored = this.projectVisibleSessionCounts.get(key);
+    if (typeof stored === "number" && Number.isFinite(stored)) {
+      return Math.max(this.projectSessionInitialLimit, Math.min(sessionCount, Math.floor(stored)));
+    }
+    return Math.min(sessionCount, this.projectSessionInitialLimit);
+  }
+
+  setProjectVisibleSessionCount(project, sessionCount) {
+    const key = this.getProjectVisibilityKey(project);
+    if (!key) return;
+    this.projectVisibleSessionCounts.set(
+      key,
+      Math.max(this.projectSessionInitialLimit, sessionCount),
+    );
+  }
+
+  buildProjectSessionsToggleRow(project, visibleCount, totalCount) {
+    const hasMore = visibleCount < totalCount;
+    const canShowLess = visibleCount > this.projectSessionInitialLimit;
+    if (!hasMore && !canShowLess) return null;
+
+    const toggleRow = document.createElement("div");
+    toggleRow.className = "project-sessions-toggle-row";
+
+    if (hasMore) {
+      const showMoreButton = document.createElement("button");
+      showMoreButton.type = "button";
+      showMoreButton.className = "project-sessions-toggle";
+      showMoreButton.textContent = "Show more";
+      showMoreButton.addEventListener("click", (event) => {
+        event.stopPropagation();
+        this.setProjectVisibleSessionCount(project, visibleCount + this.projectSessionStep);
+        this.render();
+      });
+      toggleRow.appendChild(showMoreButton);
+    }
+
+    if (canShowLess) {
+      const showLessButton = document.createElement("button");
+      showLessButton.type = "button";
+      showLessButton.className = "project-sessions-toggle project-sessions-toggle-less";
+      showLessButton.textContent = "Show less";
+      showLessButton.addEventListener("click", (event) => {
+        event.stopPropagation();
+        this.setProjectVisibleSessionCount(
+          project,
+          Math.max(this.projectSessionInitialLimit, visibleCount - this.projectSessionStep),
+        );
+        this.render();
+      });
+      toggleRow.appendChild(showLessButton);
+    }
+
+    return toggleRow;
+  }
+
   render() {
     if (this.projects.length === 0) {
       this.renderEmptyState();
@@ -699,9 +764,24 @@ export class SessionSidebar {
 
       const sessionsDiv = document.createElement("div");
       sessionsDiv.className = `project-sessions${isCollapsed ? " collapsed" : ""}`;
+      const visibleCount = this.getProjectVisibleSessionCount(project, visibleSessions.length);
+      const visibleProjectSessions = this.searchQuery
+        ? visibleSessions
+        : visibleSessions.slice(0, visibleCount);
 
-      for (const session of visibleSessions) {
+      for (const session of visibleProjectSessions) {
         sessionsDiv.appendChild(this.buildSessionItem(session, project));
+      }
+
+      if (!this.searchQuery) {
+        const toggleRow = this.buildProjectSessionsToggleRow(
+          project,
+          visibleProjectSessions.length,
+          visibleSessions.length,
+        );
+        if (toggleRow) {
+          sessionsDiv.appendChild(toggleRow);
+        }
       }
 
       group.appendChild(sessionsDiv);

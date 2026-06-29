@@ -23,6 +23,7 @@ import {
   showSettingsSaveError,
   showSettingsSaveSuccess,
 } from "./settings-save-status.js";
+import { setupSidebarSearchControl } from "./sidebar-search-control.js";
 import { StateManager } from "./state.js";
 import { applyTheme, getCurrentTheme, themes } from "./themes.js";
 import { ToolCardRenderer } from "./tool-card.js";
@@ -180,6 +181,7 @@ const sidebarOverlay = document.getElementById("sidebar-overlay");
 
 const refreshSessionsBtn = document.getElementById("refresh-sessions-btn");
 const sessionSearchInput = document.getElementById("session-search-input");
+const sessionSearchClearBtn = document.getElementById("session-search-clear");
 const typingIndicator = document.getElementById("typing-indicator");
 
 const sessionCostEl = document.getElementById("session-cost");
@@ -291,7 +293,11 @@ function updateGitBranchIndicator(branch = "") {
 
 async function refreshGitBranch() {
   try {
-    const res = await fetch("/api/git-branch");
+    const params = new URLSearchParams();
+    if (typeof foregroundPort === "number" && Number.isFinite(foregroundPort)) {
+      params.set("foregroundPort", String(foregroundPort));
+    }
+    const res = await fetch(`/api/git-branch${params.size ? `?${params.toString()}` : ""}`);
     if (!res.ok) {
       updateGitBranchIndicator("");
       return;
@@ -1901,8 +1907,10 @@ refreshSessionsBtn.addEventListener("click", () => {
 })();
 
 // Session search
-sessionSearchInput.addEventListener("input", () => {
-  sidebar.setSearchQuery(sessionSearchInput.value);
+setupSidebarSearchControl({
+  input: sessionSearchInput,
+  clearButton: sessionSearchClearBtn,
+  onChange: (value) => sidebar.setSearchQuery(value),
 });
 
 /**
@@ -2263,7 +2271,7 @@ async function renderSelectedSessionHistory(session, project) {
       selectedSession: session.filePath,
       entries: data.entries?.length || 0,
     });
-    renderSessionHistory(data.entries || []);
+    renderSessionHistory(data.entries || [], { searchQuery: sidebar.searchQuery });
   } catch (e) {
     console.error("[Session route] history:fetch-error", {
       selectedSession: session?.filePath,
@@ -2294,7 +2302,7 @@ async function switchSession(sessionFile, session = null, project = null) {
           console.log("[App] History entries:", data.entries?.length || 0);
 
           messageRenderer.clear();
-          renderSessionHistory(data.entries || []);
+          renderSessionHistory(data.entries || [], { searchQuery: sidebar.searchQuery });
         } catch (e) {
           console.error("[App] History fetch error:", e);
         }
@@ -2453,7 +2461,7 @@ function handleMirrorSync(data) {
   }
 
   if (data.entries && data.entries.length > 0) {
-    renderSessionHistory(data.entries);
+    renderSessionHistory(data.entries, { searchQuery: sidebar.searchQuery });
   } else {
     renderWorkspaceWelcome();
   }
@@ -2513,7 +2521,7 @@ function updateMirrorInputState() {
 // Session history rendering
 // ═══════════════════════════════════════
 
-function renderSessionHistory(entries) {
+function renderSessionHistory(entries, { searchQuery = "" } = {}) {
   console.log(`[History] Rendering ${entries.length} entries`);
   let userCount = 0,
     assistantCount = 0,
@@ -2619,11 +2627,17 @@ function renderSessionHistory(entries) {
     document.querySelectorAll(".thinking-block").length,
   );
 
+  if (searchQuery) {
+    messageRenderer.highlightSearchQuery(searchQuery);
+  }
+
   updateCostDisplay();
   updateTokenUsage();
   fetchContextWindow();
 
-  anchorHistoryToBottom(document.getElementById("messages"));
+  anchorHistoryToBottom(document.getElementById("messages"), {
+    preserveScrollTarget: Boolean(searchQuery),
+  });
 }
 
 // ═══════════════════════════════════════
