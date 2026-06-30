@@ -18,6 +18,7 @@ export function createAppUpdater({
 
   let pendingUpdate = null;
   let updaterBusy = false;
+  let updaterBusyPhase = null;
   let updateCheckFailed = false;
   let uiInitialized = false;
   let startupCheckTimer = null;
@@ -30,7 +31,7 @@ export function createAppUpdater({
     visible,
     label = "Update",
     tone = "ok",
-    title = "Open updates in settings",
+    title = "Download and install update",
     disabled = false,
   }) {
     if (!sidebarUpdateBtn) return;
@@ -39,7 +40,7 @@ export function createAppUpdater({
       sidebarUpdateBtn.textContent = "Update";
       sidebarUpdateBtn.dataset.tone = "";
       sidebarUpdateBtn.disabled = false;
-      sidebarUpdateBtn.title = "Open updates in settings";
+      sidebarUpdateBtn.title = "Download and install update";
       return;
     }
     sidebarUpdateBtn.textContent = label;
@@ -50,6 +51,10 @@ export function createAppUpdater({
 
   function syncSidebarUpdateButton() {
     if (updaterBusy) {
+      if (updaterBusyPhase === "checking") {
+        setSidebarUpdateButton({ visible: false });
+        return;
+      }
       setSidebarUpdateButton({
         visible: true,
         label: "Updating...",
@@ -64,7 +69,7 @@ export function createAppUpdater({
         visible: true,
         label: "Update",
         tone: "ok",
-        title: `Update available: ${pendingUpdate.version}`,
+        title: `Download and install Picot ${pendingUpdate.version}`,
       });
       return;
     }
@@ -73,7 +78,7 @@ export function createAppUpdater({
         visible: true,
         label: "Retry",
         tone: "error",
-        title: "Last update check failed. Open settings to retry.",
+        title: "Last update check failed. Retry update check.",
       });
       return;
     }
@@ -180,6 +185,7 @@ export function createAppUpdater({
     }
 
     updaterBusy = true;
+    updaterBusyPhase = "checking";
     syncSidebarUpdateButton();
     if (checkUpdatesBtn) {
       checkUpdatesBtn.disabled = true;
@@ -225,6 +231,7 @@ export function createAppUpdater({
       return null;
     } finally {
       updaterBusy = false;
+      updaterBusyPhase = null;
       syncSidebarUpdateButton();
       if (checkUpdatesBtn) {
         checkUpdatesBtn.disabled = false;
@@ -238,6 +245,7 @@ export function createAppUpdater({
     if (!transport?.capabilities?.native) return;
 
     updaterBusy = true;
+    updaterBusyPhase = "installing";
     syncSidebarUpdateButton();
     if (installUpdateBtn) {
       installUpdateBtn.disabled = true;
@@ -287,6 +295,7 @@ export function createAppUpdater({
       syncSidebarUpdateButton();
     } finally {
       updaterBusy = false;
+      updaterBusyPhase = null;
       syncSidebarUpdateButton();
       if (checkUpdatesBtn) checkUpdatesBtn.disabled = false;
     }
@@ -369,6 +378,14 @@ export function createAppUpdater({
   }
 
   async function openUpdatesFromSidebar() {
+    if (pendingUpdate) {
+      await installPendingUpdate();
+      return;
+    }
+    if (updateCheckFailed) {
+      await checkForUpdates({ silent: false });
+      return;
+    }
     await onOpenSettings();
     updaterSection?.scrollIntoView({ block: "nearest", behavior: "smooth" });
     if (pendingUpdate && installUpdateBtn && !installUpdateBtn.disabled) {

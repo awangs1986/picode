@@ -2092,6 +2092,27 @@ body {
 
 .pkg-browse-row {
   align-items: flex-start;
+  height: 140px;
+  overflow: hidden;
+}
+
+.pkg-browse-row:has(.settings-extension-status.is-error:not([hidden])) {
+  height: auto;
+  overflow: visible;
+}
+
+.pkg-browse-row .settings-extension-info {
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+}
+
+.pkg-browse-row .settings-extension-description {
+  display: -webkit-box;
+  line-height: 16px;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .pkg-browse-full-row {
