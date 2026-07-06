@@ -70,10 +70,20 @@ export class FileBrowser {
   async load(dirPath) {
     this.container.innerHTML = '<div class="file-loading">Loading…</div>';
 
+    // Guard against out-of-order responses: if the user clicks into another
+    // directory (or the parent/up button) before this request resolves, an
+    // older/slower response must not be allowed to overwrite the newer view.
+    this._requestId = (this._requestId || 0) + 1;
+    const requestId = this._requestId;
+
     try {
-      const url = dirPath ? `/api/files?path=${encodeURIComponent(dirPath)}` : "/api/files";
+      const url = dirPath
+        ? `/api/files?path=${encodeURIComponent(dirPath)}`
+        : "/api/files";
       const res = await fetch(url);
       const data = await res.json();
+
+      if (requestId !== this._requestId) return; // superseded by a newer load()
 
       if (data.error) {
         this.container.innerHTML = `<div class="file-loading">${data.error}</div>`;
@@ -85,7 +95,9 @@ export class FileBrowser {
       this.pathEl.title = data.path;
       this.render(data.items);
     } catch (_err) {
-      this.container.innerHTML = '<div class="file-loading">Failed to load</div>';
+      if (requestId !== this._requestId) return;
+      this.container.innerHTML =
+        '<div class="file-loading">Failed to load</div>';
     }
   }
 
@@ -100,7 +112,8 @@ export class FileBrowser {
     this.container.innerHTML = "";
 
     if (items.length === 0) {
-      this.container.innerHTML = '<div class="file-loading">Empty directory</div>';
+      this.container.innerHTML =
+        '<div class="file-loading">Empty directory</div>';
       return;
     }
 

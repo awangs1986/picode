@@ -4,6 +4,36 @@
 
 import { renderMarkdown, renderStreamingMarkdown, renderUserMarkdown } from "./markdown.js";
 
+/**
+ * Detect and clean up pi-chat transcript format.
+ *
+ * Old format: `- [ISO-timestamp] [uid:ID] name: text`
+ * New format:  `- [uid:ID] name: text`
+ *
+ * Returns the cleaned text (just `name: text` per line, deduplicated when
+ * all lines share the same speaker), or null if the content doesn't look
+ * like a chat transcript.
+ */
+function cleanChatTranscript(text) {
+  if (!text || typeof text !== "string") return null;
+  // Match both old (with timestamp) and new (without) formats
+  const lineRe = /^- (?:\[[\dT:.Z+-]+\] )?\[uid:[^\]]+\] ([^:]+): (.*)$/;
+  const lines = text.split("\n").filter((l) => l.trim());
+  if (lines.length === 0) return null;
+  const parsed = lines.map((l) => {
+    const m = l.match(lineRe);
+    return m ? { name: m[1].trim(), text: m[2] } : null;
+  });
+  if (parsed.some((p) => p === null)) return null; // mixed content – don't touch
+  const names = [...new Set(parsed.map((p) => p.name))];
+  // Single speaker: just show the text lines
+  if (names.length === 1) {
+    return parsed.map((p) => p.text).join("\n");
+  }
+  // Multiple speakers: show `name: text`
+  return parsed.map((p) => `**${p.name}**: ${p.text}`).join("\n\n");
+}
+
 export class MessageRenderer {
   constructor(container) {
     this.container = container;
@@ -119,9 +149,10 @@ export class MessageRenderer {
         "</div>";
     }
 
+    const displayContent = cleanChatTranscript(message.content) ?? message.content;
     div.innerHTML = `
-      <div class="message-content">${imagesHtml}${renderUserMarkdown(message.content)}</div>
-      <button class="message-copy-btn" aria-label="Copy message"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+      <div class="message-content">${imagesHtml}${renderUserMarkdown(displayContent)}</div>
+      <div class="message-footer"><button class="message-copy-btn" aria-label="Copy message"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button></div>
     `;
     this._setupCopyBtn(div);
     this.container.appendChild(div);
@@ -176,8 +207,7 @@ export class MessageRenderer {
 
     div.innerHTML = `
       <div class="message-content${streamingClass}">${contentHtml}</div>
-      ${usageHtml}
-      ${!isStreaming ? '<button class="message-copy-btn" aria-label="Copy message"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>' : ""}
+      ${!isStreaming ? `<div class="message-footer">${usageHtml}<button class="message-copy-btn" aria-label="Copy message"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button></div>` : ""}
     `;
 
     if (!isStreaming) this._setupCopyBtn(div);
@@ -266,24 +296,27 @@ export class MessageRenderer {
       contentDiv.innerHTML = html;
     }
 
-    // Add copy button after streaming finishes
-    if (!messageElement.querySelector(".message-copy-btn")) {
-      const btn = document.createElement("button");
-      btn.className = "message-copy-btn";
-      btn.innerHTML =
-        '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
-      messageElement.appendChild(btn);
-      this._setupCopyBtn(messageElement);
-    }
+    // Add footer (usage + copy button) after streaming finishes
+    if (!messageElement.querySelector(".message-footer")) {
+      const footer = document.createElement("div");
+      footer.className = "message-footer";
 
-    // Add usage info if available
-    if (usage?.cost && usage.cost.total > 0) {
-      if (!messageElement.querySelector(".message-usage")) {
+      if (usage?.cost && usage.cost.total > 0) {
         const span = document.createElement("span");
         span.className = "message-usage";
         span.textContent = `$${usage.cost.total.toFixed(4)}`;
-        messageElement.appendChild(span);
+        footer.appendChild(span);
       }
+
+      const btn = document.createElement("button");
+      btn.className = "message-copy-btn";
+      btn.setAttribute("aria-label", "Copy message");
+      btn.innerHTML =
+        '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+      footer.appendChild(btn);
+
+      messageElement.appendChild(footer);
+      this._setupCopyBtn(messageElement);
     }
   }
 

@@ -1,3 +1,5 @@
+import { getSuperAgentProject, isSuperAgentProjectPath } from "./super-agent-session.js";
+
 /**
  * Session Sidebar - Lists sessions grouped by project, handles switching
  */
@@ -10,6 +12,7 @@ export class SessionSidebar {
     this.onSessionSelect = onSessionSelect;
     this.onNewChat = onNewChat;
     this.onOpenProject = options.onOpenProject || null;
+    this.superAgentPath = options.superAgentPath || "";
     this.activeSessionFile = null;
     this.projects = [];
     this.collapsedProjects = new Set();
@@ -559,6 +562,7 @@ export class SessionSidebar {
     item.className = "session-item";
     item.dataset.filePath = session.filePath;
     item.dataset.projectSearchText = this.getProjectSearchText(project);
+    if (session.kind) item.dataset.kind = session.kind;
 
     if (session.filePath === this.activeSessionFile) {
       item.classList.add("active");
@@ -612,6 +616,32 @@ export class SessionSidebar {
     }
 
     return item;
+  }
+
+  buildPinnedSuperAgentGroup(pinned) {
+    if (!pinned) return null;
+
+    const group = document.createElement("div");
+    group.className = "super-agent-pinned-group";
+    group.dataset.projectSearchText = this.getProjectSearchText(pinned.project);
+
+    const header = document.createElement("div");
+    header.className = "project-header super-agent-pinned-header";
+    header.innerHTML = `
+      <span class="fav-star">★</span>
+      <span>Super Agent</span>
+      <span class="project-count">Pinned</span>
+    `;
+    group.appendChild(header);
+
+    const sessionsDiv = document.createElement("div");
+    sessionsDiv.className = "project-sessions";
+    sessionsDiv.appendChild(
+      this.buildSessionItem(pinned.session, pinned.project, { showArchiveButton: false }),
+    );
+    group.appendChild(sessionsDiv);
+
+    return group;
   }
 
   getProjectVisibilityKey(project) {
@@ -683,12 +713,21 @@ export class SessionSidebar {
     }
 
     this.container.innerHTML = "";
+    const pinnedSuperAgent = getSuperAgentProject(this.projects, this.superAgentPath);
+    const pinnedSessionFile = pinnedSuperAgent?.session?.filePath || null;
+
+    const pinnedGroup = this.buildPinnedSuperAgentGroup(pinnedSuperAgent);
+    if (pinnedGroup) {
+      this.container.appendChild(pinnedGroup);
+    }
 
     // Favourites + archived sections — collect from all projects
     const favSessions = [];
     const archivedSessions = [];
     for (const project of this.projects) {
+      if (isSuperAgentProjectPath(project.path, this.superAgentPath)) continue;
       for (const session of project.sessions) {
+        if (session.filePath === pinnedSessionFile) continue;
         if (this.isArchived(session.filePath)) {
           archivedSessions.push({ session, project });
           continue;
@@ -719,8 +758,9 @@ export class SessionSidebar {
 
     // Regular project groups
     for (const project of this.projects) {
+      if (isSuperAgentProjectPath(project.path, this.superAgentPath)) continue;
       const visibleSessions = project.sessions.filter(
-        (session) => !this.isArchived(session.filePath),
+        (session) => session.filePath !== pinnedSessionFile && !this.isArchived(session.filePath),
       );
       if (visibleSessions.length === 0) continue;
 

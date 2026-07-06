@@ -1,0 +1,19 @@
+import { getSuperAgentProject } from "./super-agent-session.js";
+
+function isLiveSuperAgentSession(session) {
+  return session?.isRunning === true && Number.isFinite(session?.port);
+}
+
+export async function ensureSuperAgentSession({ superAgentPath, projects, transport }) {
+  if (!superAgentPath || !transport?.openWorkspace) return false;
+  const superAgent = getSuperAgentProject(projects, superAgentPath);
+  if (isLiveSuperAgentSession(superAgent?.session)) return false;
+
+  await transport.openWorkspace(superAgentPath, {
+    forceNewSession: true,
+    openWindow: false,
+    waitForHealth: true,
+    waitForSessions: true,
+  });
+  return true;
+}

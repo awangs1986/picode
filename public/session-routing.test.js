@@ -1,5 +1,9 @@
 import { describe, expect, test } from "vitest";
-import { findPortForSession, getWorkspacePathForPort } from "./session-routing.js";
+import {
+  findPortForSession,
+  getWorkspacePathForPort,
+  shouldSpawnForCrossWorkspaceSelection,
+} from "./session-routing.js";
 
 describe("session routing helpers", () => {
   const instances = [
@@ -13,5 +17,10 @@ describe("session routing helpers", () => {
 
   test("resolves workspace path from the active pi process port", () => {
     expect(getWorkspacePathForPort(instances, 47822)).toBe("/tmp/b");
+  });
+
+  test("spawns instead of switching when selected project differs from foreground workspace", () => {
+    expect(shouldSpawnForCrossWorkspaceSelection(instances, 47822, "/tmp/a")).toBe(true);
+    expect(shouldSpawnForCrossWorkspaceSelection(instances, 47822, "/tmp/b")).toBe(false);
   });
 });

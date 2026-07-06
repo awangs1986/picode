@@ -15,7 +15,12 @@ import { MessageRenderer } from "./message-renderer.js";
 import { resolveNewSessionLiveFile } from "./new-session-refresh.js";
 import { getOnboardingState } from "./onboarding-state.js";
 import { renderPackageInstallFailure } from "./package-install-status.js";
-import { findPortForSession, getWorkspacePathForPort } from "./session-routing.js";
+import { setupResizablePanel } from "./resizable-panel.js";
+import {
+  findPortForSession,
+  getWorkspacePathForPort,
+  shouldSpawnForCrossWorkspaceSelection,
+} from "./session-routing.js";
 import { SessionSidebar } from "./session-sidebar.js";
 import {
   clearSettingsSaveMessage,
@@ -25,14 +30,18 @@ import {
 } from "./settings-save-status.js";
 import { setupSidebarSearchControl } from "./sidebar-search-control.js";
 import { StateManager } from "./state.js";
+import { ensureSuperAgentSession } from "./super-agent-bootstrap.js";
+import { isSuperAgentSession } from "./super-agent-session.js";
 import { applyTheme, getCurrentTheme, themes } from "./themes.js";
 import { ToolCardRenderer } from "./tool-card.js";
 import { initTransport } from "./transport.js";
 import { resolveWebSocketUrl, WebSocketClient } from "./websocket-client.js";
 import {
+  buildWorkspaceUrl,
   openFolderAsWorkspace,
   startInWindowNewSession,
   startNewProjectChat,
+  withBrokerWs,
 } from "./workspace-actions.js";
 
 const fetchInstances = async () => {
@@ -158,6 +167,8 @@ const state = new StateManager();
 const messageRenderer = new MessageRenderer(document.getElementById("messages"));
 const toolCardRenderer = new ToolCardRenderer(document.getElementById("messages"));
 const dialogHandler = new DialogHandler(document.getElementById("dialog-container"), wsClient);
+let superAgentPath = "";
+let superAgentAddonsActive = false;
 
 // Session sidebar
 const sidebar = new SessionSidebar(
@@ -166,6 +177,74 @@ const sidebar = new SessionSidebar(
   handleNewProjectChat,
   { onOpenProject: () => handleOpenFolder() },
 );
+
+// ── Super Agent wiring ──────────────────────────────────────────────────────
+// Compatibility surface for Super Agent add-on Web Components.
+window.__saNav = {
+  get transport() {
+    return transport;
+  },
+  fetchInstances,
+  getCurrentPort,
+  buildWorkspaceUrl,
+  withBrokerWs,
+  navigateInWindow,
+  startInWindowNewSession,
+};
+
+// <super-agent-runtime> fires 'sa-dispatch' when the user approves a task.
+document.addEventListener("sa-dispatch", (e) => dispatchSuperAgentTask(e.detail));
+
+// <sa-chat-header> service buttons open Settings > Chat tab
+window.__saOpenSettings = () => {
+  document.getElementById("settings-btn")?.click();
+  document.querySelector('[data-settings-tab="chat"]')?.click();
+};
+// ── end Super Agent wiring ───────────────────────────────────────────────────
+
+async function initSuperAgentPath() {
+  try {
+    const res = await fetch("/api/home");
+    if (!res.ok) return;
+    const data = await res.json();
+    if (!data?.home) return;
+    superAgentPath = `${data.home}/.pi/agent/super-agent`;
+    sidebar.superAgentPath = superAgentPath;
+  } catch (error) {
+    console.warn("[SuperAgent] failed to resolve home directory:", error);
+  }
+}
+
+function updateSuperAgentActiveState(session = null, project = null) {
+  const active = isSuperAgentSession(session, project, superAgentPath);
+  document.body.classList.toggle("super-agent-active", active);
+  document.getElementById("super-agent-chat-header")?.classList.toggle("hidden", !active);
+  if (active && !superAgentAddonsActive) {
+    document.querySelector("super-agent-runtime")?.classList.remove("collapsed");
+  }
+  superAgentAddonsActive = active;
+}
+
+function updateSuperAgentActiveStateFromWorkspace() {
+  updateSuperAgentActiveState(null, { path: getCurrentWorkspacePath() });
+}
+
+async function loadSessionsWithSuperAgentBootstrap() {
+  const projects = await sidebar.loadSessions();
+  const created = await ensureSuperAgentSession({
+    superAgentPath,
+    projects,
+    transport,
+  }).catch((error) => {
+    console.warn("[SuperAgent] failed to ensure fixed session:", error);
+    return false;
+  });
+  if (created) {
+    await pollInstances().catch(() => {});
+    return sidebar.loadSessions();
+  }
+  return projects;
+}
 
 // UI elements
 const messageInput = document.getElementById("message-input");
@@ -242,6 +321,8 @@ let deferredMirrorSync = null;
 let lastRenderedWelcomeWorkspacePath = null;
 // Maps port -> sessionFile for each pi process we're tracking
 const portSessionMap = new Map();
+// Maps port -> { taskId, superAgentPort, title } for dispatched Super Agent tasks
+const dispatchedTasks = new Map();
 // The port that wsClient is currently connected to (the "foreground" session)
 let foregroundPort = getCurrentPort();
 let foregroundWorkspacePath = "";
@@ -328,6 +409,7 @@ function syncWorkspaceIndicatorFromInstances() {
   const workspacePath = getWorkspacePathForPort(liveInstances, foregroundPort);
   if (workspacePath) foregroundWorkspacePath = workspacePath;
   updateWorkspaceIndicator(workspacePath || foregroundWorkspacePath);
+  updateSuperAgentActiveStateFromWorkspace();
   refreshGitBranch();
 }
 
@@ -376,6 +458,12 @@ const fileSidebarUp = document.getElementById("file-sidebar-up");
 const fileList = document.getElementById("file-list");
 const fileSidebarPath = document.getElementById("file-sidebar-path");
 const fileBrowser = new FileBrowser(fileList, fileSidebarPath, messageInput);
+setupResizablePanel(fileSidebar, {
+  storageKey: "pi-studio-file-sidebar-width",
+  defaultWidth: 360,
+  minWidth: 280,
+  maxWidth: 560,
+});
 fileSidebarToggle.addEventListener("click", () => {
   const isCollapsed = fileSidebar.classList.toggle("collapsed");
   if (!isCollapsed && !fileBrowser.currentPath) {
@@ -795,12 +883,21 @@ function handleBackgroundRPCEvent(sessionFile, event) {
     case "agent_start":
       sidebar.setStreaming(sessionFile, true);
       break;
-    case "agent_end":
+    case "agent_end": {
       sidebar.setStreaming(sessionFile, false);
       sidebar.markUnread(sessionFile);
       sidebar.loadSessions({ quiet: true }).catch(() => {});
       pollInstances().catch(() => {});
+      // Check if this background session was a dispatched Super Agent task
+      const srcPort = event?.__broker?.sourcePort;
+      if (srcPort && dispatchedTasks.has(srcPort)) {
+        const taskMeta = dispatchedTasks.get(srcPort);
+        dispatchedTasks.delete(srcPort);
+        // agent_end carries no exit status — always mark done and let Super Agent handle
+        notifySuperAgent(taskMeta.superAgentPort, taskMeta.taskId, taskMeta.title, "done", null);
+      }
       break;
+    }
     case "message_end":
       sidebar.markUnread(sessionFile);
       break;
@@ -814,6 +911,73 @@ function handleCompactionStart() {
   el.innerHTML = '<span class="compaction-spinner">⟳</span> Compacting context…';
   messagesContainer.appendChild(el);
   scrollToBottom();
+}
+
+async function dispatchSuperAgentTask(task) {
+  if (!transport) return;
+  const targetCwd = task.targetProject;
+  if (!targetCwd) return;
+  try {
+    const newPort = await transport.openWorkspace(targetCwd, {
+      forceNewSession: true,
+      openWindow: false,
+      waitForHealth: true,
+      waitForSessions: false,
+    });
+    // Use the current port as the super-agent port if not set by the agent
+    const saPort = task.superAgentPort || getCurrentPort();
+    dispatchedTasks.set(newPort, {
+      taskId: task.id,
+      superAgentPort: saPort,
+      title: task.title,
+    });
+    // Send the task description as the first message to the new session
+    const msg = `${task.title}\n\n${task.description || ""}`.trim();
+    await fetch(`http://localhost:${newPort}/api/rpc`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type: "prompt", message: msg }),
+    });
+  } catch (e) {
+    console.error("[SuperAgent] dispatch failed:", e);
+  }
+}
+
+async function notifySuperAgent(port, taskId, title, status, failReason) {
+  if (!port) return;
+  // Update the task status in tasks.json directly
+  try {
+    const res = await fetch(`http://localhost:${port}/api/super-agent/tasks`);
+    if (res.ok) {
+      const data = await res.json();
+      const task = (data.tasks || []).find((t) => t.id === taskId);
+      if (task) {
+        task.status = status;
+        if (failReason) task.failReason = failReason;
+        await fetch(`http://localhost:${port}/api/super-agent/tasks`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(data),
+        });
+      }
+    }
+  } catch (e) {
+    console.warn("[SuperAgent] task status update failed:", e);
+  }
+  // Also notify the SA agent via chat so it can reply to the original sender
+  const msg =
+    status === "done"
+      ? `Task completed: "${title}" (id: ${taskId})`
+      : `Task failed: "${title}" (id: ${taskId})\nReason: ${failReason || "Unknown error"}`;
+  try {
+    await fetch(`http://localhost:${port}/api/rpc`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type: "prompt", message: msg }),
+    });
+  } catch (e) {
+    console.warn("[SuperAgent] notify failed:", e);
+  }
 }
 
 function handleCompactionEnd(event) {
@@ -1929,6 +2093,7 @@ async function resetUiForNewSession() {
   toolCardRenderer.clear();
   renderWorkspaceWelcome();
   sidebar.clearActive();
+  updateSuperAgentActiveState(null, null);
   mirrorActiveSessionFile = null;
   viewingActiveSession = true;
   pendingSessionSwitchPath = null;
@@ -2110,6 +2275,7 @@ async function handleSessionSelectImpl(session, project) {
     pendingSessionSwitchPath = null;
   }
   sidebar.setActive(session.filePath);
+  updateSuperAgentActiveState(session, project);
   const targetLiveInstance = liveInstances.find(
     (instance) => instance.sessionFile === session.filePath,
   );
@@ -2161,15 +2327,20 @@ async function handleSessionSelectImpl(session, project) {
       return;
     }
 
-    if (wasStreaming) {
+    const selectedProjectCwd = project?.path || session?.cwd || "";
+    const shouldSpawnForWorkspace =
+      !targetLiveInstance &&
+      shouldSpawnForCrossWorkspaceSelection(liveInstances, foregroundPort, selectedProjectCwd);
+
+    if (wasStreaming || shouldSpawnForWorkspace) {
       if (transport.spawnSessionProcess) {
         let targetPort = null;
         try {
-          const cwd = getCurrentWorkspacePath();
+          const cwd = selectedProjectCwd || getCurrentWorkspacePath();
           targetPort = await transport.spawnSessionProcess(session.filePath, cwd);
         } catch (e) {
           console.error(
-            "[App] Failed to spawn session process, falling back to deferred switch:",
+            "[App] Failed to spawn session process, falling back to deferred/current switch:",
             e,
           );
         }
@@ -2193,6 +2364,14 @@ async function handleSessionSelectImpl(session, project) {
           }
           return;
         }
+      }
+      if (shouldSpawnForWorkspace) {
+        messageRenderer.renderError("Failed to open session in its workspace process.");
+        if (isMobile()) {
+          sidebarEl.classList.add("collapsed");
+          sidebarOverlay.classList.remove("visible");
+        }
+        return;
       }
       // Fallback: defer the switch until the current agent run ends.
       // This preserves the old safe behavior when spawn is unavailable or fails.
@@ -2408,6 +2587,7 @@ function handleMirrorSync(data) {
   if (syncWorkspacePath) {
     foregroundWorkspacePath = syncWorkspacePath;
     updateWorkspaceIndicator(syncWorkspacePath);
+    updateSuperAgentActiveStateFromWorkspace();
   }
   wsClient.setRoutingContext({
     workspaceId: data.workspaceId || `workspace:${getCurrentWorkspacePath() || "unknown"}`,
@@ -3625,19 +3805,22 @@ openFolderBtn?.addEventListener("click", handleOpenFolder);
 wsClient.connect();
 dismissBootSwapOverlayWhenReady();
 renderWorkspaceWelcome();
-sidebar.loadSessions().then(() => {
-  sessionsLoaded = true;
-  updateUI();
-  if (!hasAnySessionsLoaded()) {
-    renderWorkspaceWelcome();
-  }
-  if (deferredMirrorSync) {
-    const syncData = deferredMirrorSync;
-    deferredMirrorSync = null;
-    handleMirrorSync(syncData);
-  }
-  if (isMirrorMode) updateMirrorLiveIndicator();
-});
+initSuperAgentPath()
+  .catch(() => {})
+  .then(() => loadSessionsWithSuperAgentBootstrap())
+  .then(() => {
+    sessionsLoaded = true;
+    updateUI();
+    if (!hasAnySessionsLoaded()) {
+      renderWorkspaceWelcome();
+    }
+    if (deferredMirrorSync) {
+      const syncData = deferredMirrorSync;
+      deferredMirrorSync = null;
+      handleMirrorSync(syncData);
+    }
+    if (isMirrorMode) updateMirrorLiveIndicator();
+  });
 
 // Dismiss mobile splash screen
 const splash = document.getElementById("mobile-splash");

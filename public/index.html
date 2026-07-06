@@ -98,7 +98,7 @@
     <!-- Main Chat Area -->
     <div class="main">
       <!-- Header -->
-      <div class="header">
+      <div class="header session-header">
         <div class="header-left">
           <button class="sidebar-toggle" id="sidebar-toggle" title="Toggle sidebar" aria-label="Toggle sidebar"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button>
           <button class="icon-btn lan-qr-btn hidden" id="lan-qr-btn" title="Show mobile QR code" aria-label="Show mobile QR code">
@@ -136,6 +136,9 @@
           </button>
         </div>
       </div>
+
+      <!-- Super Agent Chat Header web component (shown when SA is active) -->
+      <sa-chat-header class="super-agent-chat-header hidden" id="super-agent-chat-header"></sa-chat-header>
 
       <!-- Messages Container -->
       <div class="messages" id="messages">
@@ -208,9 +211,12 @@
       </div>
     </div>
 
+    <!-- Super Agent Runtime Panel (right column, shown when SA active) -->
+    <super-agent-runtime class="super-agent-runtime app-side-panel" id="super-agent-runtime"></super-agent-runtime>
+
     <!-- File Browser (right sidebar) -->
-    <div class="file-sidebar collapsed" id="file-sidebar">
-      <div class="file-sidebar-header">
+    <div class="file-sidebar app-side-panel collapsed" id="file-sidebar">
+      <div class="file-sidebar-header app-side-panel-header">
         <span class="file-sidebar-title" id="file-sidebar-title">Files</span>
         <button class="icon-btn" id="file-sidebar-up" title="Parent directory">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg>
@@ -218,7 +224,7 @@
         <button class="icon-btn" id="file-sidebar-finder" title="Open in file manager">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/></svg>
         </button>
-        <button class="icon-btn" id="file-sidebar-close" title="Close" aria-label="Close file browser"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+        <button class="icon-btn app-side-panel-close-btn" id="file-sidebar-close" title="Close" aria-label="Close file browser"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
       </div>
       <div class="file-sidebar-path" id="file-sidebar-path" title=""></div>
       <div class="file-list" id="file-list"></div>
@@ -234,6 +240,7 @@
       <button class="settings-nav-item" data-settings-tab="extensions">Extensions</button>
       <button class="settings-nav-item" data-settings-tab="usage">Usage</button>
       <button class="settings-nav-item" data-settings-tab="configuration">Configuration</button>
+      <button class="settings-nav-item" data-settings-tab="chat">Chat</button>
       <button class="settings-nav-back" id="settings-close"><span class="settings-nav-back-icon">‹</span> Back to chat</button>
     </aside>
     <section class="settings-content">
@@ -400,6 +407,9 @@
           </div>
         </div>
       </div>
+
+      <chat-settings-panel class="settings-tab" data-settings-panel="chat"></chat-settings-panel>
+
     </section>
   </div>
 
@@ -457,5 +467,10 @@
 
   <!-- Scripts -->
   <script type="module" src="app.js"></script>
+  <script type="module" src="components/super-agent-entry.js"></script>
+  <script type="module" src="components/super-agent-runtime.js"></script>
+  <script type="module" src="components/sa-chat-header.js"></script>
+  <script type="module" src="components/chat-settings-panel.js"></script>
+  <script type="module" src="super-agent-panel.js"></script>
 </body>
 </html>
