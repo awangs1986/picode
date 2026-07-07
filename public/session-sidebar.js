@@ -1,4 +1,5 @@
 import { getSuperAgentProject, isSuperAgentProjectPath } from "./super-agent-session.js";
+import { isSuperAgentEnabled } from "./super-agent-settings.js";
 
 /**
  * Session Sidebar - Lists sessions grouped by project, handles switching
@@ -715,7 +716,9 @@ export class SessionSidebar {
     }
 
     this.container.innerHTML = "";
-    const pinnedSuperAgent = getSuperAgentProject(this.projects, this.superAgentPath);
+    const pinnedSuperAgent = isSuperAgentEnabled()
+      ? getSuperAgentProject(this.projects, this.superAgentPath)
+      : null;
     const pinnedSessionFile = pinnedSuperAgent?.session?.filePath || null;
 
     const pinnedGroup = this.buildPinnedSuperAgentGroup(pinnedSuperAgent);
@@ -886,6 +889,11 @@ export class SessionSidebar {
 
       archivedGroup.appendChild(sessionsDiv);
       this.container.appendChild(archivedGroup);
+    }
+
+    if (this.container.children.length === 0) {
+      this.renderEmptyState();
+      return;
     }
 
     if (this.searchQuery) this.applySearch();

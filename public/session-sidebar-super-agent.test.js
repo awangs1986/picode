@@ -1,11 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { SessionSidebar } from "./session-sidebar.js";
+import { setSuperAgentEnabled } from "./super-agent-settings.js";
 
 describe("SessionSidebar Super Agent pinned session", () => {
   beforeEach(() => {
     document.body.innerHTML = '<div id="sessions"></div>';
     localStorage.clear();
+    setSuperAgentEnabled(true);
   });
 
   it("renders latest Super Agent session before normal projects and selects it through the normal callback", () => {
@@ -81,6 +83,70 @@ describe("SessionSidebar Super Agent pinned session", () => {
     sidebar.render();
 
     expect(document.querySelectorAll('.session-item[data-file-path="/sa.jsonl"]')).toHaveLength(1);
+  });
+
+  it("shows the empty state instead of a blank list when disabled and only Super Agent sessions exist", () => {
+    setSuperAgentEnabled(false);
+    const sidebar = new SessionSidebar(document.getElementById("sessions"), vi.fn(), vi.fn(), {
+      superAgentPath: "/Users/me/.pi/agent/super-agent",
+    });
+    sidebar.projects = [
+      {
+        path: "/Users/me/.pi/agent/super-agent",
+        dirName: "super-agent",
+        sessions: [
+          {
+            filePath: "/sa.jsonl",
+            name: "Super Agent",
+            timestamp: "2026-06-03",
+          },
+        ],
+      },
+    ];
+
+    sidebar.render();
+
+    expect(document.querySelector('.session-item[data-file-path="/sa.jsonl"]')).toBeNull();
+    expect(document.querySelector(".super-agent-pinned-group")).toBeNull();
+    expect(document.querySelector(".session-empty-state")).not.toBeNull();
+  });
+
+  it("hides Super Agent from the session list when the setting is off", () => {
+    setSuperAgentEnabled(false);
+    const sidebar = new SessionSidebar(document.getElementById("sessions"), vi.fn(), vi.fn(), {
+      superAgentPath: "/Users/me/.pi/agent/super-agent",
+    });
+    sidebar.projects = [
+      {
+        path: "/Users/me/.pi/agent/super-agent",
+        dirName: "super-agent",
+        sessions: [
+          {
+            filePath: "/sa.jsonl",
+            name: "Super Agent",
+            timestamp: "2026-06-03",
+          },
+        ],
+      },
+      {
+        path: "/Users/me/project",
+        dirName: "project",
+        sessions: [
+          {
+            filePath: "/project.jsonl",
+            name: "Project",
+            timestamp: "2026-06-01",
+          },
+        ],
+      },
+    ];
+
+    sidebar.render();
+
+    expect(document.querySelector('.session-item[data-file-path="/sa.jsonl"]')).toBeNull();
+    expect(document.querySelector(".super-agent-pinned-group")).toBeNull();
+    expect(document.getElementById("sessions")?.textContent).not.toContain("Super Agent");
+    expect(document.querySelector('.session-item[data-file-path="/project.jsonl"]')).not.toBeNull();
   });
 
   it("hides non-pinned Super Agent sessions instead of rendering Super Agent History", () => {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  getRunningSuperAgentPorts,
   getSuperAgentProject,
   isSuperAgentProjectPath,
   normalizeSuperAgentSession,
@@ -74,5 +75,23 @@ describe("super agent session helpers", () => {
         sessions: [],
       }),
     ).toBeNull();
+  });
+
+  it("collects running Super Agent ports from sessions and live instances", () => {
+    expect(
+      getRunningSuperAgentPorts({
+        superAgentPath: "/Users/me/.pi/agent/super-agent",
+        projects: [
+          {
+            path: "/Users/me/.pi/agent/super-agent",
+            sessions: [{ filePath: "/sa.jsonl", isRunning: true, port: 47822 }],
+          },
+        ],
+        instances: [
+          { cwd: "/Users/me/project", port: 47821 },
+          { cwd: "/Users/me/.pi/agent/super-agent", port: 47823 },
+        ],
+      }).sort((a, b) => a - b),
+    ).toEqual([47822, 47823]);
   });
 });

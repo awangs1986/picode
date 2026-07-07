@@ -32,8 +32,9 @@ import {
 import { setupSidebarSearchControl } from "./sidebar-search-control.js";
 import { StateManager } from "./state.js";
 import { ensureSuperAgentSession } from "./super-agent-bootstrap.js";
-import { isSuperAgentSession } from "./super-agent-session.js";
+import { getRunningSuperAgentPorts, isSuperAgentSession } from "./super-agent-session.js";
 import { isSuperAgentEnabled } from "./super-agent-settings.js";
+import { planSuperAgentShutdown } from "./super-agent-stop-plan.js";
 import { applyTheme, getCurrentTheme, themes } from "./themes.js";
 import { ToolCardRenderer } from "./tool-card.js";
 import { initTransport } from "./transport.js";
@@ -248,6 +249,71 @@ async function loadSessionsWithSuperAgentBootstrap() {
     return sidebar.loadSessions();
   }
   return projects;
+}
+
+async function stopSuperAgentInstances() {
+  const instances = await fetchInstances();
+  const ports = getRunningSuperAgentPorts({
+    projects: sidebar.projects,
+    instances,
+    superAgentPath,
+  });
+  const shutdown = planSuperAgentShutdown({
+    currentPort: getCurrentPort(),
+    superAgentPorts: ports,
+    instances,
+    superAgentPath,
+  });
+  await Promise.all(
+    shutdown.portsToStopBeforeNavigation.map((port) =>
+      transport.stopInstance(port).catch((error) => {
+        console.warn(`[SuperAgent] failed to stop instance on port ${port}:`, error);
+      }),
+    ),
+  );
+  if (shutdown.navigateToPort) {
+    const dismiss = showSwapOverlay("Closing Super Agent...");
+    try {
+      const url = new URL(withBrokerWs(buildWorkspaceUrl(shutdown.navigateToPort), transport));
+      if (shutdown.portsToStopAfterNavigation.length > 0) {
+        url.searchParams.set("stopSuperAgentPorts", shutdown.portsToStopAfterNavigation.join(","));
+      }
+      navigateInWindow(url.toString());
+      return;
+    } catch (error) {
+      dismiss();
+      console.warn("[SuperAgent] failed to navigate away before shutdown:", error);
+    }
+  }
+  await pollInstances().catch(() => {});
+  await sidebar.loadSessions().catch(() => {});
+  updateSuperAgentActiveStateFromWorkspace();
+  updateUI();
+}
+
+async function stopSuperAgentPortsFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  const rawPorts = params.get("stopSuperAgentPorts");
+  if (!rawPorts) return;
+  params.delete("stopSuperAgentPorts");
+  const nextQuery = params.toString();
+  const nextUrl = `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ""}${window.location.hash}`;
+  window.history.replaceState({}, "", nextUrl);
+
+  const ports = rawPorts
+    .split(",")
+    .map((port) => Number(port))
+    .filter((port) => Number.isFinite(port) && port > 0 && port !== getCurrentPort());
+  if (ports.length === 0) return;
+
+  await Promise.all(
+    ports.map((port) =>
+      transport.stopInstance(port).catch((error) => {
+        console.warn(`[SuperAgent] failed to stop pending instance on port ${port}:`, error);
+      }),
+    ),
+  );
+  await pollInstances().catch(() => {});
 }
 
 // UI elements
@@ -3751,7 +3817,10 @@ setupSettingsToggles({
   },
   updateThinkingBtn,
   onSuperAgentEnabledChanged: async (enabled) => {
-    if (!enabled) return;
+    if (!enabled) {
+      await stopSuperAgentInstances();
+      return;
+    }
     await loadSessionsWithSuperAgentBootstrap();
     sessionsLoaded = true;
     updateUI();
@@ -3845,6 +3914,7 @@ dismissBootSwapOverlayWhenReady();
 renderWorkspaceWelcome();
 initSuperAgentPath()
   .catch(() => {})
+  .then(() => stopSuperAgentPortsFromUrl())
   .then(() => loadSessionsWithSuperAgentBootstrap())
   .then(() => {
     sessionsLoaded = true;
