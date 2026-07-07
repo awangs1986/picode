@@ -21,7 +21,7 @@ describe("ensureSuperAgentSession", () => {
     expect(transport.openWorkspace).not.toHaveBeenCalled();
   });
 
-  it("spawns when only Super Agent history exists", async () => {
+  it("resumes existing Super Agent history instead of creating a new session", async () => {
     const transport = { openWorkspace: vi.fn().mockResolvedValue(47822) };
 
     const result = await ensureSuperAgentSession({
@@ -37,7 +37,8 @@ describe("ensureSuperAgentSession", () => {
 
     expect(result).toBe(true);
     expect(transport.openWorkspace).toHaveBeenCalledWith("/Users/me/.pi/agent/super-agent", {
-      forceNewSession: true,
+      sessionPath: "/sa.jsonl",
+      forceNewSession: false,
       openWindow: false,
       waitForHealth: true,
       waitForSessions: true,
@@ -49,13 +50,19 @@ describe("ensureSuperAgentSession", () => {
 
     const result = await ensureSuperAgentSession({
       superAgentPath: "/Users/me/.pi/agent/super-agent",
-      projects: [{ path: "/Users/me/project", sessions: [{ filePath: "/project.jsonl" }] }],
+      projects: [
+        {
+          path: "/Users/me/project",
+          sessions: [{ filePath: "/project.jsonl" }],
+        },
+      ],
       transport,
     });
 
     expect(result).toBe(true);
     expect(transport.openWorkspace).toHaveBeenCalledWith("/Users/me/.pi/agent/super-agent", {
-      forceNewSession: true,
+      sessionPath: null,
+      forceNewSession: false,
       openWindow: false,
       waitForHealth: true,
       waitForSessions: true,

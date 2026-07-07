@@ -22,7 +22,13 @@ describe("SessionSidebar Super Agent pinned session", () => {
       {
         path: "/Users/me/project",
         dirName: "project",
-        sessions: [{ filePath: "/project.jsonl", name: "Project chat", timestamp: "2026-06-02" }],
+        sessions: [
+          {
+            filePath: "/project.jsonl",
+            name: "Project chat",
+            timestamp: "2026-06-02",
+          },
+        ],
       },
       {
         path: "/Users/me/.pi/agent/super-agent",
@@ -62,7 +68,13 @@ describe("SessionSidebar Super Agent pinned session", () => {
       {
         path: "/Users/me/.pi/agent/super-agent",
         dirName: "super-agent",
-        sessions: [{ filePath: "/sa.jsonl", name: "Super Agent", timestamp: "2026-06-03" }],
+        sessions: [
+          {
+            filePath: "/sa.jsonl",
+            name: "Super Agent",
+            timestamp: "2026-06-03",
+          },
+        ],
       },
     ];
 
@@ -71,32 +83,57 @@ describe("SessionSidebar Super Agent pinned session", () => {
     expect(document.querySelectorAll('.session-item[data-file-path="/sa.jsonl"]')).toHaveLength(1);
   });
 
-  it("hides non-pinned Super Agent sessions from regular project groups", () => {
-    const sidebar = new SessionSidebar(document.getElementById("sessions"), vi.fn(), vi.fn(), {
-      superAgentPath: "/Users/me/.pi/agent/super-agent",
-    });
+  it("hides non-pinned Super Agent sessions instead of rendering Super Agent History", () => {
+    const onSessionSelect = vi.fn();
+    const sidebar = new SessionSidebar(
+      document.getElementById("sessions"),
+      onSessionSelect,
+      vi.fn(),
+      {
+        superAgentPath: "/Users/me/.pi/agent/super-agent",
+      },
+    );
     sidebar.projects = [
       {
         path: "/Users/me/.pi/agent/super-agent",
         dirName: "super-agent",
         sessions: [
-          { filePath: "/sa-pinned.jsonl", name: "Pinned", timestamp: "2026-06-03" },
-          { filePath: "/sa-other.jsonl", name: "Other", timestamp: "2026-06-02" },
+          {
+            file: "sa-pinned.jsonl",
+            filePath: "/sa-pinned.jsonl",
+            name: "Pinned",
+            timestamp: "2026-06-03",
+          },
+          {
+            file: "sa-other.jsonl",
+            filePath: "/sa-other.jsonl",
+            name: "Other",
+            timestamp: "2026-06-02",
+          },
         ],
       },
       {
         path: "/Users/me/project",
         dirName: "project",
-        sessions: [{ filePath: "/project.jsonl", name: "Project", timestamp: "2026-06-01" }],
+        sessions: [
+          {
+            filePath: "/project.jsonl",
+            name: "Project",
+            timestamp: "2026-06-01",
+          },
+        ],
       },
     ];
 
     sidebar.render();
 
     expect(
-      document.querySelector('.session-item[data-file-path="/sa-pinned.jsonl"]'),
-    ).not.toBeNull();
+      document.querySelectorAll('.session-item[data-file-path="/sa-pinned.jsonl"]'),
+    ).toHaveLength(1);
     expect(document.querySelector('.session-item[data-file-path="/sa-other.jsonl"]')).toBeNull();
+    expect(document.querySelector(".super-agent-history-group")).toBeNull();
+    expect(document.getElementById("sessions")?.textContent).not.toContain("Super Agent History");
     expect(document.querySelector('.session-item[data-file-path="/project.jsonl"]')).not.toBeNull();
+    expect(onSessionSelect).not.toHaveBeenCalled();
   });
 });

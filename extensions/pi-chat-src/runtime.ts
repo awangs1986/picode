@@ -152,7 +152,7 @@ export class ConversationRuntime {
 
   parseControlCommand(
     input: InboundMessageInput,
-  ): "stop" | "new" | "compact" | "status" | undefined {
+  ): "stop" | "new" | "compact" | "status" | "help" | undefined {
     const normalized = normalizeInboundMessage(input, this.conversation.botName);
     if (!this.isAllowedInput(normalized)) return undefined;
     const account = this.conversation.account;
@@ -170,6 +170,8 @@ export class ConversationRuntime {
     if (command === "new" || command === "/new") return "new";
     if (command === "compact" || command === "/compact") return "compact";
     if (command === "status" || command === "/status") return "status";
+    if (command === "start" || command === "/start") return "help";
+    if (command === "help" || command === "/help") return "help";
     return undefined;
   }
 

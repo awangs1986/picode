@@ -440,6 +440,21 @@ export default function (pi: ExtensionAPI) {
     return lines.join("\n") || "No usage data yet.";
   }
 
+  function buildRemoteHelp(): string {
+    return [
+      "Picot Super Agent is connected.",
+      "",
+      "Send a normal message here to create a Super Agent intake item.",
+      "Picot keeps project-agent dispatch behind local approval.",
+      "",
+      "Commands:",
+      "/status - show current model, queue, and context status",
+      "/new - start a new pi session after confirmation in Picot",
+      "/compact - compact the current session",
+      "/stop - abort the current turn",
+    ].join("\n");
+  }
+
   async function connectConversation(
     ctx: ExtensionContext,
     conversationId: string,
@@ -496,6 +511,10 @@ export default function (pi: ExtensionAPI) {
               }
               if (control === "status") {
                 await liveConnection?.sendImmediate(buildRemoteStatus(ctx));
+                return;
+              }
+              if (control === "help") {
+                await liveConnection?.sendImmediate(buildRemoteHelp());
                 return;
               }
               if (control === "new") {

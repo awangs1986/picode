@@ -1,6 +1,6 @@
 #!/bin/bash
 
-echo "Running lint:fix → format:fix → check sequentially..."
+echo "Running lint:fix → format:fix → check:fix → check sequentially..."
 echo ""
 
 run_step() {
@@ -19,6 +19,6 @@ run_step() {
 
 run_step "lint:fix"   bun run lint:fix
 run_step "format:fix" bun run format:fix
-run_step "check"      bun run check
+run_step "check:fix"  bun run check:fix
 
 echo "✓ All tasks completed successfully!"

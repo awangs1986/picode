@@ -3,6 +3,7 @@
  */
 
 import { setupContextViz } from "./app-context-viz.js";
+import "./cost-dashboard.js";
 import { setupSettingsEditors } from "./app-settings-editors.js";
 import { setupSettingsToggles } from "./app-settings-toggles.js";
 import { createAppUpdater } from "./app-updater.js";
@@ -32,6 +33,7 @@ import { setupSidebarSearchControl } from "./sidebar-search-control.js";
 import { StateManager } from "./state.js";
 import { ensureSuperAgentSession } from "./super-agent-bootstrap.js";
 import { isSuperAgentSession } from "./super-agent-session.js";
+import { isSuperAgentEnabled } from "./super-agent-settings.js";
 import { applyTheme, getCurrentTheme, themes } from "./themes.js";
 import { ToolCardRenderer } from "./tool-card.js";
 import { initTransport } from "./transport.js";
@@ -219,7 +221,7 @@ function updateSuperAgentActiveState(session = null, project = null) {
   const active = isSuperAgentSession(session, project, superAgentPath);
   document.body.classList.toggle("super-agent-active", active);
   document.getElementById("super-agent-chat-header")?.classList.toggle("hidden", !active);
-  if (active && !superAgentAddonsActive) {
+  if (active && !superAgentAddonsActive && localStorage.getItem("sa-runtime-collapsed") === "0") {
     document.querySelector("super-agent-runtime")?.classList.remove("collapsed");
   }
   superAgentAddonsActive = active;
@@ -231,6 +233,8 @@ function updateSuperAgentActiveStateFromWorkspace() {
 
 async function loadSessionsWithSuperAgentBootstrap() {
   const projects = await sidebar.loadSessions();
+  if (!isSuperAgentEnabled()) return projects;
+
   const created = await ensureSuperAgentSession({
     superAgentPath,
     projects,
@@ -690,7 +694,10 @@ messagesContainer.addEventListener("scroll", () => {
 });
 
 scrollBottomBtn.addEventListener("click", () => {
-  messagesContainer.scrollTo({ top: messagesContainer.scrollHeight, behavior: "smooth" });
+  messagesContainer.scrollTo({
+    top: messagesContainer.scrollHeight,
+    behavior: "smooth",
+  });
   scrollBottomBtn.classList.add("hidden");
   scrollBottomBadge.classList.add("hidden");
 });
@@ -1537,7 +1544,10 @@ function escapeHtml(text) {
 function flushQueue() {
   if (messageQueue.length > 0 && !state.isStreaming) {
     const cmd = messageQueue.shift();
-    messageRenderer.renderUserMessage({ content: cmd.message, images: cmd.images });
+    messageRenderer.renderUserMessage({
+      content: cmd.message,
+      images: cmd.images,
+    });
     renderQueuedMessages();
     trackPromptDelivery(wsClient.send(cmd), cmd.message);
     refreshSidebarAfterUserPrompt();
@@ -2127,6 +2137,11 @@ async function activateNewParallelSession(port, cwd) {
 }
 
 async function newSession() {
+  if (isSuperAgentSession(null, { path: getCurrentWorkspacePath() }, superAgentPath)) {
+    messageRenderer.renderSystemMessage("Super Agent uses one shared session.");
+    return;
+  }
+
   if (nativeAvailable()) {
     // Default behavior is process-efficient: create the new chat in-place on
     // the current pi process. Only spawn a dedicated process when a parallel
@@ -2450,7 +2465,9 @@ async function renderSelectedSessionHistory(session, project) {
       selectedSession: session.filePath,
       entries: data.entries?.length || 0,
     });
-    renderSessionHistory(data.entries || [], { searchQuery: sidebar.searchQuery });
+    renderSessionHistory(data.entries || [], {
+      searchQuery: sidebar.searchQuery,
+    });
   } catch (e) {
     console.error("[Session route] history:fetch-error", {
       selectedSession: session?.filePath,
@@ -2481,7 +2498,9 @@ async function switchSession(sessionFile, session = null, project = null) {
           console.log("[App] History entries:", data.entries?.length || 0);
 
           messageRenderer.clear();
-          renderSessionHistory(data.entries || [], { searchQuery: sidebar.searchQuery });
+          renderSessionHistory(data.entries || [], {
+            searchQuery: sidebar.searchQuery,
+          });
         } catch (e) {
           console.error("[App] History fetch error:", e);
         }
@@ -2734,7 +2753,10 @@ function renderSessionHistory(entries, { searchQuery = "" } = {}) {
       if (content || images.length > 0) {
         userCount++;
         messageRenderer.renderUserMessage(
-          { content: content || "", images: images.length > 0 ? images : undefined },
+          {
+            content: content || "",
+            images: images.length > 0 ? images : undefined,
+          },
           true,
         );
       }
@@ -3079,6 +3101,7 @@ const themeGrid = document.getElementById("theme-grid");
 const toggleAutoCompact = document.getElementById("toggle-auto-compact");
 const btnThinkingLevel = document.getElementById("btn-thinking-level");
 const toggleShowThinking = document.getElementById("toggle-show-thinking");
+const toggleSuperAgent = document.getElementById("toggle-super-agent");
 const toggleAuth = document.getElementById("toggle-auth");
 const authSection = document.getElementById("settings-auth-section");
 const piVersionValue = document.getElementById("setting-pi-version-value");
@@ -3103,6 +3126,12 @@ function selectSettingsTab(tabKey = "general") {
   }
   if (targetTabKey === "extensions") {
     loadBrowsePackages();
+  }
+  if (targetTabKey === "usage") {
+    const dashboard = document.getElementById("settings-cost-dashboard");
+    dashboard?.ensureLoaded?.().catch((error) => {
+      console.error("[Cost] Failed to load dashboard:", error);
+    });
   }
 }
 
@@ -3330,7 +3359,9 @@ function sortBrowsePackages(packages) {
   switch (browseSortMode) {
     case "name":
       sorted.sort((a, b) =>
-        (a.name || "").localeCompare(b.name || "", undefined, { sensitivity: "base" }),
+        (a.name || "").localeCompare(b.name || "", undefined, {
+          sensitivity: "base",
+        }),
       );
       break;
     case "updated":
@@ -3712,12 +3743,19 @@ setupSettingsToggles({
   btnThinkingLevel,
   toggleShowThinking,
   toggleAuth,
+  toggleSuperAgent,
   rpcCommand,
   getCurrentThinkingLevel: () => currentThinkingLevel,
   setCurrentThinkingLevel: (level) => {
     currentThinkingLevel = level;
   },
   updateThinkingBtn,
+  onSuperAgentEnabledChanged: async (enabled) => {
+    if (!enabled) return;
+    await loadSessionsWithSuperAgentBootstrap();
+    sessionsLoaded = true;
+    updateUI();
+  },
 });
 
 ({ loadApiKeysPanel, loadInlineConfigEditor, loadInlineModelsEditor } = setupSettingsEditors({

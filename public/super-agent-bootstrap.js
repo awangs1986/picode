@@ -10,7 +10,8 @@ export async function ensureSuperAgentSession({ superAgentPath, projects, transp
   if (isLiveSuperAgentSession(superAgent?.session)) return false;
 
   await transport.openWorkspace(superAgentPath, {
-    forceNewSession: true,
+    sessionPath: superAgent?.session?.filePath || null,
+    forceNewSession: false,
     openWindow: false,
     waitForHealth: true,
     waitForSessions: true,

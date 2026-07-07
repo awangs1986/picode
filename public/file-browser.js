@@ -77,9 +77,7 @@ export class FileBrowser {
     const requestId = this._requestId;
 
     try {
-      const url = dirPath
-        ? `/api/files?path=${encodeURIComponent(dirPath)}`
-        : "/api/files";
+      const url = dirPath ? `/api/files?path=${encodeURIComponent(dirPath)}` : "/api/files";
       const res = await fetch(url);
       const data = await res.json();
 
@@ -96,8 +94,7 @@ export class FileBrowser {
       this.render(data.items);
     } catch (_err) {
       if (requestId !== this._requestId) return;
-      this.container.innerHTML =
-        '<div class="file-loading">Failed to load</div>';
+      this.container.innerHTML = '<div class="file-loading">Failed to load</div>';
     }
   }
 
@@ -112,8 +109,7 @@ export class FileBrowser {
     this.container.innerHTML = "";
 
     if (items.length === 0) {
-      this.container.innerHTML =
-        '<div class="file-loading">Empty directory</div>';
+      this.container.innerHTML = '<div class="file-loading">Empty directory</div>';
       return;
     }
 

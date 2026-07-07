@@ -48,8 +48,11 @@ import {
 } from "./cost-dashboard-data.ts";
 import {
   buildTelegramDmConfig,
+  buildTelegramDoctorReport,
+  getLatestTelegramUpdateId,
   getTelegramBotIdentity,
   observeTelegramPrivateDm,
+  type TelegramBotIdentity,
 } from "./pi-chat-setup";
 import { buildProjectSearchMatch } from "./session-search";
 
@@ -148,10 +151,7 @@ function findLanHosts(): string[] {
 }
 
 export function buildLanAccessUrls(port: number, hosts: string[]): string[] {
-  const brokerPort = Number.parseInt(
-    process.env.PI_STUDIO_BROKER_PORT || "",
-    10,
-  );
+  const brokerPort = Number.parseInt(process.env.PI_STUDIO_BROKER_PORT || "", 10);
   return hosts.map((host) => {
     const url = new URL(`http://${host}:${port}/`);
     url.searchParams.set("mobile", "1");
@@ -176,10 +176,7 @@ function loadSettings(): { port: number } {
     settings = JSON.parse(fs.readFileSync(settingsPath, "utf8")).pistudio || {};
   } catch {}
   return {
-    port: parseInt(
-      String(process.env.PI_STUDIO_PORT || settings.port || "47821"),
-      10,
-    ),
+    port: parseInt(String(process.env.PI_STUDIO_PORT || settings.port || "47821"), 10),
   };
 }
 
@@ -217,16 +214,9 @@ function findPublicDir(): string {
   return path.resolve(process.cwd(), "public");
 }
 const SESSIONS_DIR = path.join(PI_AGENT_ROOT, "sessions");
-const CHAT_WORKER_STATUS_DIR = path.join(
-  PI_AGENT_ROOT,
-  "chat",
-  "worker-status",
-);
+const CHAT_WORKER_STATUS_DIR = path.join(PI_AGENT_ROOT, "chat", "worker-status");
 // TODO(rename->picot): directory `pistudio-instances` kept for backward compat — migrate to `picot-instances` once existing users are handled.
-const INSTANCES_DIR = path.join(
-  path.dirname(PI_AGENT_ROOT),
-  "pistudio-instances",
-);
+const INSTANCES_DIR = path.join(path.dirname(PI_AGENT_ROOT), "pistudio-instances");
 
 // Minimal single-process instance registry. We keep this so the frontend's
 // `/api/instances` response reflects the running workspace without needing
@@ -243,10 +233,7 @@ function registerInstance(port: number, sessionFile: string, cwd: string) {
     cwd,
     startedAt: new Date().toISOString(),
   };
-  fs.writeFileSync(
-    path.join(INSTANCES_DIR, `${process.pid}.json`),
-    JSON.stringify(info),
-  );
+  fs.writeFileSync(path.join(INSTANCES_DIR, `${process.pid}.json`), JSON.stringify(info));
 }
 
 function updateInstanceSession(sessionFile: string) {
@@ -333,6 +320,7 @@ type ChatWorkerStatusInfo = {
   sessionFile?: string;
   conversationId?: string;
   updatedAt?: string;
+  lastError?: string;
 };
 
 function getChatWorkerStatuses(): ChatWorkerStatusInfo[] {
@@ -341,11 +329,7 @@ function getChatWorkerStatuses(): ChatWorkerStatusInfo[] {
   for (const file of fs.readdirSync(CHAT_WORKER_STATUS_DIR)) {
     if (!file.endsWith(".json")) continue;
     try {
-      statuses.push(
-        JSON.parse(
-          fs.readFileSync(path.join(CHAT_WORKER_STATUS_DIR, file), "utf8"),
-        ),
-      );
+      statuses.push(JSON.parse(fs.readFileSync(path.join(CHAT_WORKER_STATUS_DIR, file), "utf8")));
     } catch {}
   }
   return statuses;
@@ -360,9 +344,7 @@ export function mergeLiveInstanceSessions(
     sessions: [...project.sessions],
   }));
   const existingFiles = new Set(
-    merged.flatMap((project) =>
-      project.sessions.map((session) => session.filePath),
-    ),
+    merged.flatMap((project) => project.sessions.map((session) => session.filePath)),
   );
   const existingSessions = new Map<
     string,
@@ -392,20 +374,15 @@ export function mergeLiveInstanceSessions(
     const dirName = path.basename(path.dirname(instance.sessionFile));
     const file = path.basename(instance.sessionFile);
     const projectPath =
-      instance.cwd ||
-      dirName.replace(/^--/, "/").replace(/--$/, "").replace(/-/g, "/");
+      instance.cwd || dirName.replace(/^--/, "/").replace(/--$/, "").replace(/-/g, "/");
     const session = {
       file,
       filePath: instance.sessionFile,
       cwd: projectPath,
       name: "New Session",
       timestamp: instance.startedAt || new Date().toISOString(),
-      mtime: instance.startedAt
-        ? new Date(instance.startedAt).getTime()
-        : Date.now(),
-      ctime: instance.startedAt
-        ? new Date(instance.startedAt).getTime()
-        : Date.now(),
+      mtime: instance.startedAt ? new Date(instance.startedAt).getTime() : Date.now(),
+      ctime: instance.startedAt ? new Date(instance.startedAt).getTime() : Date.now(),
       port: instance.port,
       pid: instance.pid,
       isRunning: true,
@@ -478,9 +455,7 @@ export function resolveGitBranchCwd({
   latestCtx: GitBranchContextLike;
 }): string {
   if (typeof foregroundPort === "number" && Number.isFinite(foregroundPort)) {
-    const matchedWorkspace = instances.find(
-      (instance) => instance?.port === foregroundPort,
-    )?.cwd;
+    const matchedWorkspace = instances.find((instance) => instance?.port === foregroundPort)?.cwd;
     if (typeof matchedWorkspace === "string" && matchedWorkspace.trim()) {
       return matchedWorkspace;
     }
@@ -489,9 +464,7 @@ export function resolveGitBranchCwd({
   if (latestCtx?.sessionManager?.getEntries) {
     try {
       const entries = latestCtx.sessionManager.getEntries();
-      const sessionEntry = entries.find(
-        (e: { type?: string }) => e.type === "session",
-      );
+      const sessionEntry = entries.find((e: { type?: string }) => e.type === "session");
       if (sessionEntry?.cwd) return sessionEntry.cwd;
     } catch {}
   }
@@ -671,8 +644,7 @@ function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
     let body = "";
     req.on("data", (chunk: Buffer) => {
       body += chunk.toString();
-      if (body.length > 1024 * 1024)
-        reject(new Error("Request body too large"));
+      if (body.length > 1024 * 1024) reject(new Error("Request body too large"));
     });
     req.on("end", () => {
       try {
@@ -689,6 +661,12 @@ function getStringField(body: unknown, field: string): string | undefined {
   if (!body || typeof body !== "object") return undefined;
   const value = (body as Record<string, unknown>)[field];
   return typeof value === "string" ? value : undefined;
+}
+
+function getNumberField(body: unknown, field: string): number | undefined {
+  if (!body || typeof body !== "object") return undefined;
+  const value = (body as Record<string, unknown>)[field];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function getOrCreateGlobalState(): EmbeddedServerGlobal {
@@ -756,20 +734,16 @@ export default function (pi: ExtensionAPI) {
   const PROTOCOL_VERSION = 1;
   const workspaceId = `workspace:${process.cwd()}`;
 
-  function currentSessionIdFromCtx(
-    ctx: ExtensionContext | null,
-  ): string | null {
+  function currentSessionIdFromCtx(ctx: ExtensionContext | null): string | null {
     if (!ctx) return null;
     try {
       const sessionFile = ctx.sessionManager.getSessionFile();
-      if (typeof sessionFile === "string" && sessionFile.trim())
-        return sessionFile;
+      if (typeof sessionFile === "string" && sessionFile.trim()) return sessionFile;
     } catch {}
     try {
       const entries = ctx.sessionManager.getEntries();
       const sessionEntry = entries.find(
-        (e: { type?: string; id?: unknown }) =>
-          e?.type === "session" && typeof e?.id === "string",
+        (e: { type?: string; id?: unknown }) => e?.type === "session" && typeof e?.id === "string",
       );
       if (sessionEntry?.id) return sessionEntry.id;
     } catch {}
@@ -779,8 +753,7 @@ export default function (pi: ExtensionAPI) {
   function withRouteMeta(data: unknown) {
     const currentCtx = globalState.getLatestCtx?.() ?? latestCtx;
     const sessionId = currentSessionIdFromCtx(currentCtx);
-    const extra =
-      data && typeof data === "object" ? (data as Record<string, unknown>) : {};
+    const extra = data && typeof data === "object" ? (data as Record<string, unknown>) : {};
     return {
       protocolVersion: PROTOCOL_VERSION,
       workspaceId,
@@ -911,11 +884,7 @@ export default function (pi: ExtensionAPI) {
     if (!a) return;
 
     const sessionName = a.getSessionName();
-    if (
-      sessionName &&
-      sessionName !== "New Session" &&
-      sessionName !== "Untitled"
-    ) {
+    if (sessionName && sessionName !== "New Session" && sessionName !== "Untitled") {
       titleSet = true;
       return;
     }
@@ -937,10 +906,8 @@ export default function (pi: ExtensionAPI) {
     if (messages.length === 0) return null;
 
     // Find first substantive message (skip greetings and memory instructions)
-    const greetings =
-      /^(hey|hello|hi|morning|good morning|howdy|yo|sup)[\s!.:,]*$/i;
-    const memoryInstructions =
-      /read (your |the )?(memory|seed|persona|working) files/i;
+    const greetings = /^(hey|hello|hi|morning|good morning|howdy|yo|sup)[\s!.:,]*$/i;
+    const memoryInstructions = /read (your |the )?(memory|seed|persona|working) files/i;
 
     let bestMessage = "";
     for (const msg of messages) {
@@ -1073,12 +1040,7 @@ export default function (pi: ExtensionAPI) {
           } else {
             // Build content with optional images
             if (command.images?.length) {
-              const validMimes = [
-                "image/png",
-                "image/jpeg",
-                "image/gif",
-                "image/webp",
-              ];
+              const validMimes = ["image/png", "image/jpeg", "image/gif", "image/webp"];
               // biome-ignore lint/suspicious/noExplicitAny: mixed text/image content blocks for sendUserMessage
               const content: any[] = [
                 {
@@ -1088,19 +1050,13 @@ export default function (pi: ExtensionAPI) {
               ];
               for (const img of command.images) {
                 if (!img.data || typeof img.data !== "string") {
-                  console.error(
-                    "[embedded-server] Skipping image: missing or invalid data",
-                  );
+                  console.error("[embedded-server] Skipping image: missing or invalid data");
                   continue;
                 }
                 // Strip data URL prefix if accidentally included
-                const data = img.data.includes(",")
-                  ? img.data.split(",")[1]
-                  : img.data;
+                const data = img.data.includes(",") ? img.data.split(",")[1] : img.data;
                 const mimeType = (
-                  validMimes.includes(img.mimeType ?? "")
-                    ? (img.mimeType as string)
-                    : "image/png"
+                  validMimes.includes(img.mimeType ?? "") ? (img.mimeType as string) : "image/png"
                 ) as "image/png" | "image/jpeg" | "image/gif" | "image/webp";
                 console.log(
                   `[embedded-server] Image: mimeType=${mimeType}, dataLen=${data.length}, rawMimeType=${img.mimeType}`,
@@ -1161,10 +1117,7 @@ export default function (pi: ExtensionAPI) {
             sendTo(ws, error("new_session", "No context available"));
             break;
           }
-          if (
-            typeof (ctx as unknown as { newSession?: unknown }).newSession !==
-            "function"
-          ) {
+          if (typeof (ctx as unknown as { newSession?: unknown }).newSession !== "function") {
             sendTo(
               ws,
               error(
@@ -1188,10 +1141,7 @@ export default function (pi: ExtensionAPI) {
             sendTo(ws, error("switch_session", "sessionPath is required"));
             break;
           }
-          if (
-            typeof (ctx as unknown as { switchSession?: unknown })
-              .switchSession !== "function"
-          ) {
+          if (typeof (ctx as unknown as { switchSession?: unknown }).switchSession !== "function") {
             sendTo(
               ws,
               error(
@@ -1237,10 +1187,7 @@ export default function (pi: ExtensionAPI) {
 
         case "get_pi_version": {
           // Embedded pi version is forwarded by Picot (Rust) at spawn time.
-          sendTo(
-            ws,
-            success("get_pi_version", { version: EMBEDDED_PI_VERSION }),
-          );
+          sendTo(ws, success("get_pi_version", { version: EMBEDDED_PI_VERSION }));
           break;
         }
 
@@ -1279,10 +1226,7 @@ export default function (pi: ExtensionAPI) {
           if (!registry) {
             sendTo(
               ws,
-              error(
-                "list_auth_status",
-                "Model registry not ready yet — try again in a moment.",
-              ),
+              error("list_auth_status", "Model registry not ready yet — try again in a moment."),
             );
             break;
           }
@@ -1311,17 +1255,12 @@ export default function (pi: ExtensionAPI) {
           if (!registry) {
             sendTo(
               ws,
-              error(
-                "set_api_key",
-                "Model registry not ready yet — try again in a moment.",
-              ),
+              error("set_api_key", "Model registry not ready yet — try again in a moment."),
             );
             break;
           }
-          const provider =
-            typeof command.provider === "string" ? command.provider.trim() : "";
-          const apiKey =
-            typeof command.apiKey === "string" ? command.apiKey.trim() : "";
+          const provider = typeof command.provider === "string" ? command.provider.trim() : "";
+          const apiKey = typeof command.apiKey === "string" ? command.apiKey.trim() : "";
           if (!provider) {
             sendTo(ws, error("set_api_key", "provider is required"));
             break;
@@ -1349,15 +1288,11 @@ export default function (pi: ExtensionAPI) {
           if (!registry) {
             sendTo(
               ws,
-              error(
-                "remove_api_key",
-                "Model registry not ready yet — try again in a moment.",
-              ),
+              error("remove_api_key", "Model registry not ready yet — try again in a moment."),
             );
             break;
           }
-          const provider =
-            typeof command.provider === "string" ? command.provider.trim() : "";
+          const provider = typeof command.provider === "string" ? command.provider.trim() : "";
           if (!provider) {
             sendTo(ws, error("remove_api_key", "provider is required"));
             break;
@@ -1387,10 +1322,7 @@ export default function (pi: ExtensionAPI) {
           if (!model) {
             sendTo(
               ws,
-              error(
-                "set_model",
-                `Model not found: ${command.provider}/${command.modelId}`,
-              ),
+              error("set_model", `Model not found: ${command.provider}/${command.modelId}`),
             );
             break;
           }
@@ -1450,9 +1382,7 @@ export default function (pi: ExtensionAPI) {
         case "set_thinking_level": {
           const a = requireApi("set_thinking_level");
           if (!a) break;
-          a.setThinkingLevel(
-            command.level as Parameters<typeof a.setThinkingLevel>[0],
-          );
+          a.setThinkingLevel(command.level as Parameters<typeof a.setThinkingLevel>[0]);
           sendTo(ws, success("set_thinking_level"));
           break;
         }
@@ -1483,9 +1413,7 @@ export default function (pi: ExtensionAPI) {
               assistantMessages,
               toolCalls,
               totalMessages: entries.length,
-              tokens: usage
-                ? { input: usage.tokens, total: usage.tokens }
-                : null,
+              tokens: usage ? { input: usage.tokens, total: usage.tokens } : null,
             }),
           );
           break;
@@ -1556,8 +1484,7 @@ export default function (pi: ExtensionAPI) {
             });
             // pi prints the output path
             const result =
-              output.trim().split("\n").pop() ||
-              sessionFile.replace(".jsonl", ".html");
+              output.trim().split("\n").pop() || sessionFile.replace(".jsonl", ".html");
             sendTo(ws, success("export_html", { path: result }));
           } catch (e: unknown) {
             sendTo(ws, error("export_html", errMessage(e)));
@@ -1582,18 +1509,12 @@ export default function (pi: ExtensionAPI) {
         // but always report "not configured" so the auth toggle stays
         // hidden client-side.
         case "get_auth": {
-          sendTo(
-            ws,
-            success("get_auth", { configured: false, enabled: false }),
-          );
+          sendTo(ws, success("get_auth", { configured: false, enabled: false }));
           break;
         }
 
         case "set_auth": {
-          sendTo(
-            ws,
-            error("set_auth", "Auth is not configurable in desktop mode"),
-          );
+          sendTo(ws, error("set_auth", "Auth is not configurable in desktop mode"));
           break;
         }
 
@@ -1609,10 +1530,7 @@ export default function (pi: ExtensionAPI) {
   // ═══════════════════════════════════════
   // Static file server
   // ═══════════════════════════════════════
-  async function serveStaticFile(
-    req: http.IncomingMessage,
-    res: http.ServerResponse,
-  ) {
+  async function serveStaticFile(req: http.IncomingMessage, res: http.ServerResponse) {
     let urlPath = req.url || "/";
 
     // Handle API routes
@@ -1623,16 +1541,10 @@ export default function (pi: ExtensionAPI) {
 
     // Auto-redirect remote browsers to the full mobile URL so users don't
     // need to manually append ?mobile=1&brokerWs=... to the LAN address.
-    const brokerPort = Number.parseInt(
-      process.env.PI_STUDIO_BROKER_PORT || "",
-      10,
-    );
+    const brokerPort = Number.parseInt(process.env.PI_STUDIO_BROKER_PORT || "", 10);
     const host = req.headers.host || "";
     const hostName = host.split(":")[0];
-    const isLoopback =
-      hostName === "localhost" ||
-      hostName === "127.0.0.1" ||
-      hostName === "::1";
+    const isLoopback = hostName === "localhost" || hostName === "127.0.0.1" || hostName === "::1";
     const rawPath = urlPath.split("?")[0];
     const hasParams = urlPath.includes("mobile=1");
     if (
@@ -1644,10 +1556,7 @@ export default function (pi: ExtensionAPI) {
     ) {
       const redirect = new URL(`http://${host}/`);
       redirect.searchParams.set("mobile", "1");
-      redirect.searchParams.set(
-        "brokerWs",
-        `ws://${hostName}:${brokerPort}/ui-ws`,
-      );
+      redirect.searchParams.set("brokerWs", `ws://${hostName}:${brokerPort}/ui-ws`);
       res.writeHead(302, { Location: redirect.toString() });
       res.end();
       return;
@@ -1776,29 +1685,22 @@ export default function (pi: ExtensionAPI) {
     // Current git branch for the active workspace
     if (urlPath === "/api/git-branch" && req.method === "GET") {
       const gitBranchUrl = new URL(`http://localhost${req.url}`);
-      const requestedPort = Number(
-        gitBranchUrl.searchParams.get("foregroundPort"),
-      );
+      const requestedPort = Number(gitBranchUrl.searchParams.get("foregroundPort"));
       const cwd = resolveGitBranchCwd({
         foregroundPort: Number.isFinite(requestedPort) ? requestedPort : null,
         fallbackCwd: process.cwd(),
         instances: getRunningInstances(),
         latestCtx,
       });
-      execFile(
-        "git",
-        ["rev-parse", "--abbrev-ref", "HEAD"],
-        { cwd },
-        (err, stdout) => {
-          res.writeHead(200, { "Content-Type": "application/json" });
-          if (err) {
-            res.end(JSON.stringify({ branch: null }));
-            return;
-          }
-          const branch = stdout.toString().trim();
-          res.end(JSON.stringify({ branch: branch || null }));
-        },
-      );
+      execFile("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd }, (err, stdout) => {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        if (err) {
+          res.end(JSON.stringify({ branch: null }));
+          return;
+        }
+        const branch = stdout.toString().trim();
+        res.end(JSON.stringify({ branch: branch || null }));
+      });
       return;
     }
 
@@ -1824,9 +1726,7 @@ export default function (pi: ExtensionAPI) {
         if (!explicitPath && latestCtx) {
           try {
             const entries = latestCtx.sessionManager.getEntries();
-            const sessionEntry = entries.find(
-              (e: { type?: string }) => e.type === "session",
-            );
+            const sessionEntry = entries.find((e: { type?: string }) => e.type === "session");
             if (sessionEntry?.cwd) dirPath = sessionEntry.cwd;
           } catch {}
         }
@@ -1985,14 +1885,9 @@ export default function (pi: ExtensionAPI) {
           const resolved = workspacePath.startsWith("~")
             ? path.join(process.env.HOME || "", workspacePath.slice(1))
             : workspacePath;
-          if (
-            !fs.existsSync(resolved) ||
-            !fs.statSync(resolved).isDirectory()
-          ) {
+          if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) {
             res.writeHead(400, { "Content-Type": "application/json" });
-            res.end(
-              JSON.stringify({ error: `Directory not found: ${resolved}` }),
-            );
+            res.end(JSON.stringify({ error: `Directory not found: ${resolved}` }));
             return;
           }
           // Open a new terminal window running pi in the selected directory.
@@ -2028,9 +1923,7 @@ export default function (pi: ExtensionAPI) {
     if (urlPath === "/api/agent-config" && req.method === "GET") {
       try {
         const configPath = path.join(PI_AGENT_ROOT, "settings.json");
-        const content = fs.existsSync(configPath)
-          ? fs.readFileSync(configPath, "utf8")
-          : "{}";
+        const content = fs.existsSync(configPath) ? fs.readFileSync(configPath, "utf8") : "{}";
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ success: true, content, path: configPath }));
       } catch (e: unknown) {
@@ -2126,8 +2019,7 @@ export default function (pi: ExtensionAPI) {
           if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
             if (
               "providers" in parsed &&
-              (typeof parsed.providers !== "object" ||
-                Array.isArray(parsed.providers))
+              (typeof parsed.providers !== "object" || Array.isArray(parsed.providers))
             ) {
               res.writeHead(400, { "Content-Type": "application/json" });
               res.end(
@@ -2160,10 +2052,7 @@ export default function (pi: ExtensionAPI) {
           let refreshed = false;
           try {
             const registry = globalState.modelRegistry;
-            if (
-              registry &&
-              typeof (registry as { refresh?: unknown }).refresh === "function"
-            ) {
+            if (registry && typeof (registry as { refresh?: unknown }).refresh === "function") {
               await (registry as { refresh: () => unknown }).refresh();
               refreshed = true;
             }
@@ -2196,12 +2085,11 @@ export default function (pi: ExtensionAPI) {
         const botToken = getStringField(body, "botToken")?.trim();
         if (!botToken) {
           res.writeHead(400, { "Content-Type": "application/json" });
-          res.end(
-            JSON.stringify({ success: false, error: "botToken required" }),
-          );
+          res.end(JSON.stringify({ success: false, error: "botToken required" }));
           return;
         }
         const identity = await getTelegramBotIdentity(botToken);
+        const afterUpdateId = await getLatestTelegramUpdateId(botToken);
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(
           JSON.stringify({
@@ -2213,10 +2101,9 @@ export default function (pi: ExtensionAPI) {
               webUrl: identity.username
                 ? `https://web.telegram.org/k/#@${identity.username}`
                 : undefined,
-              appUrl: identity.username
-                ? `tg://resolve?domain=${identity.username}`
-                : undefined,
+              appUrl: identity.username ? `tg://resolve?domain=${identity.username}` : undefined,
             },
+            afterUpdateId,
           }),
         );
       } catch (e: unknown) {
@@ -2232,13 +2119,13 @@ export default function (pi: ExtensionAPI) {
         const botToken = getStringField(body, "botToken")?.trim();
         if (!botToken) {
           res.writeHead(400, { "Content-Type": "application/json" });
-          res.end(
-            JSON.stringify({ success: false, error: "botToken required" }),
-          );
+          res.end(JSON.stringify({ success: false, error: "botToken required" }));
           return;
         }
+        const afterUpdateId = getNumberField(body, "afterUpdateId");
         const identity = await getTelegramBotIdentity(botToken);
         const dm = await observeTelegramPrivateDm(botToken, identity.id, {
+          afterUpdateId,
           timeoutMs: 90_000,
         });
         if (!dm) {
@@ -2265,7 +2152,11 @@ export default function (pi: ExtensionAPI) {
         });
         const content = `${JSON.stringify(nextConfig, null, "\t")}\n`;
         fs.mkdirSync(path.dirname(configPath), { recursive: true });
-        fs.writeFileSync(configPath, content, "utf8");
+        fs.writeFileSync(configPath, content, {
+          encoding: "utf8",
+          mode: 0o600,
+        });
+        fs.chmodSync(configPath, 0o600);
 
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(
@@ -2287,13 +2178,48 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
+    if (urlPath === "/api/chat-telegram/doctor" && req.method === "GET") {
+      try {
+        const configPath = path.join(PI_AGENT_ROOT, "chat", "config.json");
+        const config = fs.existsSync(configPath)
+          ? JSON.parse(fs.readFileSync(configPath, "utf8"))
+          : {};
+        const telegramAccount = Object.values(
+          (config as { accounts?: Record<string, unknown> }).accounts || {},
+        ).find(
+          (account) =>
+            typeof account === "object" &&
+            account !== null &&
+            (account as { service?: unknown }).service === "telegram",
+        ) as { botToken?: string } | undefined;
+        let bot: TelegramBotIdentity | undefined;
+        let botError: string | undefined;
+        if (telegramAccount?.botToken) {
+          try {
+            bot = await getTelegramBotIdentity(telegramAccount.botToken);
+          } catch (e: unknown) {
+            botError = errMessage(e);
+          }
+        }
+        const report = buildTelegramDoctorReport(config, {
+          bot,
+          botError,
+          workerStatuses: getChatWorkerStatuses(),
+        });
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ success: true, report }));
+      } catch (e: unknown) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ success: false, error: errMessage(e) }));
+      }
+      return;
+    }
+
     // pi-chat config read/write (~/.pi/agent/chat/config.json)
     if (urlPath === "/api/chat-config" && req.method === "GET") {
       try {
         const configPath = path.join(PI_AGENT_ROOT, "chat", "config.json");
-        const content = fs.existsSync(configPath)
-          ? fs.readFileSync(configPath, "utf8")
-          : "{}";
+        const content = fs.existsSync(configPath) ? fs.readFileSync(configPath, "utf8") : "{}";
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ success: true, content }));
       } catch (e: unknown) {
@@ -2324,7 +2250,11 @@ export default function (pi: ExtensionAPI) {
           JSON.parse(content);
           const configPath = path.join(PI_AGENT_ROOT, "chat", "config.json");
           fs.mkdirSync(path.dirname(configPath), { recursive: true });
-          fs.writeFileSync(configPath, content, "utf8");
+          fs.writeFileSync(configPath, content, {
+            encoding: "utf8",
+            mode: 0o600,
+          });
+          fs.chmodSync(configPath, 0o600);
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ success: true }));
         } catch (e: unknown) {
@@ -2359,11 +2289,7 @@ export default function (pi: ExtensionAPI) {
       req.on("end", () => {
         try {
           const parsed = JSON.parse(body);
-          const tasksPath = path.join(
-            PI_AGENT_ROOT,
-            "super-agent",
-            "tasks.json",
-          );
+          const tasksPath = path.join(PI_AGENT_ROOT, "super-agent", "tasks.json");
           fs.mkdirSync(path.dirname(tasksPath), { recursive: true });
           fs.writeFileSync(tasksPath, JSON.stringify(parsed, null, 2), "utf8");
           res.writeHead(200, { "Content-Type": "application/json" });
@@ -2398,11 +2324,7 @@ export default function (pi: ExtensionAPI) {
     }
 
     const cached = globalState.sessionHeaderCache.get(filePath);
-    if (
-      cached &&
-      cached.mtimeMs === stat.mtimeMs &&
-      cached.size === stat.size
-    ) {
+    if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
       return { parsed: cached.value, stat };
     }
 
@@ -2478,17 +2400,12 @@ export default function (pi: ExtensionAPI) {
         const projectDir = path.join(SESSIONS_DIR, dir.name);
         let files: string[] = [];
         try {
-          files = fs
-            .readdirSync(projectDir)
-            .filter((f) => f.endsWith(".jsonl"));
+          files = fs.readdirSync(projectDir).filter((f) => f.endsWith(".jsonl"));
         } catch {
           // Ignore inaccessible/removed project directories while listing.
           continue;
         }
-        const decodedPath = dir.name
-          .replace(/^--/, "/")
-          .replace(/--$/, "")
-          .replace(/-/g, "/");
+        const decodedPath = dir.name.replace(/^--/, "/").replace(/--$/, "").replace(/-/g, "/");
         for (const f of files) liveFiles.add(path.join(projectDir, f));
         projectWork.push({ dirName: dir.name, projectDir, files, decodedPath });
       }
@@ -2502,40 +2419,29 @@ export default function (pi: ExtensionAPI) {
           async ({ dirName, projectDir, files, decodedPath }) => {
             // biome-ignore lint/suspicious/noExplicitAny: dynamic session-list entries built by spreading parsed JSONL headers
             const sessions: any[] = [];
-            const results = await mapWithConcurrencyLimit(
-              files,
-              24,
-              async (file) => {
-                const filePath = path.join(projectDir, file);
-                try {
-                  const result = await parseSessionFileCached(
-                    filePath,
-                    readline,
-                  );
-                  if (!result?.parsed) return null;
-                  return {
-                    ...result.parsed,
-                    file,
-                    filePath,
-                    mtime: result.stat.mtimeMs,
-                    ctime: result.stat.birthtimeMs,
-                  };
-                } catch {
-                  return null;
-                }
-              },
-            );
+            const results = await mapWithConcurrencyLimit(files, 24, async (file) => {
+              const filePath = path.join(projectDir, file);
+              try {
+                const result = await parseSessionFileCached(filePath, readline);
+                if (!result?.parsed) return null;
+                return {
+                  ...result.parsed,
+                  file,
+                  filePath,
+                  mtime: result.stat.mtimeMs,
+                  ctime: result.stat.birthtimeMs,
+                };
+              } catch {
+                return null;
+              }
+            });
             for (const r of results) {
               if (r) sessions.push(r);
             }
 
             sessions.sort((a, b) => {
-              const aCreated = a.timestamp
-                ? new Date(a.timestamp).getTime()
-                : a.ctime || 0;
-              const bCreated = b.timestamp
-                ? new Date(b.timestamp).getTime()
-                : b.ctime || 0;
+              const aCreated = a.timestamp ? new Date(a.timestamp).getTime() : a.ctime || 0;
+              const bCreated = b.timestamp ? new Date(b.timestamp).getTime() : b.ctime || 0;
               return bCreated - aCreated;
             });
 
@@ -2549,17 +2455,14 @@ export default function (pi: ExtensionAPI) {
               cwdCounts.set(s.cwd, (cwdCounts.get(s.cwd) || 0) + 1);
             }
             const inferredPath =
-              Array.from(cwdCounts.entries()).sort(
-                (a, b) => b[1] - a[1],
-              )[0]?.[0] || decodedPath;
+              Array.from(cwdCounts.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] || decodedPath;
 
             return { path: inferredPath, dirName, sessions };
           },
         )
       ).filter(
         // biome-ignore lint/suspicious/noExplicitAny: dynamic session-list entries
-        (p): p is { path: string; dirName: string; sessions: any[] } =>
-          p !== null,
+        (p): p is { path: string; dirName: string; sessions: any[] } => p !== null,
       );
       const projects = markChatWorkerSessions(
         mergeLiveInstanceSessions(parsedProjects, getRunningInstances()),
@@ -2596,9 +2499,7 @@ export default function (pi: ExtensionAPI) {
     const reqUrl = req.url || "";
     const parsed = new URL(reqUrl, "http://localhost");
     const range = (parsed.searchParams.get("range") || "30d").toLowerCase();
-    const granularity = (
-      parsed.searchParams.get("granularity") || "day"
-    ).toLowerCase();
+    const granularity = (parsed.searchParams.get("granularity") || "day").toLowerCase();
     const scope = (parsed.searchParams.get("scope") || "all").toLowerCase();
     const modelsParam = parsed.searchParams.get("models") || "";
     const models = new Set(
@@ -2612,10 +2513,8 @@ export default function (pi: ExtensionAPI) {
     let from = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
     let to = now;
 
-    if (range === "7d")
-      from = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-    else if (range === "90d")
-      from = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
+    if (range === "7d") from = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    else if (range === "90d") from = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
     else if (range === "custom") {
       const fromParam = parsed.searchParams.get("from");
       const toParam = parsed.searchParams.get("to");
@@ -2635,8 +2534,7 @@ export default function (pi: ExtensionAPI) {
       from,
       to,
       range,
-      granularity:
-        granularity === "week" || granularity === "month" ? granularity : "day",
+      granularity: granularity === "week" || granularity === "month" ? granularity : "day",
       scope: scope === "all" ? "all" : "current",
       models,
     };
@@ -2752,10 +2650,7 @@ export default function (pi: ExtensionAPI) {
     return data;
   }
 
-  async function serveCostDashboard(
-    req: http.IncomingMessage,
-    res: http.ServerResponse,
-  ) {
+  async function serveCostDashboard(req: http.IncomingMessage, res: http.ServerResponse) {
     try {
       if (!fs.existsSync(SESSIONS_DIR)) {
         res.writeHead(200, { "Content-Type": "application/json" });
@@ -2779,9 +2674,7 @@ export default function (pi: ExtensionAPI) {
       for (const dir of dirEntries) {
         if (!dir.isDirectory()) continue;
         const projectDir = path.join(SESSIONS_DIR, dir.name);
-        const files = fs
-          .readdirSync(projectDir)
-          .filter((f) => f.endsWith(".jsonl"));
+        const files = fs.readdirSync(projectDir).filter((f) => f.endsWith(".jsonl"));
         for (const file of files) {
           const filePath = path.join(projectDir, file);
           // Cache-aware fetch: cost dashboard scans every session file in the
@@ -2798,11 +2691,7 @@ export default function (pi: ExtensionAPI) {
           }
           let parsed: SessionMetrics | null;
           const cached = globalState.sessionMetricsCache.get(filePath);
-          if (
-            cached &&
-            cached.mtimeMs === stat.mtimeMs &&
-            cached.size === stat.size
-          ) {
+          if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
             parsed = cached.value as SessionMetrics;
           } else {
             parsed = await parseSessionMetrics(filePath, readline);
@@ -2827,8 +2716,7 @@ export default function (pi: ExtensionAPI) {
             sessionCwdResolved !== currentWorkspace
           )
             continue;
-          if (params.models.size > 0 && !params.models.has(parsed.model))
-            continue;
+          if (params.models.size > 0 && !params.models.has(parsed.model)) continue;
 
           const time = parsed.lastActive || parsed.timestamp;
           if (!time || time < params.from || time > params.to) continue;
@@ -2844,15 +2732,12 @@ export default function (pi: ExtensionAPI) {
             outputTokens: parsed.outputTokens,
             cacheRead: parsed.cacheRead,
             cacheWrite: parsed.cacheWrite,
-            totalTokens:
-              parsed.inputTokens + parsed.outputTokens + parsed.cacheRead,
+            totalTokens: parsed.inputTokens + parsed.outputTokens + parsed.cacheRead,
             toolCalls: parsed.toolCalls,
             userMessages: parsed.userMessages,
             assistantMessages: parsed.assistantMessages,
             costPerUserMessage:
-              parsed.userMessages > 0
-                ? parsed.totalCost / parsed.userMessages
-                : parsed.totalCost,
+              parsed.userMessages > 0 ? parsed.totalCost / parsed.userMessages : parsed.totalCost,
             toolCostByName: parsed.toolCostByName || {},
           });
         }
@@ -2875,11 +2760,7 @@ export default function (pi: ExtensionAPI) {
   // ═══════════════════════════════════════
   // Session file endpoint
   // ═══════════════════════════════════════
-  function serveSessionFile(
-    res: http.ServerResponse,
-    dirName: string,
-    file: string,
-  ) {
+  function serveSessionFile(res: http.ServerResponse, dirName: string, file: string) {
     const filePath = path.join(SESSIONS_DIR, dirName, file);
 
     if (!fs.existsSync(filePath)) {
@@ -2929,10 +2810,7 @@ export default function (pi: ExtensionAPI) {
   // ═══════════════════════════════════════
   // Parse session file header
   // ═══════════════════════════════════════
-  async function parseSessionFile(
-    filePath: string,
-    readline: typeof import("node:readline"),
-  ) {
+  async function parseSessionFile(filePath: string, readline: typeof import("node:readline")) {
     const stream = fs.createReadStream(filePath, { encoding: "utf8" });
     const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
 
@@ -2949,18 +2827,14 @@ export default function (pi: ExtensionAPI) {
       try {
         const entry = JSON.parse(line);
         if (entry.type === "session") header = entry;
-        else if (entry.type === "session_info" && entry.name)
-          sessionName = entry.name;
+        else if (entry.type === "session_info" && entry.name) sessionName = entry.name;
         else if (entry.type === "message" && entry.message?.role === "user") {
           userMessageCount++;
           if (!firstMessage) {
             const content = entry.message.content;
-            if (typeof content === "string")
-              firstMessage = content.substring(0, 120);
+            if (typeof content === "string") firstMessage = content.substring(0, 120);
             else if (Array.isArray(content)) {
-              const tb = content.find(
-                (b: { type?: string }) => b.type === "text",
-              );
+              const tb = content.find((b: { type?: string }) => b.type === "text");
               if (tb) firstMessage = tb.text.substring(0, 120);
             }
           }
@@ -3036,8 +2910,7 @@ export default function (pi: ExtensionAPI) {
       });
       const candidates = entries.filter(
         (entry) =>
-          !(entry.name.startsWith(".") && entry.name !== ".env") &&
-          !IGNORED_NAMES.has(entry.name),
+          !(entry.name.startsWith(".") && entry.name !== ".env") && !IGNORED_NAMES.has(entry.name),
       );
 
       // biome-ignore lint/suspicious/noExplicitAny: dynamic file-browser entries (name/isDirectory/etc.)
@@ -3105,13 +2978,8 @@ export default function (pi: ExtensionAPI) {
         if (results.length >= MAX_RESULTS) break;
 
         const projectDir = path.join(SESSIONS_DIR, dir.name);
-        const decodedPath = dir.name
-          .replace(/^--/, "/")
-          .replace(/--$/, "")
-          .replace(/-/g, "/");
-        const files = fs
-          .readdirSync(projectDir)
-          .filter((f) => f.endsWith(".jsonl"));
+        const decodedPath = dir.name.replace(/^--/, "/").replace(/--$/, "").replace(/-/g, "/");
+        const files = fs.readdirSync(projectDir).filter((f) => f.endsWith(".jsonl"));
 
         for (const file of files) {
           if (results.length >= MAX_RESULTS) break;
@@ -3189,10 +3057,7 @@ export default function (pi: ExtensionAPI) {
             stream.destroy();
 
             const projectMatch = buildProjectSearchMatch(q, sessionWorkspace);
-            if (
-              projectMatch &&
-              !matches.some((match) => match.role === "project")
-            ) {
+            if (projectMatch && !matches.some((match) => match.role === "project")) {
               matches.unshift(projectMatch);
             }
 
@@ -3275,10 +3140,7 @@ export default function (pi: ExtensionAPI) {
       }
     }
 
-    function onClientMessage(
-      ws: UnifiedWS,
-      raw: string | ArrayBuffer | Buffer,
-    ) {
+    function onClientMessage(ws: UnifiedWS, raw: string | ArrayBuffer | Buffer) {
       try {
         const text =
           typeof raw === "string"
@@ -3384,9 +3246,7 @@ export default function (pi: ExtensionAPI) {
             port,
             close: () => {
               try {
-                (bunServer as { stop?: (force?: boolean) => void }).stop?.(
-                  true,
-                );
+                (bunServer as { stop?: (force?: boolean) => void }).stop?.(true);
               } catch {}
             },
             nodeServer: null,
@@ -3402,9 +3262,7 @@ export default function (pi: ExtensionAPI) {
             (errCode === "EADDRINUSE" || msg.includes("EADDRINUSE")) &&
             port < PORT + maxAttempts
           ) {
-            console.log(
-              `[Embedded] Port ${port} in use, trying ${port + 1}...`,
-            );
+            console.log(`[Embedded] Port ${port} in use, trying ${port + 1}...`);
             tryBunListen(port + 1, maxAttempts);
           } else {
             console.error(`[Embedded] Failed to start Bun server:`, msg);
@@ -3421,14 +3279,10 @@ export default function (pi: ExtensionAPI) {
       // `Bun.file(path)` already supports byte ranges, content-type
       // inference, and zero-copy streaming, and the adapter's buffered
       // body approach would defeat all of that for the 200+ KB JS bundle.
-      async function bunFetchHandler(
-        req: Request,
-        server: unknown,
-      ): Promise<Response | undefined> {
+      async function bunFetchHandler(req: Request, server: unknown): Promise<Response | undefined> {
         const url = new URL(req.url);
         if (url.pathname === "/ws") {
-          if ((server as { upgrade: (req: Request) => boolean }).upgrade(req))
-            return undefined;
+          if ((server as { upgrade: (req: Request) => boolean }).upgrade(req)) return undefined;
           return new Response("WebSocket upgrade failed", { status: 400 });
         }
         if (!url.pathname.startsWith("/api/")) {
@@ -3441,23 +3295,15 @@ export default function (pi: ExtensionAPI) {
       // (pretty `/` and `/cost` paths, directory traversal guard, 404 on
       // missing files) but reads via `Bun.file` so large assets stream
       // straight from disk without going through our buffering adapter.
-      async function serveStaticAssetBun(
-        url: URL,
-        req: Request,
-      ): Promise<Response> {
+      async function serveStaticAssetBun(url: URL, req: Request): Promise<Response> {
         let urlPath = url.pathname;
 
         // Auto-redirect remote browsers to the full mobile URL.
-        const brokerPort = Number.parseInt(
-          process.env.PI_STUDIO_BROKER_PORT || "",
-          10,
-        );
+        const brokerPort = Number.parseInt(process.env.PI_STUDIO_BROKER_PORT || "", 10);
         const host = req.headers.get("host") || url.host;
         const hostName = host.split(":")[0];
         const isLoopback =
-          hostName === "localhost" ||
-          hostName === "127.0.0.1" ||
-          hostName === "::1";
+          hostName === "localhost" || hostName === "127.0.0.1" || hostName === "::1";
         if (
           urlPath === "/" &&
           !isLoopback &&
@@ -3467,10 +3313,7 @@ export default function (pi: ExtensionAPI) {
         ) {
           const redirect = new URL(`http://${host}/`);
           redirect.searchParams.set("mobile", "1");
-          redirect.searchParams.set(
-            "brokerWs",
-            `ws://${hostName}:${brokerPort}/ui-ws`,
-          );
+          redirect.searchParams.set("brokerWs", `ws://${hostName}:${brokerPort}/ui-ws`);
           return Response.redirect(redirect.toString(), 302);
         }
 
@@ -3491,8 +3334,7 @@ export default function (pi: ExtensionAPI) {
             return new Response("Not Found", { status: 404 });
           }
           const ext = path.extname(filePath).toLowerCase();
-          const contentType =
-            MIME_TYPES[ext] || file.type || "application/octet-stream";
+          const contentType = MIME_TYPES[ext] || file.type || "application/octet-stream";
           return new Response(file as unknown as BodyInit, {
             headers: {
               "Content-Type": contentType,
@@ -3584,9 +3426,7 @@ export default function (pi: ExtensionAPI) {
       globalState.localUrl = `http://${localHost}:${port}`;
       const lanUrls = buildLanUrls(port);
       globalState.lanUrl = lanUrls[0] || "";
-      console.log(
-        `[Embedded] Picot embedded server running on ${globalState.localUrl}`,
-      );
+      console.log(`[Embedded] Picot embedded server running on ${globalState.localUrl}`);
       const statusTarget = !isLoopbackHost(BIND_HOST)
         ? `${BIND_HOST}:${port}${globalState.lanUrl ? ` (${globalState.lanUrl})` : ""}`
         : `${BIND_HOST}:${port}`;
@@ -3623,8 +3463,7 @@ export default function (pi: ExtensionAPI) {
   // ═══════════════════════════════════════════════════════════════════════
   async function runNodeStyleHandler(req: Request): Promise<Response> {
     const url = new URL(req.url);
-    const bodyText =
-      req.method !== "GET" && req.method !== "HEAD" ? await req.text() : "";
+    const bodyText = req.method !== "GET" && req.method !== "HEAD" ? await req.text() : "";
 
     return await new Promise<Response>((resolve) => {
       const headers: Record<string, string> = {};
@@ -3669,22 +3508,16 @@ export default function (pi: ExtensionAPI) {
         },
         write(chunk: unknown) {
           if (chunk == null) return;
-          bodyChunks.push(
-            Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)),
-          );
+          bodyChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
         },
         end(chunk?: unknown) {
           if (resolved) return;
           resolved = true;
           if (chunk != null) {
-            bodyChunks.push(
-              Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)),
-            );
+            bodyChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
           }
           const body = Buffer.concat(bodyChunks);
-          resolve(
-            new Response(body, { status: statusCode, headers: resHeaders }),
-          );
+          resolve(new Response(body, { status: statusCode, headers: resHeaders }));
         },
       };
 
@@ -3703,9 +3536,7 @@ export default function (pi: ExtensionAPI) {
       } catch (err: unknown) {
         if (!resolved) {
           resolved = true;
-          resolve(
-            new Response(`Internal error: ${errMessage(err)}`, { status: 500 }),
-          );
+          resolve(new Response(`Internal error: ${errMessage(err)}`, { status: 500 }));
         }
       }
 
@@ -3745,10 +3576,7 @@ export default function (pi: ExtensionAPI) {
       const snapshot = await buildStateSnapshot(ctx);
       broadcast(snapshot);
     } catch (err) {
-      console.error(
-        "[Embedded] Failed to broadcast post-switch snapshot:",
-        err,
-      );
+      console.error("[Embedded] Failed to broadcast post-switch snapshot:", err);
     }
   });
 

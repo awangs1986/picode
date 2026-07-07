@@ -69,6 +69,32 @@ describe("super-agent-runtime", () => {
     ).not.toBeNull();
   });
 
+  it("starts collapsed by default unless the user explicitly left it open", () => {
+    const Runtime = customElements.get("super-agent-runtime");
+    const runtime = new Runtime();
+    document.body.appendChild(runtime);
+
+    expect(runtime.classList.contains("collapsed")).toBe(true);
+
+    document.body.innerHTML = "";
+    localStorage.setItem("sa-runtime-collapsed", "0");
+    const reopenedRuntime = new Runtime();
+    document.body.appendChild(reopenedRuntime);
+
+    expect(reopenedRuntime.classList.contains("collapsed")).toBe(false);
+  });
+
+  it("shows the task panel body immediately while the first task fetch is pending", () => {
+    fetch.mockImplementation(() => new Promise(() => {}));
+
+    const Runtime = customElements.get("super-agent-runtime");
+    const runtime = new Runtime();
+    document.body.appendChild(runtime);
+
+    expect(runtime.querySelector("[data-task-list]").textContent).toContain("Connecting");
+    expect(runtime.querySelector("[data-pending-count]").textContent).toBe("0");
+  });
+
   it("formats markdown-like task descriptions into readable sections", async () => {
     fetch.mockImplementation((url, options) => {
       if (url === "/api/super-agent/tasks" && options?.method === "PUT") {

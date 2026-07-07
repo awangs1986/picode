@@ -87,4 +87,24 @@ describe("ConversationRuntime DM trigger policy", () => {
       await runtime.disconnect();
     }
   });
+
+  it("treats Telegram start and help as local help commands", async () => {
+    const runtime = await connectRuntime(true);
+    try {
+      expect(
+        runtime.parseControlCommand({
+          userId: "user-1",
+          text: "/start",
+        }),
+      ).toBe("help");
+      expect(
+        runtime.parseControlCommand({
+          userId: "user-1",
+          text: "/help",
+        }),
+      ).toBe("help");
+    } finally {
+      await runtime.disconnect();
+    }
+  });
 });

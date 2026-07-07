@@ -1,0 +1,79 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import "./chat-settings-panel.js";
+
+async function flushPromises(count = 4) {
+  for (let i = 0; i < count; i++) await Promise.resolve();
+}
+
+describe("chat-settings-panel", () => {
+  beforeEach(() => {
+    document.body.innerHTML = "";
+    vi.restoreAllMocks();
+  });
+
+  it("renders Telegram doctor status and the Super Agent safety boundary", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      if (url === "/api/chat-config") {
+        return {
+          ok: true,
+          json: async () => ({
+            success: true,
+            content: JSON.stringify({
+              accounts: {
+                "telegram-main": {
+                  service: "telegram",
+                  botToken: "token",
+                  botUsername: "picot_shixin_bot",
+                  channels: {
+                    "dm-main": {
+                      id: "6085028519",
+                      name: "shixin",
+                      dm: true,
+                      access: { allowedUserIds: ["6085028519"] },
+                    },
+                  },
+                },
+              },
+            }),
+          }),
+        };
+      }
+      if (url === "/api/chat-telegram/doctor") {
+        return {
+          ok: true,
+          json: async () => ({
+            success: true,
+            report: {
+              summary: "ready",
+              checks: [
+                {
+                  id: "listener",
+                  label: "Listener",
+                  status: "ok",
+                  message: "Telegram listener is connected.",
+                },
+                {
+                  id: "security",
+                  label: "Security",
+                  status: "ok",
+                  message: "Telegram is restricted to allowed user 6085028519.",
+                },
+              ],
+            },
+          }),
+        };
+      }
+      throw new Error(`Unexpected fetch ${url}`);
+    });
+
+    const Panel = customElements.get("chat-settings-panel");
+    const panel = new Panel();
+    document.body.appendChild(panel);
+    await flushPromises();
+
+    expect(panel.textContent).toContain("Telegram listener is connected.");
+    expect(panel.textContent).toContain("Telegram messages enter Super Agent intake first.");
+    expect(panel.textContent).toContain("6085028519");
+  });
+});

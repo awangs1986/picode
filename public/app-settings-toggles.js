@@ -1,12 +1,16 @@
+import { isSuperAgentEnabled, setSuperAgentEnabled } from "./super-agent-settings.js";
+
 export function setupSettingsToggles({
   toggleAutoCompact,
   btnThinkingLevel,
   toggleShowThinking,
   toggleAuth,
+  toggleSuperAgent,
   rpcCommand,
   getCurrentThinkingLevel,
   setCurrentThinkingLevel,
   updateThinkingBtn,
+  onSuperAgentEnabledChanged,
 }) {
   const formatThinkingLevelLabel = (level) => `Thinking: ${level || "off"}`;
 
@@ -36,6 +40,17 @@ export function setupSettingsToggles({
     toggleShowThinking.className = `settings-toggle${isOn ? "" : " on"}`;
     document.body.classList.toggle("hide-thinking", isOn);
     localStorage.setItem("pi-studio-show-thinking", !isOn);
+  });
+
+  if (toggleSuperAgent) {
+    toggleSuperAgent.className = `settings-toggle${isSuperAgentEnabled() ? " on" : ""}`;
+  }
+
+  toggleSuperAgent?.addEventListener("click", async () => {
+    const enabled = !toggleSuperAgent.classList.contains("on");
+    setSuperAgentEnabled(enabled);
+    toggleSuperAgent.className = `settings-toggle${enabled ? " on" : ""}`;
+    await onSuperAgentEnabledChanged?.(enabled);
   });
 
   toggleAuth?.addEventListener("click", async () => {

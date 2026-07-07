@@ -58,6 +58,21 @@ interface ChatConfigLike {
 
 interface ChatAccountLike {
   service?: string;
+  botToken?: string;
+  botUserId?: string;
+  botUsername?: string;
+  channels?: Record<string, ChatChannelLike>;
+  [key: string]: unknown;
+}
+
+interface ChatChannelLike {
+  id?: string;
+  name?: string;
+  dm?: boolean;
+  access?: {
+    allowedUserIds?: string[];
+    ignoreBots?: boolean;
+  };
   [key: string]: unknown;
 }
 
@@ -65,6 +80,60 @@ export interface TelegramDmSetupInput {
   botToken: string;
   identity: TelegramBotIdentity;
   dm: ObservedTelegramDm;
+}
+
+export interface TelegramWorkerStatusLike {
+  state?: string;
+  conversationId?: string;
+  updatedAt?: string;
+  lastError?: string;
+}
+
+export type TelegramDoctorStatus = "ok" | "warning" | "error";
+export type TelegramDoctorSummary = "ready" | "warning" | "error";
+
+export interface TelegramDoctorCheck {
+  id: "config" | "bot" | "dm" | "security" | "listener";
+  label: string;
+  status: TelegramDoctorStatus;
+  message: string;
+}
+
+export interface TelegramDoctorReport {
+  summary: TelegramDoctorSummary;
+  configured: boolean;
+  bot: {
+    ok: boolean;
+    id?: string;
+    username?: string;
+    name?: string;
+    message: string;
+  };
+  dm: {
+    ok: boolean;
+    chatId?: string;
+    name?: string;
+    message: string;
+  };
+  security: {
+    ok: boolean;
+    allowedUserIds: string[];
+    message: string;
+  };
+  listener: {
+    ok: boolean;
+    state?: string;
+    conversationId?: string;
+    updatedAt?: string;
+    message: string;
+  };
+  checks: TelegramDoctorCheck[];
+}
+
+export interface TelegramDoctorInput {
+  bot?: TelegramBotIdentity;
+  botError?: string;
+  workerStatuses?: TelegramWorkerStatusLike[];
 }
 
 function displayName(user: TelegramUser | undefined): string | undefined {
@@ -116,7 +185,7 @@ export async function getTelegramBotIdentity(
   };
 }
 
-async function getLatestUpdateId(
+export async function getLatestTelegramUpdateId(
   botToken: string,
   options?: { signal?: AbortSignal },
 ): Promise<number | undefined> {
@@ -133,8 +202,11 @@ async function getLatestUpdateId(
   return updates.at(-1)?.update_id;
 }
 
-function matchPrivateDm(message: TelegramMessage | undefined, botUserId: string): ObservedTelegramDm | undefined {
-  if (!message || message.chat.type !== "private") return undefined;
+function matchPrivateDm(
+  message: TelegramMessage | undefined,
+  botUserId: string,
+): ObservedTelegramDm | undefined {
+  if (message?.chat.type !== "private") return undefined;
   const userId = message.from ? String(message.from.id) : String(message.chat.id);
   if (!userId || userId === botUserId) return undefined;
   return {
@@ -148,12 +220,16 @@ function matchPrivateDm(message: TelegramMessage | undefined, botUserId: string)
 export async function observeTelegramPrivateDm(
   botToken: string,
   botUserId: string,
-  options?: { timeoutMs?: number; signal?: AbortSignal },
+  options?: {
+    afterUpdateId?: number;
+    timeoutMs?: number;
+    signal?: AbortSignal;
+  },
 ): Promise<ObservedTelegramDm | undefined> {
   const timeoutMs = Math.max(5_000, Math.min(options?.timeoutMs ?? 90_000, 180_000));
   const deadline = Date.now() + timeoutMs;
   await callTelegram(botToken, "deleteWebhook", { drop_pending_updates: false }, options);
-  let offset = (await getLatestUpdateId(botToken, options)) ?? 0;
+  let offset = options?.afterUpdateId ?? (await getLatestTelegramUpdateId(botToken, options)) ?? 0;
 
   while (Date.now() < deadline) {
     if (options?.signal?.aborted) return undefined;
@@ -209,5 +285,130 @@ export function buildTelegramDmConfig(
         },
       },
     },
+  };
+}
+
+function getTelegramAccount(config: ChatConfigLike | undefined) {
+  return Object.entries(config?.accounts ?? {}).find(
+    ([, account]) => account?.service === "telegram",
+  );
+}
+
+function getDmChannel(account: ChatAccountLike | undefined) {
+  return Object.entries(account?.channels ?? {}).find(([, channel]) => channel?.dm === true);
+}
+
+function checkStatus(ok: boolean, warning = false): TelegramDoctorStatus {
+  if (ok) return "ok";
+  return warning ? "warning" : "error";
+}
+
+function buildSummary(checks: TelegramDoctorCheck[]): TelegramDoctorSummary {
+  if (checks.some((check) => check.status === "error")) return "error";
+  if (checks.some((check) => check.status === "warning")) return "warning";
+  return "ready";
+}
+
+export function buildTelegramDoctorReport(
+  config: ChatConfigLike | undefined,
+  input: TelegramDoctorInput = {},
+): TelegramDoctorReport {
+  const accountEntry = getTelegramAccount(config);
+  const accountId = accountEntry?.[0];
+  const account = accountEntry?.[1];
+  const dmEntry = getDmChannel(account);
+  const channelKey = dmEntry?.[0];
+  const dm = dmEntry?.[1];
+  const configured = Boolean(account?.botToken);
+  const botOk = Boolean(input.bot || account?.botUserId || account?.botUsername);
+  const allowedUserIds = dm?.access?.allowedUserIds ?? [];
+  const conversationId = accountId && channelKey ? `${accountId}/${channelKey}` : undefined;
+  const listenerStatus = (input.workerStatuses ?? []).find(
+    (status) =>
+      status.conversationId === conversationId ||
+      (!conversationId && status.conversationId?.startsWith("telegram")),
+  );
+  const listenerOk = listenerStatus?.state === "connected";
+  const checks: TelegramDoctorCheck[] = [
+    {
+      id: "config",
+      label: "Config",
+      status: checkStatus(configured),
+      message: configured
+        ? "Telegram bot token is saved in Picot chat config."
+        : "Telegram is not connected.",
+    },
+    {
+      id: "bot",
+      label: "Bot",
+      status: checkStatus(botOk),
+      message: input.bot
+        ? `Bot @${input.bot.username || input.bot.name || input.bot.id} is reachable.`
+        : input.botError
+          ? `Bot check failed: ${input.botError}`
+          : botOk
+            ? "Bot identity is saved in config."
+            : "Bot identity is missing.",
+    },
+    {
+      id: "dm",
+      label: "DM",
+      status: checkStatus(Boolean(dm?.id)),
+      message: dm?.id
+        ? `Private DM is bound to ${dm.name || dm.id}.`
+        : "No private Telegram DM is bound.",
+    },
+    {
+      id: "security",
+      label: "Security",
+      status: checkStatus(allowedUserIds.length > 0, true),
+      message:
+        allowedUserIds.length > 0
+          ? `Telegram is restricted to allowed user ${allowedUserIds.join(", ")}.`
+          : "No allowed Telegram user is configured; restrict access before enabling remote intake.",
+    },
+    {
+      id: "listener",
+      label: "Listener",
+      status: checkStatus(listenerOk, true),
+      message: listenerOk
+        ? "Telegram listener is connected."
+        : listenerStatus?.lastError
+          ? `Telegram listener is ${listenerStatus.state || "not connected"}: ${listenerStatus.lastError}`
+          : listenerStatus?.state
+            ? `Telegram listener is ${listenerStatus.state}.`
+            : "No live Telegram listener status was found.",
+    },
+  ];
+
+  return {
+    summary: buildSummary(checks),
+    configured,
+    bot: {
+      ok: botOk,
+      id: input.bot?.id || account?.botUserId,
+      username: input.bot?.username || account?.botUsername,
+      name: input.bot?.name || account?.name,
+      message: checks[1].message,
+    },
+    dm: {
+      ok: Boolean(dm?.id),
+      chatId: dm?.id,
+      name: dm?.name,
+      message: checks[2].message,
+    },
+    security: {
+      ok: allowedUserIds.length > 0,
+      allowedUserIds,
+      message: checks[3].message,
+    },
+    listener: {
+      ok: listenerOk,
+      state: listenerStatus?.state,
+      conversationId: listenerStatus?.conversationId,
+      updatedAt: listenerStatus?.updatedAt,
+      message: checks[4].message,
+    },
+    checks,
   };
 }

@@ -1,10 +1,14 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { JSDOM } from "jsdom";
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { setupSettingsToggles } from "./app-settings-toggles.js";
+import { SUPER_AGENT_ENABLED_STORAGE_KEY } from "./super-agent-settings.js";
 
 describe("thinking effort cycle controls", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
   test("labels the composer thinking control clearly while keeping button cycling", () => {
     const html = readFileSync(join(process.cwd(), "public/index.html"), "utf8");
     const dom = new JSDOM(html);
@@ -12,7 +16,7 @@ describe("thinking effort cycle controls", () => {
     const thinkingBtn = document.querySelector("#thinking-btn");
 
     expect(thinkingBtn.tagName).toBe("BUTTON");
-    expect(thinkingBtn.textContent).toBe("Think off");
+    expect(thinkingBtn.textContent.trim()).toBe("Think off");
     expect(thinkingBtn.getAttribute("title")).toContain("Click to cycle");
   });
 
@@ -29,7 +33,7 @@ describe("thinking effort cycle controls", () => {
       "Reasoning depth",
     );
     expect(settingsButton.tagName).toBe("BUTTON");
-    expect(settingsButton.textContent).toBe("Thinking: off");
+    expect(settingsButton.textContent.trim()).toBe("Thinking: off");
   });
 
   test("keeps Settings thinking effort as click-to-cycle behavior", async () => {
@@ -69,5 +73,52 @@ describe("thinking effort cycle controls", () => {
     expect(thinkingTagRule).toContain("color: var(--text-dim)");
     expect(thinkingTagRule).not.toContain("--thinking-accent");
     expect(composerThinkingTagRule).toContain("border-color: transparent");
+  });
+
+  test("adds Super Agent startup setting defaulted off", () => {
+    const html = readFileSync(join(process.cwd(), "public/index.html"), "utf8");
+    const dom = new JSDOM(html);
+    const { document } = dom.window;
+    const toggle = document.querySelector("#toggle-super-agent");
+
+    expect(document.querySelector("#setting-super-agent .settings-label-main")?.textContent).toBe(
+      "Super Agent",
+    );
+    expect(document.querySelector("#setting-super-agent .settings-label-sub")?.textContent).toBe(
+      "Start automatically",
+    );
+    expect(toggle).not.toBeNull();
+    expect(toggle.classList.contains("on")).toBe(false);
+  });
+
+  test("persists Super Agent startup toggle and notifies the app", async () => {
+    const dom = new JSDOM('<button id="toggle-super-agent" class="settings-toggle"></button>', {
+      url: "http://localhost",
+    });
+    const toggle = dom.window.document.querySelector("#toggle-super-agent");
+    const onSuperAgentEnabledChanged = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("localStorage", dom.window.localStorage);
+
+    setupSettingsToggles({
+      toggleAutoCompact: null,
+      btnThinkingLevel: null,
+      toggleShowThinking: null,
+      toggleAuth: null,
+      toggleSuperAgent: toggle,
+      rpcCommand: vi.fn(),
+      getCurrentThinkingLevel: () => "off",
+      setCurrentThinkingLevel: vi.fn(),
+      updateThinkingBtn: vi.fn(),
+      onSuperAgentEnabledChanged,
+    });
+
+    expect(toggle.classList.contains("on")).toBe(false);
+
+    toggle.click();
+    await Promise.resolve();
+
+    expect(localStorage.getItem(SUPER_AGENT_ENABLED_STORAGE_KEY)).toBe("true");
+    expect(toggle.classList.contains("on")).toBe(true);
+    expect(onSuperAgentEnabledChanged).toHaveBeenCalledWith(true);
   });
 });

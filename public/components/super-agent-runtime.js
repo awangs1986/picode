@@ -29,6 +29,7 @@ class SuperAgentRuntime extends HTMLElement {
       minWidth: 280,
       maxWidth: 560,
     });
+    this._renderAll();
     this._bindCollapseToggle();
     this._startPolling();
   }
@@ -62,8 +63,8 @@ class SuperAgentRuntime extends HTMLElement {
       <div class="runtime-task-list" data-task-list></div>
     `;
 
-    // Restore collapsed state
-    if (localStorage.getItem("sa-runtime-collapsed") === "1") {
+    // Default closed; only reopen automatically when the user explicitly left it open.
+    if (localStorage.getItem("sa-runtime-collapsed") !== "0") {
       this.classList.add("collapsed");
     }
 
@@ -83,10 +84,7 @@ class SuperAgentRuntime extends HTMLElement {
       const collapsed = this.classList.toggle("collapsed");
       localStorage.setItem("sa-runtime-collapsed", collapsed ? "1" : "0");
     };
-    this.querySelector("[data-collapse-btn]")?.addEventListener(
-      "click",
-      toggle,
-    );
+    this.querySelector("[data-collapse-btn]")?.addEventListener("click", toggle);
   }
 
   // ── Polling ───────────────────────────────────────────────────────────────
@@ -146,9 +144,7 @@ class SuperAgentRuntime extends HTMLElement {
     task.failReason = null;
     await this._save();
     this._renderAll();
-    this.dispatchEvent(
-      new CustomEvent("sa-dispatch", { detail: task, bubbles: true }),
-    );
+    this.dispatchEvent(new CustomEvent("sa-dispatch", { detail: task, bubbles: true }));
   }
 
   async _dismiss(taskId) {
@@ -192,12 +188,8 @@ class SuperAgentRuntime extends HTMLElement {
     }
 
     const order = { pending: 0, running: 1, failed: 2, done: 3 };
-    let filtered = this._tasks.filter(
-      (t) => this._filter === "all" || t.status === this._filter,
-    );
-    filtered = [...filtered].sort(
-      (a, b) => (order[a.status] ?? 4) - (order[b.status] ?? 4),
-    );
+    let filtered = this._tasks.filter((t) => this._filter === "all" || t.status === this._filter);
+    filtered = [...filtered].sort((a, b) => (order[a.status] ?? 4) - (order[b.status] ?? 4));
 
     if (filtered.length === 0) {
       list.innerHTML = `<div style="padding:20px 0;text-align:center;font-size:12px;color:var(--text-dim)">
@@ -310,9 +302,7 @@ class SuperAgentRuntime extends HTMLElement {
 
 function isDispatchableProjectPath(path) {
   const normalized = String(path || "").replace(/\/+$/, "");
-  return (
-    normalized.includes("/") && !normalized.endsWith("/.pi/agent/super-agent")
-  );
+  return normalized.includes("/") && !normalized.endsWith("/.pi/agent/super-agent");
 }
 
 function formatTaskDescription(description) {
@@ -345,10 +335,7 @@ function normalizeTaskDescription(description) {
   return String(description ?? "")
     .replace(/\r\n?/g, "\n")
     .replace(/[ \t]+(#{1,6})\s+/g, "\n$1 ")
-    .replace(
-      /[ \t]+[-*]\s+(?=(?:\p{Extended_Pictographic}|\*\*|[A-Z0-9]))/gu,
-      "\n- ",
-    )
+    .replace(/[ \t]+[-*]\s+(?=(?:\p{Extended_Pictographic}|\*\*|[A-Z0-9]))/gu, "\n- ")
     .replace(/[ \t]+(\d+)\.\s+/g, "\n$1. ")
     .split("\n")
     .map((line) => line.trim())

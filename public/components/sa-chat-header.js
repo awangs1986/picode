@@ -64,11 +64,16 @@ class SAChatHeader extends HTMLElement {
     });
 
     this._syncLanQrButton();
+    this._handleChatConfigUpdated = () => this._loadServiceStatus();
+    window.addEventListener("picot-chat-config-updated", this._handleChatConfigUpdated);
     this._loadServiceStatus();
   }
 
   disconnectedCallback() {
     this._lanQrObserver?.disconnect();
+    if (this._handleChatConfigUpdated) {
+      window.removeEventListener("picot-chat-config-updated", this._handleChatConfigUpdated);
+    }
   }
 
   _syncLanQrButton() {

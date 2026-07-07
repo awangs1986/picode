@@ -637,7 +637,9 @@ export class SessionSidebar {
     const sessionsDiv = document.createElement("div");
     sessionsDiv.className = "project-sessions";
     sessionsDiv.appendChild(
-      this.buildSessionItem(pinned.session, pinned.project, { showArchiveButton: false }),
+      this.buildSessionItem(pinned.session, pinned.project, {
+        showArchiveButton: false,
+      }),
     );
     group.appendChild(sessionsDiv);
 
@@ -725,9 +727,9 @@ export class SessionSidebar {
     const favSessions = [];
     const archivedSessions = [];
     for (const project of this.projects) {
-      if (isSuperAgentProjectPath(project.path, this.superAgentPath)) continue;
+      const isSuperAgentProject = isSuperAgentProjectPath(project.path, this.superAgentPath);
       for (const session of project.sessions) {
-        if (session.filePath === pinnedSessionFile) continue;
+        if (session.filePath === pinnedSessionFile || isSuperAgentProject) continue;
         if (this.isArchived(session.filePath)) {
           archivedSessions.push({ session, project });
           continue;
@@ -758,7 +760,8 @@ export class SessionSidebar {
 
     // Regular project groups
     for (const project of this.projects) {
-      if (isSuperAgentProjectPath(project.path, this.superAgentPath)) continue;
+      const isSuperAgentProject = isSuperAgentProjectPath(project.path, this.superAgentPath);
+      if (isSuperAgentProject) continue;
       const visibleSessions = project.sessions.filter(
         (session) => session.filePath !== pinnedSessionFile && !this.isArchived(session.filePath),
       );
@@ -774,18 +777,19 @@ export class SessionSidebar {
 
       const pathParts = project.path.split("/").filter(Boolean);
       const shortPath = pathParts.length > 0 ? pathParts[pathParts.length - 1] : project.path;
+      const newChatButtonHtml = `<button class="project-new-chat-btn" title="New chat in ${this.escapeHtml(shortPath)}" aria-label="New chat in ${this.escapeHtml(shortPath)}">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        </button>`;
 
       header.innerHTML = `
         <span class="chevron">▼</span>
-        <span class="project-name" title="${project.path}">${shortPath}</span>
+        <span class="project-name" title="${this.escapeHtml(project.path)}">${this.escapeHtml(shortPath)}</span>
         <span class="project-count">${visibleSessions.length}</span>
-        <button class="project-new-chat-btn" title="New chat in ${this.escapeHtml(shortPath)}" aria-label="New chat in ${this.escapeHtml(shortPath)}">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-        </button>
+        ${newChatButtonHtml}
       `;
 
       const newChatBtn = header.querySelector(".project-new-chat-btn");
-      newChatBtn.addEventListener("click", (e) => {
+      newChatBtn?.addEventListener("click", (e) => {
         e.stopPropagation();
         if (this.onNewChat) this.onNewChat(project);
       });

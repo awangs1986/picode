@@ -12,7 +12,11 @@ export function getWorkspacePathForPort(instances, port) {
   return match?.cwd || "";
 }
 
-export function shouldSpawnForCrossWorkspaceSelection(instances, foregroundPort, selectedProjectPath) {
+export function shouldSpawnForCrossWorkspaceSelection(
+  instances,
+  foregroundPort,
+  selectedProjectPath,
+) {
   if (!selectedProjectPath) return false;
   const foregroundCwd = getWorkspacePathForPort(instances, foregroundPort);
   return Boolean(foregroundCwd && foregroundCwd !== selectedProjectPath);
