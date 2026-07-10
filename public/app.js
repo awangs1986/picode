@@ -13,6 +13,7 @@ import { FileBrowser } from "./file-browser.js";
 import { anchorHistoryToBottom } from "./history-scroll-anchor.js";
 import { setupMessagesInsets } from "./layout-insets.js";
 import { MessageRenderer } from "./message-renderer.js";
+import { selectModel } from "./model-selection.js";
 import { resolveNewSessionLiveFile } from "./new-session-refresh.js";
 import { getOnboardingState } from "./onboarding-state.js";
 import { renderPackageInstallFailure } from "./package-install-status.js";
@@ -1829,12 +1830,28 @@ async function fetchModelInfo() {
     }
     if (stateData.success && stateData.data?.model) {
       currentModelId = stateData.data.model.id || "";
-      updateModelLabel();
 
       const model = availableModels.find((m) => m.id === currentModelId);
-      if (model?.contextWindow) {
-        contextWindowSize = model.contextWindow;
-        updateTokenUsage();
+      if (!model && availableModels.length > 0) {
+        const fallbackModel = availableModels[0];
+        const resp = await rpcCommand({
+          type: "set_model",
+          provider: fallbackModel.provider,
+          modelId: fallbackModel.id,
+        });
+        if (resp?.success) {
+          currentModelId = fallbackModel.id;
+          if (fallbackModel.contextWindow) {
+            contextWindowSize = fallbackModel.contextWindow;
+            updateTokenUsage();
+          }
+        }
+      } else {
+        updateModelLabel();
+        if (model?.contextWindow) {
+          contextWindowSize = model.contextWindow;
+          updateTokenUsage();
+        }
       }
     }
     if (stateData.success && stateData.data?.thinkingLevel) {
@@ -1934,17 +1951,19 @@ function openModelDropdown() {
       el.innerHTML = `<span>${shortName}${providerLabel}</span><span class="model-dropdown-item-ctx">${ctxK}</span>`;
       el.addEventListener("click", async () => {
         closeModelDropdown();
-        const display = m.id.replace(/^claude-/, "").replace(/-\d{8}$/, "");
-        await rpcCommand(
-          { type: "set_model", provider: m.provider, modelId: m.id },
-          `Switching to ${display}...`,
-        );
-        currentModelId = m.id;
-        updateModelLabel();
-        if (m.contextWindow) {
-          contextWindowSize = m.contextWindow;
-          updateTokenUsage();
-        }
+        await selectModel({
+          model: m,
+          rpcCommand,
+          refreshModelInfo: fetchModelInfo,
+          applySelectedModel: (selectedModel) => {
+            currentModelId = selectedModel.id;
+            updateModelLabel();
+            if (selectedModel.contextWindow) {
+              contextWindowSize = selectedModel.contextWindow;
+              updateTokenUsage();
+            }
+          },
+        });
       });
       itemsContainer.appendChild(el);
     });

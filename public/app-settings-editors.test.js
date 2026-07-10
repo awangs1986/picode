@@ -36,7 +36,7 @@ describe("settings API key model refresh", () => {
     const onModelConfigurationChanged = vi.fn();
     const fetchModelInfo = vi.fn();
     const rpcCommand = vi.fn(async (command) => {
-      if (command.type === "list_auth_status") {
+      if (command.type === "list_model_catalog") {
         return {
           success: true,
           data: {
@@ -46,6 +46,7 @@ describe("settings API key model refresh", () => {
                 displayName: "Anthropic",
                 configured: true,
                 source: "stored",
+                models: [],
               },
             ],
           },
@@ -74,5 +75,296 @@ describe("settings API key model refresh", () => {
 
     expect(onModelConfigurationChanged).toHaveBeenCalledTimes(1);
     expect(fetchModelInfo).not.toHaveBeenCalled();
+  });
+
+  test("renders model rows under authentication providers", async () => {
+    const rpcCommand = vi.fn(async (command) => {
+      if (command.type === "list_model_catalog") {
+        return {
+          success: true,
+          data: {
+            providers: [
+              {
+                provider: "anthropic",
+                displayName: "Anthropic",
+                configured: true,
+                source: "stored",
+                models: [
+                  {
+                    provider: "anthropic",
+                    id: "claude-sonnet-5",
+                    contextWindow: 200000,
+                    available: true,
+                    visible: true,
+                    health: { status: "healthy", latencyMs: 42 },
+                  },
+                ],
+              },
+            ],
+          },
+        };
+      }
+      throw new Error(`Unexpected command: ${command.type}`);
+    });
+
+    const { loadApiKeysPanel } = setupSettingsEditors({
+      rpcCommand,
+      closeSettings: vi.fn(),
+      onModelConfigurationChanged: vi.fn(),
+      clearSettingsSaveMessage: vi.fn(),
+      setSettingsSaveButtonSaving: vi.fn(),
+      showSettingsSaveError: vi.fn(),
+      showSettingsSaveSuccess: vi.fn(),
+    });
+
+    await loadApiKeysPanel();
+
+    expect(document.querySelector(".api-model-row")?.textContent).toContain("claude-sonnet-5");
+    expect(document.querySelector(".api-model-health-dot.healthy")).not.toBeNull();
+    expect(document.querySelector(".api-model-visibility-toggle").checked).toBe(true);
+  });
+
+  test("does not render health controls when a provider has no keyed models", async () => {
+    const rpcCommand = vi.fn(async (command) => {
+      if (command.type === "list_model_catalog") {
+        return {
+          success: true,
+          data: {
+            providers: [
+              {
+                provider: "openai",
+                displayName: "OpenAI",
+                configured: false,
+                models: [],
+              },
+            ],
+          },
+        };
+      }
+      throw new Error(`Unexpected command: ${command.type}`);
+    });
+
+    const { loadApiKeysPanel } = setupSettingsEditors({
+      rpcCommand,
+      closeSettings: vi.fn(),
+      onModelConfigurationChanged: vi.fn(),
+      clearSettingsSaveMessage: vi.fn(),
+      setSettingsSaveButtonSaving: vi.fn(),
+      showSettingsSaveError: vi.fn(),
+      showSettingsSaveSuccess: vi.fn(),
+    });
+
+    await loadApiKeysPanel();
+
+    expect(document.querySelector(".api-model-empty") === null).toBe(true);
+    expect(document.querySelector(".api-model-list") === null).toBe(true);
+    expect(document.querySelector(".api-model-row")).toBeNull();
+    expect(document.querySelector(".api-model-health-check")).toBeNull();
+    expect(document.querySelector(".api-model-check-visible")).toBeNull();
+  });
+
+  test("toggling model visibility persists and refreshes model info", async () => {
+    const onModelConfigurationChanged = vi.fn();
+    const rpcCommand = vi.fn(async (command) => {
+      if (command.type === "list_model_catalog") {
+        return {
+          success: true,
+          data: {
+            providers: [
+              {
+                provider: "anthropic",
+                displayName: "Anthropic",
+                configured: true,
+                source: "stored",
+                models: [
+                  {
+                    provider: "anthropic",
+                    id: "claude-opus-5",
+                    available: true,
+                    visible: true,
+                    health: { status: "unknown" },
+                  },
+                ],
+              },
+            ],
+          },
+        };
+      }
+      if (command.type === "set_model_visibility") {
+        return { success: true };
+      }
+      throw new Error(`Unexpected command: ${command.type}`);
+    });
+
+    const { loadApiKeysPanel } = setupSettingsEditors({
+      rpcCommand,
+      closeSettings: vi.fn(),
+      onModelConfigurationChanged,
+      clearSettingsSaveMessage: vi.fn(),
+      setSettingsSaveButtonSaving: vi.fn(),
+      showSettingsSaveError: vi.fn(),
+      showSettingsSaveSuccess: vi.fn(),
+    });
+
+    await loadApiKeysPanel();
+    const toggle = document.querySelector(".api-model-visibility-toggle");
+    toggle.checked = false;
+    toggle.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+    await Promise.resolve();
+
+    expect(rpcCommand).toHaveBeenCalledWith({
+      type: "set_model_visibility",
+      provider: "anthropic",
+      modelId: "claude-opus-5",
+      visible: false,
+    });
+    expect(onModelConfigurationChanged).toHaveBeenCalledTimes(1);
+  });
+
+  test("health check updates model row state", async () => {
+    const rpcCommand = vi.fn(async (command) => {
+      if (command.type === "list_model_catalog") {
+        return {
+          success: true,
+          data: {
+            providers: [
+              {
+                provider: "anthropic",
+                displayName: "Anthropic",
+                configured: true,
+                source: "stored",
+                models: [
+                  {
+                    provider: "anthropic",
+                    id: "claude-sonnet-5",
+                    available: true,
+                    visible: true,
+                    health: { status: "unknown" },
+                  },
+                ],
+              },
+            ],
+          },
+        };
+      }
+      if (command.type === "check_model_health") {
+        expect(document.querySelector(".api-model-health-dot.checking")).not.toBeNull();
+        return {
+          success: true,
+          data: {
+            results: [
+              {
+                provider: "anthropic",
+                modelId: "claude-sonnet-5",
+                status: "unhealthy",
+                error: "model overloaded",
+              },
+            ],
+          },
+        };
+      }
+      throw new Error(`Unexpected command: ${command.type}`);
+    });
+
+    const { loadApiKeysPanel } = setupSettingsEditors({
+      rpcCommand,
+      closeSettings: vi.fn(),
+      onModelConfigurationChanged: vi.fn(),
+      clearSettingsSaveMessage: vi.fn(),
+      setSettingsSaveButtonSaving: vi.fn(),
+      showSettingsSaveError: vi.fn(),
+      showSettingsSaveSuccess: vi.fn(),
+    });
+
+    await loadApiKeysPanel();
+    document.querySelector(".api-model-health-check").click();
+    await Promise.resolve();
+
+    expect(document.querySelector(".api-model-health-dot.unhealthy")).not.toBeNull();
+    expect(document.querySelector(".api-model-health-status").textContent).toContain(
+      "model overloaded",
+    );
+  });
+
+  test("disables all visible unhealthy models for one provider", async () => {
+    const onModelConfigurationChanged = vi.fn();
+    const rpcCommand = vi.fn(async (command) => {
+      if (command.type === "list_model_catalog") {
+        return {
+          success: true,
+          data: {
+            providers: [
+              {
+                provider: "anthropic",
+                displayName: "Anthropic",
+                configured: true,
+                source: "stored",
+                models: [
+                  {
+                    provider: "anthropic",
+                    id: "claude-sonnet-5",
+                    available: true,
+                    visible: true,
+                    health: { status: "unhealthy" },
+                  },
+                  {
+                    provider: "anthropic",
+                    id: "claude-haiku-5",
+                    available: true,
+                    visible: true,
+                    health: { status: "healthy" },
+                  },
+                  {
+                    provider: "anthropic",
+                    id: "claude-opus-5",
+                    available: true,
+                    visible: false,
+                    health: { status: "unhealthy" },
+                  },
+                ],
+              },
+            ],
+          },
+        };
+      }
+      if (command.type === "set_model_visibility") {
+        return { success: true };
+      }
+      throw new Error(`Unexpected command: ${command.type}`);
+    });
+
+    const { loadApiKeysPanel } = setupSettingsEditors({
+      rpcCommand,
+      closeSettings: vi.fn(),
+      onModelConfigurationChanged,
+      clearSettingsSaveMessage: vi.fn(),
+      setSettingsSaveButtonSaving: vi.fn(),
+      showSettingsSaveError: vi.fn(),
+      showSettingsSaveSuccess: vi.fn(),
+    });
+
+    await loadApiKeysPanel();
+    document.querySelector(".api-model-disable-unhealthy").click();
+    await Promise.resolve();
+
+    expect(rpcCommand).toHaveBeenCalledWith({
+      type: "set_model_visibility",
+      provider: "anthropic",
+      modelId: "claude-sonnet-5",
+      visible: false,
+    });
+    expect(rpcCommand).not.toHaveBeenCalledWith({
+      type: "set_model_visibility",
+      provider: "anthropic",
+      modelId: "claude-haiku-5",
+      visible: false,
+    });
+    expect(rpcCommand).not.toHaveBeenCalledWith({
+      type: "set_model_visibility",
+      provider: "anthropic",
+      modelId: "claude-opus-5",
+      visible: false,
+    });
+    expect(onModelConfigurationChanged).toHaveBeenCalledTimes(1);
   });
 });

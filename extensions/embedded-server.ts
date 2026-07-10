@@ -34,10 +34,12 @@ import * as fs from "node:fs";
 import * as http from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
-import type {
-  ExtensionAPI,
-  ExtensionContext,
-  ModelRegistry,
+import {
+  createAgentSession,
+  type ExtensionAPI,
+  type ExtensionContext,
+  type ModelRegistry,
+  SessionManager,
 } from "@earendil-works/pi-coding-agent";
 import QRCode from "qrcode";
 import { type WebSocket, WebSocketServer } from "ws";
@@ -214,6 +216,7 @@ function findPublicDir(): string {
   return path.resolve(process.cwd(), "public");
 }
 const SESSIONS_DIR = path.join(PI_AGENT_ROOT, "sessions");
+const PICOT_MODELS_PREFS_PATH = path.join(PI_AGENT_ROOT, "picot-models.json");
 const CHAT_WORKER_STATUS_DIR = path.join(PI_AGENT_ROOT, "chat", "worker-status");
 // TODO(rename->picot): directory `pistudio-instances` kept for backward compat — migrate to `picot-instances` once existing users are handled.
 const INSTANCES_DIR = path.join(path.dirname(PI_AGENT_ROOT), "pistudio-instances");
@@ -608,6 +611,252 @@ type EmbeddedServerGlobal = {
   sessionHeaderCache: Map<string, SessionFileCacheEntry<unknown>>;
   sessionMetricsCache: Map<string, SessionFileCacheEntry<unknown>>;
 };
+
+type AvailableModelRegistry = {
+  getAvailable: () => Promise<unknown[]>;
+};
+
+type CatalogModel = {
+  provider?: string;
+  id?: string;
+  name?: string;
+  contextWindow?: number;
+};
+
+type ModelHealthStatus = "unknown" | "healthy" | "unhealthy";
+
+type ModelHealth = {
+  status: ModelHealthStatus;
+  checkedAt?: string;
+  latencyMs?: number;
+  error?: string;
+};
+
+type ModelPreferencesFile = {
+  visibility?: Record<string, boolean>;
+  health?: Record<string, ModelHealth>;
+};
+
+function modelPreferenceKey(provider: string, modelId: string) {
+  return `${provider}/${modelId}`;
+}
+
+function normalizeModelHealth(value: unknown): ModelHealth {
+  if (!value || typeof value !== "object") return { status: "unknown" };
+  const candidate = value as Partial<ModelHealth>;
+  if (candidate.status !== "healthy" && candidate.status !== "unhealthy") {
+    return { status: "unknown" };
+  }
+  const health: ModelHealth = {
+    status: candidate.status,
+    checkedAt: typeof candidate.checkedAt === "string" ? candidate.checkedAt : undefined,
+    latencyMs: typeof candidate.latencyMs === "number" ? candidate.latencyMs : undefined,
+  };
+  if (typeof candidate.error === "string") health.error = candidate.error;
+  return health;
+}
+
+export function sanitizeHealthError(error: unknown): string {
+  const raw = errMessage(error) || "Health check failed";
+  return raw
+    .replace(/sk-[A-Za-z0-9_-]{6,}/g, "[REDACTED]")
+    .replace(/\bbearer\s+[A-Za-z0-9._~+/=-]{6,}/gi, "bearer [REDACTED]")
+    .slice(0, 240);
+}
+
+export class ModelPreferencesStore {
+  readonly path: string;
+
+  constructor(filePath = PICOT_MODELS_PREFS_PATH) {
+    this.path = filePath;
+  }
+
+  read(): Required<ModelPreferencesFile> {
+    if (!fs.existsSync(this.path)) return { visibility: {}, health: {} };
+    try {
+      const parsed = JSON.parse(fs.readFileSync(this.path, "utf8")) as ModelPreferencesFile;
+      return {
+        visibility:
+          parsed.visibility &&
+          typeof parsed.visibility === "object" &&
+          !Array.isArray(parsed.visibility)
+            ? parsed.visibility
+            : {},
+        health:
+          parsed.health && typeof parsed.health === "object" && !Array.isArray(parsed.health)
+            ? parsed.health
+            : {},
+      };
+    } catch {
+      return { visibility: {}, health: {} };
+    }
+  }
+
+  write(next: Required<ModelPreferencesFile>) {
+    fs.mkdirSync(path.dirname(this.path), { recursive: true });
+    fs.writeFileSync(this.path, JSON.stringify(next, null, 2), "utf8");
+  }
+
+  isVisible(provider: string, modelId: string) {
+    const prefs = this.read();
+    return prefs.visibility[modelPreferenceKey(provider, modelId)] !== false;
+  }
+
+  setVisibility(provider: string, modelId: string, visible: boolean) {
+    const prefs = this.read();
+    prefs.visibility[modelPreferenceKey(provider, modelId)] = visible;
+    this.write(prefs);
+  }
+
+  getHealth(provider: string, modelId: string): ModelHealth {
+    const prefs = this.read();
+    return normalizeModelHealth(prefs.health[modelPreferenceKey(provider, modelId)]);
+  }
+
+  setHealth(provider: string, modelId: string, health: ModelHealth) {
+    const prefs = this.read();
+    prefs.health[modelPreferenceKey(provider, modelId)] = normalizeModelHealth(health);
+    this.write(prefs);
+  }
+}
+
+export async function getAvailableModelsForRpc(
+  ctx: { modelRegistry?: AvailableModelRegistry } | null,
+  fallbackRegistry: AvailableModelRegistry | null,
+  preferences = new ModelPreferencesStore(),
+) {
+  const registry = ctx?.modelRegistry ?? fallbackRegistry;
+  if (!registry) throw new Error("Model registry not ready yet — try again in a moment.");
+  const models = await registry.getAvailable();
+  return models.filter((model) => {
+    const m = model as CatalogModel;
+    return m.provider && m.id ? preferences.isVisible(m.provider, m.id) : true;
+  });
+}
+
+type CatalogRegistry = {
+  getAll: () => CatalogModel[];
+  getAvailable: () => Promise<CatalogModel[]>;
+  getProviderAuthStatus: (provider: string) => {
+    configured?: boolean;
+    source?: string;
+    label?: string;
+  };
+  getProviderDisplayName: (provider: string) => string;
+};
+
+export async function buildModelCatalog(
+  registry: CatalogRegistry,
+  preferences: ModelPreferencesStore,
+) {
+  const allModels = registry.getAll();
+  const availableModels = await registry.getAvailable();
+  const availableKeys = new Set(
+    availableModels
+      .filter((model) => model.provider && model.id)
+      .map((model) => modelPreferenceKey(model.provider as string, model.id as string)),
+  );
+  const providerNames = Array.from(
+    new Set(allModels.map((model) => model.provider).filter(Boolean)),
+  ).sort();
+
+  return {
+    providers: providerNames.map((provider) => {
+      const providerName = provider as string;
+      const status = registry.getProviderAuthStatus(providerName);
+      return {
+        provider: providerName,
+        displayName: registry.getProviderDisplayName(providerName),
+        configured: Boolean(status.configured),
+        source: status.source,
+        label: status.label,
+        models: allModels
+          .filter(
+            (model) =>
+              model.provider === providerName &&
+              model.id &&
+              availableKeys.has(modelPreferenceKey(providerName, model.id)),
+          )
+          .sort((a, b) => String(a.id).localeCompare(String(b.id)))
+          .map((model) => {
+            const modelId = model.id as string;
+            return {
+              provider: providerName,
+              id: modelId,
+              name: model.name,
+              contextWindow: model.contextWindow,
+              available: availableKeys.has(modelPreferenceKey(providerName, modelId)),
+              visible: preferences.isVisible(providerName, modelId),
+              health: preferences.getHealth(providerName, modelId),
+            };
+          }),
+      };
+    }),
+  };
+}
+
+async function runModelHealthCheck(
+  registry: CatalogRegistry & { authStorage?: unknown },
+  model: CatalogModel,
+  preferences: ModelPreferencesStore,
+): Promise<{ provider: string; modelId: string } & ModelHealth> {
+  const provider = model.provider as string;
+  const modelId = model.id as string;
+  const startedAt = Date.now();
+  let sawAssistantText = false;
+  try {
+    const { session } = await createAgentSession({
+      model,
+      thinkingLevel: "off",
+      tools: [],
+      sessionManager: SessionManager.inMemory(),
+      authStorage: registry.authStorage,
+      modelRegistry: registry,
+    } as Parameters<typeof createAgentSession>[0]);
+    try {
+      const unsubscribe = session.subscribe((event: unknown) => {
+        const evt = event as {
+          assistantMessageEvent?: { type?: string; delta?: string; content?: unknown };
+        };
+        if (
+          evt.assistantMessageEvent?.type === "text_delta" &&
+          typeof evt.assistantMessageEvent.delta === "string" &&
+          evt.assistantMessageEvent.delta.length > 0
+        ) {
+          sawAssistantText = true;
+        }
+      });
+      try {
+        await session.prompt("Reply exactly: OK");
+      } finally {
+        unsubscribe();
+      }
+    } finally {
+      session.dispose();
+    }
+    const result: { provider: string; modelId: string } & ModelHealth = {
+      provider,
+      modelId,
+      status: sawAssistantText ? "healthy" : "unhealthy",
+      checkedAt: new Date().toISOString(),
+      latencyMs: Date.now() - startedAt,
+      error: sawAssistantText ? undefined : "No assistant text returned",
+    };
+    preferences.setHealth(provider, modelId, result);
+    return result;
+  } catch (e: unknown) {
+    const result: { provider: string; modelId: string } & ModelHealth = {
+      provider,
+      modelId,
+      status: "unhealthy",
+      checkedAt: new Date().toISOString(),
+      latencyMs: Date.now() - startedAt,
+      error: sanitizeHealthError(e),
+    };
+    preferences.setHealth(provider, modelId, result);
+    return result;
+  }
+}
 
 const EMBEDDED_GLOBAL_KEY = "__piStudioEmbeddedServer__";
 
@@ -1193,12 +1442,90 @@ export default function (pi: ExtensionAPI) {
 
         // ─── Model ───
         case "get_available_models": {
-          if (!ctx) {
-            sendTo(ws, error("get_available_models", "No context available"));
+          const models = await getAvailableModelsForRpc(
+            ctx,
+            globalState.modelRegistry,
+            new ModelPreferencesStore(),
+          );
+          sendTo(ws, success("get_available_models", { models }));
+          break;
+        }
+
+        case "list_model_catalog": {
+          const registry = ctx?.modelRegistry ?? globalState.modelRegistry;
+          if (!registry) {
+            sendTo(
+              ws,
+              error("list_model_catalog", "Model registry not ready yet — try again in a moment."),
+            );
             break;
           }
-          const models = await ctx.modelRegistry.getAvailable();
-          sendTo(ws, success("get_available_models", { models }));
+          const catalog = await buildModelCatalog(
+            registry as unknown as CatalogRegistry,
+            new ModelPreferencesStore(),
+          );
+          sendTo(ws, success("list_model_catalog", catalog));
+          break;
+        }
+
+        case "set_model_visibility": {
+          const provider = typeof command.provider === "string" ? command.provider.trim() : "";
+          const modelId = typeof command.modelId === "string" ? command.modelId.trim() : "";
+          if (!provider || !modelId) {
+            sendTo(ws, error("set_model_visibility", "provider and modelId are required"));
+            break;
+          }
+          const visible = command.visible !== false;
+          const preferences = new ModelPreferencesStore();
+          preferences.setVisibility(provider, modelId, visible);
+          sendTo(ws, success("set_model_visibility", { provider, modelId, visible }));
+          break;
+        }
+
+        case "check_model_health": {
+          const registry = ctx?.modelRegistry ?? globalState.modelRegistry;
+          if (!registry) {
+            sendTo(
+              ws,
+              error("check_model_health", "Model registry not ready yet — try again in a moment."),
+            );
+            break;
+          }
+          const provider = typeof command.provider === "string" ? command.provider.trim() : "";
+          const modelId = typeof command.modelId === "string" ? command.modelId.trim() : "";
+          if (!provider) {
+            sendTo(ws, error("check_model_health", "provider is required"));
+            break;
+          }
+          const preferences = new ModelPreferencesStore();
+          const catalogRegistry = registry as unknown as CatalogRegistry & {
+            authStorage?: unknown;
+          };
+          const availableKeys = new Set(
+            (await catalogRegistry.getAvailable())
+              .filter((model) => model.provider && model.id)
+              .map((model) => modelPreferenceKey(model.provider as string, model.id as string)),
+          );
+          const models = catalogRegistry.getAll().filter((model) => {
+            if (model.provider !== provider || !model.id) return false;
+            if (modelId) return model.id === modelId;
+            return (
+              preferences.isVisible(provider, model.id) &&
+              availableKeys.has(modelPreferenceKey(provider, model.id))
+            );
+          });
+          if (models.length === 0) {
+            sendTo(
+              ws,
+              error("check_model_health", "No matching models available for health check"),
+            );
+            break;
+          }
+          const results = [];
+          for (const model of models) {
+            results.push(await runModelHealthCheck(catalogRegistry, model, preferences));
+          }
+          sendTo(ws, success("check_model_health", { results }));
           break;
         }
 

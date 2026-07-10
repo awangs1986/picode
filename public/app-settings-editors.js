@@ -12,7 +12,7 @@ export function setupSettingsEditors({
   async function loadApiKeysPanel() {
     if (!apiKeysContainer) return;
     apiKeysContainer.innerHTML = '<div class="settings-api-keys-loading">Loading providers…</div>';
-    const data = await rpcCommand({ type: "list_auth_status" });
+    const data = await rpcCommand({ type: "list_model_catalog" });
     if (!data?.success || !Array.isArray(data.data?.providers)) {
       renderApiKeysPanelError(data?.error || "Failed to load providers.");
       return;
@@ -46,6 +46,11 @@ export function setupSettingsEditors({
     for (const p of providers) {
       apiKeysContainer.appendChild(buildApiKeyRow(p));
     }
+  }
+
+  function escapeSelectorValue(value) {
+    if (globalThis.CSS?.escape) return globalThis.CSS.escape(String(value));
+    return String(value).replace(/["\\]/g, "\\$&");
   }
 
   function buildApiKeyRow(p) {
@@ -82,7 +87,196 @@ export function setupSettingsEditors({
 
     row.appendChild(info);
     row.appendChild(actions);
+    const modelList = buildModelList(p);
+    if (modelList) row.appendChild(modelList);
     return row;
+  }
+
+  function buildModelList(p) {
+    const wrap = document.createElement("div");
+    wrap.className = "api-model-list";
+
+    const models = Array.isArray(p.models) ? p.models : [];
+    if (models.length === 0) {
+      return null;
+    }
+
+    const bulkActions = document.createElement("div");
+    bulkActions.className = "api-model-list-actions";
+    const unhealthyModels = models.filter(
+      (model) => model.visible !== false && model.health?.status === "unhealthy",
+    );
+    const checkVisible = document.createElement("button");
+    checkVisible.type = "button";
+    checkVisible.className = "api-model-check-visible";
+    checkVisible.textContent = "Check visible models";
+    checkVisible.disabled = !models.some((model) => model.visible && model.available);
+    checkVisible.addEventListener("click", () => checkModelHealth(p.provider));
+    const disableUnhealthy = document.createElement("button");
+    disableUnhealthy.type = "button";
+    disableUnhealthy.className = "api-model-disable-unhealthy";
+    disableUnhealthy.textContent = "Disable unhealthy";
+    disableUnhealthy.disabled = unhealthyModels.length === 0;
+    disableUnhealthy.addEventListener("click", () =>
+      disableUnhealthyModels(p.provider, unhealthyModels),
+    );
+    bulkActions.appendChild(disableUnhealthy);
+    bulkActions.appendChild(checkVisible);
+    wrap.appendChild(bulkActions);
+
+    for (const model of models) {
+      wrap.appendChild(buildModelRow(model));
+    }
+    return wrap;
+  }
+
+  async function disableUnhealthyModels(provider, models) {
+    for (const model of models) {
+      await rpcCommand({
+        type: "set_model_visibility",
+        provider,
+        modelId: model.id,
+        visible: false,
+      });
+    }
+    await onModelConfigurationChanged?.();
+    await loadApiKeysPanel();
+  }
+
+  function buildModelRow(model) {
+    const row = document.createElement("div");
+    row.className = "api-model-row";
+    row.dataset.provider = model.provider;
+    row.dataset.modelId = model.id;
+
+    const health = model.health || { status: "unknown" };
+    const healthDot = document.createElement("span");
+    healthDot.className = `api-model-health-dot ${health.status || "unknown"}`;
+    healthDot.title = describeModelHealth(health);
+
+    const label = document.createElement("div");
+    label.className = "api-model-label";
+    const name = document.createElement("div");
+    name.className = "api-model-name";
+    name.textContent = model.name || model.id;
+    const meta = document.createElement("div");
+    meta.className = "api-model-health-status";
+    meta.textContent = describeModelStatus(model);
+    label.appendChild(name);
+    label.appendChild(meta);
+
+    const actions = document.createElement("div");
+    actions.className = "api-model-actions";
+
+    const visibilityLabel = document.createElement("label");
+    visibilityLabel.className = "api-model-visibility";
+    const visibility = document.createElement("input");
+    visibility.type = "checkbox";
+    visibility.className = "api-model-visibility-toggle";
+    visibility.checked = model.visible !== false;
+    visibility.addEventListener("change", async () => {
+      visibility.disabled = true;
+      const resp = await rpcCommand({
+        type: "set_model_visibility",
+        provider: model.provider,
+        modelId: model.id,
+        visible: visibility.checked,
+      });
+      if (resp?.success) {
+        await onModelConfigurationChanged?.();
+        await loadApiKeysPanel();
+      } else {
+        visibility.checked = !visibility.checked;
+        visibility.disabled = false;
+      }
+    });
+    visibilityLabel.appendChild(visibility);
+    visibilityLabel.appendChild(document.createTextNode("Show"));
+
+    const healthBtn = document.createElement("button");
+    healthBtn.type = "button";
+    healthBtn.className = "api-model-health-check";
+    healthBtn.textContent = "Check health";
+    healthBtn.disabled = !model.available;
+    healthBtn.addEventListener("click", () => checkModelHealth(model.provider, model.id, row));
+
+    actions.appendChild(visibilityLabel);
+    actions.appendChild(healthBtn);
+
+    row.appendChild(healthDot);
+    row.appendChild(label);
+    row.appendChild(actions);
+    return row;
+  }
+
+  function describeModelStatus(model) {
+    const parts = [];
+    if (!model.available) parts.push("No key available");
+    if (model.contextWindow) parts.push(`${Math.round(model.contextWindow / 1000)}k context`);
+    parts.push(describeModelHealth(model.health || { status: "unknown" }));
+    return parts.join(" · ");
+  }
+
+  function describeModelHealth(health) {
+    if (!health || health.status === "unknown") return "Health unknown";
+    if (health.status === "healthy") {
+      return health.latencyMs ? `Healthy (${health.latencyMs}ms)` : "Healthy";
+    }
+    return health.error ? `Failed: ${health.error}` : "Failed";
+  }
+
+  function setModelRowChecking(row) {
+    if (!row) return;
+    const dot = row.querySelector(".api-model-health-dot");
+    const status = row.querySelector(".api-model-health-status");
+    if (dot) {
+      dot.className = "api-model-health-dot checking";
+      dot.title = "Checking health";
+    }
+    if (status) status.textContent = "Checking health...";
+  }
+
+  function applyHealthResult(result) {
+    const row = apiKeysContainer.querySelector(
+      `.api-model-row[data-provider="${escapeSelectorValue(result.provider)}"][data-model-id="${escapeSelectorValue(result.modelId)}"]`,
+    );
+    if (!row) return;
+    const dot = row.querySelector(".api-model-health-dot");
+    const status = row.querySelector(".api-model-health-status");
+    const health = {
+      status: result.status,
+      latencyMs: result.latencyMs,
+      error: result.error,
+    };
+    if (dot) {
+      dot.className = `api-model-health-dot ${result.status || "unknown"}`;
+      dot.title = describeModelHealth(health);
+    }
+    if (status) status.textContent = describeModelHealth(health);
+  }
+
+  async function checkModelHealth(provider, modelId, row) {
+    if (row) {
+      setModelRowChecking(row);
+    } else {
+      for (const modelRow of apiKeysContainer.querySelectorAll(
+        `.api-model-row[data-provider="${escapeSelectorValue(provider)}"]`,
+      )) {
+        const toggle = modelRow.querySelector(".api-model-visibility-toggle");
+        const checkBtn = modelRow.querySelector(".api-model-health-check");
+        if (toggle?.checked && !checkBtn?.disabled) setModelRowChecking(modelRow);
+      }
+    }
+    const resp = await rpcCommand({
+      type: "check_model_health",
+      provider,
+      ...(modelId ? { modelId } : {}),
+    });
+    if (resp?.success && Array.isArray(resp.data?.results)) {
+      for (const result of resp.data.results) applyHealthResult(result);
+    } else {
+      await loadApiKeysPanel();
+    }
   }
 
   function describeAuthStatus(p) {
