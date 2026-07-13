@@ -142,18 +142,18 @@ export function setupSettingsEditors({
 
     const bulkActions = document.createElement("div");
     bulkActions.className = "api-model-list-actions";
-    const hiddenHealthyModels = models.filter(
-      (model) => model.visible === false && model.health?.status === "healthy",
+    const visibleUnhealthyModels = models.filter(
+      (model) => model.visible !== false && model.health?.status === "unhealthy",
     );
-    const enableHealthy = document.createElement("button");
-    enableHealthy.type = "button";
-    enableHealthy.className = "api-model-disable-unhealthy";
-    enableHealthy.textContent = "Enable healthy models";
-    enableHealthy.disabled = hiddenHealthyModels.length === 0;
-    enableHealthy.addEventListener("click", () =>
-      enableHealthyModels(p.provider, hiddenHealthyModels),
+    const disableUnhealthy = document.createElement("button");
+    disableUnhealthy.type = "button";
+    disableUnhealthy.className = "api-model-disable-unhealthy";
+    disableUnhealthy.textContent = "Disable unhealthy models";
+    disableUnhealthy.disabled = visibleUnhealthyModels.length === 0;
+    disableUnhealthy.addEventListener("click", () =>
+      disableUnhealthyModels(p.provider, visibleUnhealthyModels),
     );
-    bulkActions.appendChild(enableHealthy);
+    bulkActions.appendChild(disableUnhealthy);
     wrap.appendChild(bulkActions);
 
     const columnLabels = document.createElement("div");
@@ -168,13 +168,13 @@ export function setupSettingsEditors({
     return wrap;
   }
 
-  async function enableHealthyModels(provider, models) {
+  async function disableUnhealthyModels(provider, models) {
     for (const model of models) {
       await rpcCommand({
         type: "set_model_visibility",
         provider,
         modelId: model.id,
-        visible: true,
+        visible: false,
       });
     }
     await onModelConfigurationChanged?.();
@@ -287,6 +287,18 @@ export function setupSettingsEditors({
     if (status) status.textContent = "Checking health...";
   }
 
+  function setModelRowHealthError(row, message) {
+    if (!row) return;
+    const dot = row.querySelector(".api-model-health-dot");
+    const status = row.querySelector(".api-model-health-status");
+    const text = `Failed: ${message || "Health check failed"}`;
+    if (dot) {
+      dot.className = "api-model-health-dot unknown";
+      dot.title = text;
+    }
+    if (status) status.textContent = text;
+  }
+
   function applyHealthResult(result) {
     const row = apiKeysContainer.querySelector(
       `.api-model-row[data-provider="${escapeSelectorValue(result.provider)}"][data-model-id="${escapeSelectorValue(result.modelId)}"]`,
@@ -326,7 +338,17 @@ export function setupSettingsEditors({
     if (resp?.success && Array.isArray(resp.data?.results)) {
       for (const result of resp.data.results) applyHealthResult(result);
     } else {
-      await loadApiKeysPanel();
+      const message = resp?.error || "Health check failed";
+      if (row) {
+        setModelRowHealthError(row, message);
+      } else {
+        for (const modelRow of apiKeysContainer.querySelectorAll(
+          `.api-model-row[data-provider="${escapeSelectorValue(provider)}"]`,
+        )) {
+          const toggle = modelRow.querySelector(".api-model-visibility-toggle");
+          if (toggle?.checked) setModelRowHealthError(modelRow, message);
+        }
+      }
     }
   }
 
