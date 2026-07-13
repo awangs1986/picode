@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { type Dirent, constants as fsConstants } from "node:fs";
 import { lstat, open, readdir, realpath } from "node:fs/promises";
+import { homedir } from "node:os";
 import { basename, extname, isAbsolute, join, relative } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import {
@@ -25,6 +26,12 @@ import {
 
 import { connectLive } from "./live/index.js";
 import type { LiveConnection } from "./live/types.js";
+import {
+  buildRemoteOperationsSnapshot,
+  formatRemoteModels,
+  formatRemoteOperationsCommand,
+  type RemoteCommandResponse,
+} from "./remote-operations.js";
 import { ConversationRuntime } from "./runtime.js";
 import { selectStartupConversationId } from "./startup.js";
 import { runChatConfigUI } from "./tui/chat-config.js";
@@ -282,6 +289,7 @@ export default function (pi: ExtensionAPI) {
   let pendingChatDispatch = false;
   let pendingControlAction: (() => Promise<void>) | undefined;
   let activeTriggerMessageId: string | undefined;
+  let pendingLocalPrompt: string | undefined;
 
   function persistChatState(conversationId?: string): void {
     pi.appendEntry<PersistedChatState>(SESSION_STATE_CUSTOM_TYPE, {
@@ -449,10 +457,38 @@ export default function (pi: ExtensionAPI) {
       "",
       "Commands:",
       "/status - show current model, queue, and context status",
+      "/agents - list Agent Index target agents",
+      "/tasks - list the 10 most relevant Agent Index tasks",
+      "/task <id> - show one task by full ID or unique prefix",
+      "/models - list current and available models",
+      "/health - show Telegram, task, instance, and model health",
+      "/errors - show the 10 most recent full operations errors",
       "/new - start a new pi session after confirmation in Picot",
       "/compact - compact the current session",
       "/stop - abort the current turn",
     ].join("\n");
+  }
+
+  async function sendRemoteResponse(response: RemoteCommandResponse): Promise<void> {
+    for (const chunk of response.chunks) await liveConnection?.sendImmediate(chunk);
+  }
+
+  async function buildOperationsSnapshot() {
+    const agentRoot = join(homedir(), ".pi", "agent");
+    return buildRemoteOperationsSnapshot({
+      tasksPath: join(agentRoot, "super-agent", "tasks.json"),
+      instancesDir: join(homedir(), ".pi", "pistudio-instances"),
+      modelPreferencesPath: join(agentRoot, "picot-models.json"),
+      workersDir: join(agentRoot, "chat", "worker-status"),
+      isProcessAlive: (pid) => {
+        try {
+          process.kill(pid, 0);
+          return true;
+        } catch {
+          return false;
+        }
+      },
+    });
   }
 
   async function connectConversation(
@@ -481,7 +517,12 @@ export default function (pi: ExtensionAPI) {
           {
             onMessage: async (input, checkpoint) => {
               if (!runtime) return;
-              const control = runtime.isArmed() ? runtime.parseControlCommand(input) : undefined;
+              const remoteCommand = runtime.isArmed()
+                ? runtime.parseRemoteCommand(input)
+                : undefined;
+              const control =
+                (remoteCommand?.name === "start" ? "help" : remoteCommand?.name) ??
+                (runtime.isArmed() ? runtime.parseControlCommand(input) : undefined);
               if (control === "stop") {
                 if (chatTurnInFlight || !ctx.isIdle()) {
                   ctx.abort();
@@ -517,6 +558,33 @@ export default function (pi: ExtensionAPI) {
                 await liveConnection?.sendImmediate(buildRemoteHelp());
                 return;
               }
+              if (
+                control === "agents" ||
+                control === "tasks" ||
+                control === "task" ||
+                control === "health" ||
+                control === "errors"
+              ) {
+                const snapshot = await buildOperationsSnapshot();
+                await sendRemoteResponse(
+                  formatRemoteOperationsCommand(
+                    { name: control, args: remoteCommand?.args ?? "" },
+                    snapshot,
+                  ),
+                );
+                return;
+              }
+              if (control === "models") {
+                try {
+                  const models = await ctx.modelRegistry.getAvailable();
+                  await sendRemoteResponse(formatRemoteModels(models, ctx.model));
+                } catch (error) {
+                  await liveConnection?.sendImmediate(
+                    `Unable to list models: ${error instanceof Error ? error.message : String(error)}`,
+                  );
+                }
+                return;
+              }
               if (control === "new") {
                 const queueNewSession = async () => {
                   pi.sendUserMessage("/chat-new", { deliverAs: "followUp" });
@@ -531,6 +599,12 @@ export default function (pi: ExtensionAPI) {
                   return;
                 }
                 await queueNewSession();
+                return;
+              }
+              if (remoteCommand) {
+                await liveConnection?.sendImmediate(
+                  `Unknown command: /${remoteCommand.name}\n\n${buildRemoteHelp()}`,
+                );
                 return;
               }
               await runtime.ingestInbound(input, checkpoint);
@@ -982,6 +1056,22 @@ export default function (pi: ExtensionAPI) {
   pi.on("agent_start", async (_event, _ctx) => {});
 
   pi.on("context", async (event) => {
+    // Capture last user message for local Picot → Telegram sync.
+    // Only when not a Telegram-triggered turn (chatTurnInFlight = false) and not yet captured.
+    if (liveConnection && !chatTurnInFlight && pendingLocalPrompt === undefined) {
+      for (let i = event.messages.length - 1; i >= 0; i--) {
+        const msg = event.messages[i] as unknown as Record<string, unknown>;
+        if (msg.role !== "user") continue;
+        const content = Array.isArray(msg.content) ? msg.content : [];
+        const text = (content as Array<Record<string, unknown>>)
+          .filter((b) => b?.type === "text" && typeof b.text === "string")
+          .map((b) => b.text as string)
+          .join("")
+          .trim();
+        if (text) pendingLocalPrompt = text;
+        break;
+      }
+    }
     return {
       messages: event.messages.filter((message) => {
         const value = message as unknown as Record<string, unknown>;
@@ -1014,8 +1104,26 @@ export default function (pi: ExtensionAPI) {
     if (!runtime || !chatTurnInFlight) {
       stopTypingLoop();
       updateStatus(ctx);
+      // Sync local Picot turn to Telegram: combine "user input\n\nagent reply" in one message.
+      if (pendingLocalPrompt !== undefined && liveConnection) {
+        const localPrompt = pendingLocalPrompt;
+        pendingLocalPrompt = undefined;
+        const summary = extractAssistantSummary(event.messages as unknown[]);
+        if (summary.text) {
+          const combined = `${localPrompt}\n\n${summary.text}`;
+          try {
+            await liveConnection.send(combined, [], ctx.signal, undefined);
+          } catch {
+            // ignore send failure
+          }
+        }
+      } else {
+        pendingLocalPrompt = undefined;
+      }
       return;
     }
+    // Clear any stale local prompt from a previous local turn.
+    pendingLocalPrompt = undefined;
     const summary = extractAssistantSummary(event.messages as unknown[]);
     if (summary.stopReason === "aborted") {
       stopTypingLoop();

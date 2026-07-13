@@ -107,4 +107,32 @@ describe("ConversationRuntime DM trigger policy", () => {
       await runtime.disconnect();
     }
   });
+
+  it("parses structured Telegram commands with bot suffixes and arguments", async () => {
+    const runtime = await connectRuntime(true);
+    try {
+      expect(
+        runtime.parseRemoteCommand({ userId: "user-1", text: "  /TaSk@picot   task-123  " }),
+      ).toEqual({ name: "task", args: "task-123" });
+      expect(runtime.parseRemoteCommand({ userId: "user-1", text: "/unknown" })).toEqual({
+        name: "unknown",
+        args: "",
+      });
+    } finally {
+      await runtime.disconnect();
+    }
+  });
+
+  it("does not parse commands from unauthorized users", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pi-chat-runtime-"));
+    tempRoots.push(root);
+    const conversation = buildConversation(root, true);
+    conversation.access.allowedUserIds = ["owner"];
+    const runtime = await ConversationRuntime.connect(conversation, "test-allowed");
+    try {
+      expect(runtime.parseRemoteCommand({ userId: "stranger", text: "/status" })).toBeUndefined();
+    } finally {
+      await runtime.disconnect();
+    }
+  });
 });

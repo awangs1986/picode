@@ -22,6 +22,7 @@ import {
   readConversationLog,
   releaseConversationLock,
 } from "./log.js";
+import type { RemoteCommand } from "./remote-operations.js";
 
 function isDMConversation(conversation: ResolvedConversation): boolean {
   return conversation.channel.dm ?? false;
@@ -132,7 +133,9 @@ export class ConversationRuntime {
   private getLastCompletedTriggerRecordId(): number {
     let last = 0;
     for (const record of this.records) {
-      if (record.type !== "job_completed") continue;
+      // Treat both completed AND failed jobs as boundaries so that a failed
+      // job's trigger message is never re-included in the next job's prompt.
+      if (record.type !== "job_completed" && record.type !== "job_failed") continue;
       last = Math.max(last, record.triggerRecordId);
     }
     return last;
@@ -173,6 +176,16 @@ export class ConversationRuntime {
     if (command === "start" || command === "/start") return "help";
     if (command === "help" || command === "/help") return "help";
     return undefined;
+  }
+
+  parseRemoteCommand(input: InboundMessageInput): RemoteCommand | undefined {
+    const normalized = normalizeInboundMessage(input, this.conversation.botName);
+    if (!this.isAllowedInput(normalized)) return undefined;
+    const match = normalized.text
+      .trim()
+      .match(/^\/([a-z][a-z0-9_]*)(?:@[a-z0-9_]+)?(?:\s+([\s\S]*))?$/i);
+    if (!match) return undefined;
+    return { name: match[1].toLowerCase(), args: (match[2] ?? "").trim() };
   }
 
   matchesStopCommand(input: InboundMessageInput): boolean {

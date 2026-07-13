@@ -73,7 +73,7 @@ describe("chat-settings-panel", () => {
     await flushPromises();
 
     expect(panel.textContent).toContain("Telegram listener is connected.");
-    expect(panel.textContent).toContain("Telegram messages enter Super Agent intake first.");
+    expect(panel.textContent).toContain("Telegram messages enter Agent Inbox first.");
     expect(panel.textContent).toContain("6085028519");
   });
 });

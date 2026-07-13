@@ -19,7 +19,7 @@ class ChatSettingsPanel extends HTMLElement {
             Telegram DM automatically after you send <code>/start</code> to the bot.
           </p>
           <p class="settings-help telegram-safety-note">
-            Telegram messages enter Super Agent intake first. Picot keeps project-agent dispatch
+            Telegram messages enter Agent Inbox first. Picot keeps project-agent dispatch
             behind local approval.
           </p>
           <div class="telegram-setup-card">

@@ -46,7 +46,7 @@ describe("SessionSidebar Super Agent pinned session", () => {
 
     const firstSession = document.querySelector(".session-item");
     expect(firstSession?.dataset.filePath).toBe("/sa-new.jsonl");
-    expect(firstSession?.textContent).toContain("Super Agent");
+    expect(firstSession?.textContent).toContain("Agent Inbox");
 
     firstSession?.click();
 
@@ -54,7 +54,7 @@ describe("SessionSidebar Super Agent pinned session", () => {
     expect(onSessionSelect.mock.calls[0][0]).toMatchObject({
       filePath: "/sa-new.jsonl",
       kind: "super-agent",
-      name: "Super Agent",
+      name: "Agent Inbox",
     });
     expect(onSessionSelect.mock.calls[0][1]).toMatchObject({
       path: "/Users/me/.pi/agent/super-agent",
@@ -145,7 +145,7 @@ describe("SessionSidebar Super Agent pinned session", () => {
 
     expect(document.querySelector('.session-item[data-file-path="/sa.jsonl"]')).toBeNull();
     expect(document.querySelector(".super-agent-pinned-group")).toBeNull();
-    expect(document.getElementById("sessions")?.textContent).not.toContain("Super Agent");
+    expect(document.getElementById("sessions")?.textContent).not.toContain("Agent Inbox");
     expect(document.querySelector('.session-item[data-file-path="/project.jsonl"]')).not.toBeNull();
   });
 

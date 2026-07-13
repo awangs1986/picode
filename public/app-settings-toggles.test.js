@@ -82,7 +82,7 @@ describe("thinking effort cycle controls", () => {
     const toggle = document.querySelector("#toggle-super-agent");
 
     expect(document.querySelector("#setting-super-agent .settings-label-main")?.textContent).toBe(
-      "Super Agent",
+      "Agent Inbox",
     );
     expect(document.querySelector("#setting-super-agent .settings-label-sub")?.textContent).toBe(
       "Start automatically",

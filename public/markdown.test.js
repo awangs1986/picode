@@ -37,8 +37,38 @@ describe("renderStreamingMarkdown", () => {
     expect(html).not.toContain("streamdown:incomplete-link");
   });
 
+  it("does not leak code block placeholders for a fenced block in a list item", () => {
+    const markdown = "- ```js\nconst answer = 42;\n```";
+    const html = renderStreamingMarkdown(markdown);
+
+    expect(html).toContain("code-block-wrapper");
+    expect(html).toContain("const answer = 42;");
+    expect(html).not.toContain("%%CODEBLOCK_");
+  });
+
   it("returns empty string for empty input", () => {
     expect(renderStreamingMarkdown("")).toBe("");
     expect(renderStreamingMarkdown(null)).toBe("");
+  });
+});
+
+describe("renderMarkdown", () => {
+  it("renders fenced code blocks whose language contains a hyphen", () => {
+    const html = renderMarkdown('```acceptance-report\n{"criteriaSatisfied": []}\n```');
+
+    expect(html).toContain("code-block-wrapper");
+    expect(html).toContain("acceptance-report");
+    expect(html).toContain("&quot;criteriaSatisfied&quot;");
+    expect(html).not.toContain("```acceptance-report");
+  });
+
+  it("does not leak code block placeholders for unordered or ordered list items", () => {
+    for (const marker of ["-", "1."]) {
+      const html = renderMarkdown(`${marker} \`\`\`sh\necho ok\n\`\`\``);
+
+      expect(html).toContain("code-block-wrapper");
+      expect(html).toContain("echo ok");
+      expect(html).not.toContain("%%CODEBLOCK_");
+    }
   });
 });

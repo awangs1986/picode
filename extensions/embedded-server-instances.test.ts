@@ -2,6 +2,7 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  buildSuperAgentProjectRegistry,
   isLiveProcessStat,
   markChatWorkerSessions,
   mergeLiveInstanceSessions,
@@ -112,6 +113,43 @@ describe("Picot live instance session merge", () => {
       cwd: "/Users/me/.pi/agent/super-agent",
       isRunning: true,
       startedAt: "2026-07-01T03:05:07.012Z",
+    });
+  });
+});
+
+describe("Super Agent project registry", () => {
+  it("returns routable running projects without the Super Agent manager workspace", () => {
+    const registry = buildSuperAgentProjectRegistry(
+      [
+        {
+          port: 47821,
+          pid: 123,
+          sessionFile: "/sessions/project-a/session.jsonl",
+          cwd: "/Users/me/project-a",
+          startedAt: "2026-07-10T10:00:00.000Z",
+        },
+        {
+          port: 47822,
+          pid: 124,
+          sessionFile: "/sessions/super-agent/session.jsonl",
+          cwd: "/Users/me/.pi/agent/super-agent",
+          startedAt: "2026-07-10T11:00:00.000Z",
+        },
+      ],
+      { superAgentPath: "/Users/me/.pi/agent/super-agent" },
+    );
+
+    expect(registry).toEqual({
+      projects: [
+        {
+          id: "/Users/me/project-a",
+          name: "project-a",
+          cwd: "/Users/me/project-a",
+          status: "running",
+          activePort: 47821,
+          lastActiveAt: "2026-07-10T10:00:00.000Z",
+        },
+      ],
     });
   });
 });

@@ -84,6 +84,24 @@ async function callTelegram<T>(
   return data.result;
 }
 
+const TELEGRAM_COMMANDS = [
+  { command: "new", description: "Start a new pi session" },
+  { command: "stop", description: "Abort the current turn" },
+  { command: "status", description: "Show current session status" },
+  { command: "tasks", description: "List recent Agent Index tasks" },
+  { command: "agents", description: "List Agent Index target agents" },
+  { command: "task", description: "Show a task: /task <id>" },
+  { command: "compact", description: "Compact the current session" },
+  { command: "models", description: "List available models" },
+  { command: "health", description: "Show Picot operations health" },
+  { command: "errors", description: "Show recent operations errors" },
+  { command: "help", description: "Show all Picot commands" },
+] as const;
+
+export async function syncTelegramCommandMenu(botToken: string): Promise<void> {
+  await callTelegram<boolean>(botToken, "setMyCommands", { commands: TELEGRAM_COMMANDS });
+}
+
 async function downloadTelegramFile(
   conversation: ResolvedConversation,
   botToken: string,
@@ -187,6 +205,15 @@ export async function connectTelegramLive(
   resumeState?: ResumeState,
 ): Promise<LiveConnection> {
   const account = conversation.account as TelegramAccountConfig;
+  try {
+    await syncTelegramCommandMenu(account.botToken);
+  } catch (error) {
+    await handlers.onError(
+      new Error(
+        `Telegram command menu sync failed: ${error instanceof Error ? error.message : String(error)}`,
+      ),
+    );
+  }
   let abort = false;
   let offset = resumeState?.cursor ? Number(resumeState.cursor) + 1 : 0;
   const pollController = new AbortController();
@@ -386,7 +413,7 @@ export async function connectTelegramLive(
       firstForm.set("chat_id", String(Number(conversation.channel.id)));
       if (replyToMessageId) firstForm.set("reply_to_message_id", String(Number(replyToMessageId)));
       if (text) firstForm.set("caption", text);
-      if (text && firstKind === "image") firstForm.set("parse_mode", "Markdown");
+      if (text && firstKind === "image") firstForm.set("parse_mode", "HTML");
       firstForm.set(
         firstField,
         new Blob([Buffer.from(first.data)], { type: first.mimeType }),

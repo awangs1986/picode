@@ -318,6 +318,59 @@ type RunningInstanceInfo = {
   startedAt?: string;
 };
 
+type SuperAgentProjectRegistryOptions = {
+  superAgentPath?: string;
+};
+
+export function buildSuperAgentProjectRegistry(
+  instances: RunningInstanceInfo[],
+  options: SuperAgentProjectRegistryOptions = {},
+) {
+  const superAgentPath = normalizeProjectPath(
+    options.superAgentPath || path.join(PI_AGENT_ROOT, "super-agent"),
+  );
+  const projects = new Map<
+    string,
+    {
+      id: string;
+      name: string;
+      cwd: string;
+      status: "running";
+      activePort: number;
+      lastActiveAt?: string;
+    }
+  >();
+
+  for (const instance of instances) {
+    const cwd = normalizeProjectPath(instance.cwd);
+    if (!cwd || cwd === superAgentPath) continue;
+    const existing = projects.get(cwd);
+    if (existing && compareIso(instance.startedAt, existing.lastActiveAt) <= 0) continue;
+    projects.set(cwd, {
+      id: cwd,
+      name: path.basename(cwd) || cwd,
+      cwd,
+      status: "running",
+      activePort: instance.port,
+      lastActiveAt: instance.startedAt,
+    });
+  }
+
+  return {
+    projects: [...projects.values()].sort((a, b) => compareIso(b.lastActiveAt, a.lastActiveAt)),
+  };
+}
+
+function normalizeProjectPath(projectPath: unknown): string {
+  return String(projectPath || "").replace(/\/+$/, "");
+}
+
+function compareIso(a: string | undefined, b: string | undefined): number {
+  const left = Date.parse(a || "");
+  const right = Date.parse(b || "");
+  return (Number.isNaN(left) ? 0 : left) - (Number.isNaN(right) ? 0 : right);
+}
+
 type ChatWorkerStatusInfo = {
   state?: string;
   sessionFile?: string;
@@ -816,7 +869,11 @@ async function runModelHealthCheck(
     try {
       const unsubscribe = session.subscribe((event: unknown) => {
         const evt = event as {
-          assistantMessageEvent?: { type?: string; delta?: string; content?: unknown };
+          assistantMessageEvent?: {
+            type?: string;
+            delta?: string;
+            content?: unknown;
+          };
         };
         if (
           evt.assistantMessageEvent?.type === "text_delta" &&
@@ -1996,6 +2053,15 @@ export default function (pi: ExtensionAPI) {
         "Access-Control-Allow-Origin": "*",
       });
       res.end(JSON.stringify({ instances: getRunningInstances() }));
+      return;
+    }
+
+    if (urlPath === "/api/super-agent/projects" && req.method === "GET") {
+      res.writeHead(200, {
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "*",
+      });
+      res.end(JSON.stringify(buildSuperAgentProjectRegistry(getRunningInstances())));
       return;
     }
 

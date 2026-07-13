@@ -40,7 +40,7 @@ export function renderMarkdown(text) {
 
   // Extract code blocks first to protect them
   const codeBlocks = [];
-  text = text.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
+  text = text.replace(/```([\w-]*)\n([\s\S]*?)```/g, (_, lang, code) => {
     const idx = codeBlocks.length;
     codeBlocks.push({ lang, code: code.replace(/\n$/, "") });
     return `%%CODEBLOCK_${idx}%%`;
@@ -95,8 +95,11 @@ export function renderMarkdown(text) {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
 
-    // Code block placeholder
-    const codeMatch = line.match(/^%%CODEBLOCK_(\d+)%%$/);
+    // Code block placeholder. Fenced blocks are sometimes nested directly
+    // under a list marker (`- ```...```), which leaves the marker in front of
+    // our internal placeholder after extraction. Treat that as a block rather
+    // than leaking the implementation token into rendered output.
+    const codeMatch = line.match(/^\s*(?:(?:[-*+]|\d+\.)\s+)?%%CODEBLOCK_(\d+)%%\s*$/);
     if (codeMatch) {
       flushList();
       flushBlockquote();

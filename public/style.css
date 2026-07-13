@@ -3158,6 +3158,7 @@ body {
   flex-direction: column;
   align-items: flex-start;
   gap: 4px;
+  min-width: 0;
   max-width: 85%;
   flex-shrink: 0;
   animation: msgIn 0.25s var(--ease);
@@ -3169,6 +3170,8 @@ body {
 
 .message .message-content {
   min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .message.history {
@@ -3395,6 +3398,10 @@ body {
 
 .code-block-wrapper {
   position: relative;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
   margin: 8px 0;
   border-radius: var(--radius);
   overflow: hidden;
@@ -3453,6 +3460,8 @@ pre {
 }
 
 .code-block-wrapper pre {
+  max-width: 100%;
+  box-sizing: border-box;
   border-radius: 0;
 }
 
@@ -4790,8 +4799,7 @@ body.is-resizing-side-panel {
   display: flex;
   align-items: center;
   gap: 6px;
-  min-height: 52px;
-  padding: 12px 14px;
+  padding: 6px 14px;
   flex-shrink: 0;
 }
 
@@ -5895,32 +5903,21 @@ body.super-agent-active .file-sidebar {
   display: flex;
   align-items: center;
   gap: 7px;
+  position: relative;
 }
 
-.runtime-status-badge {
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  padding: 1px 6px;
-  border-radius: var(--radius-pill);
-  flex-shrink: 0;
+.runtime-quick-actions {
+  display: none;
+  align-items: center;
+  gap: 4px;
+  position: absolute;
+  right: 18px;
+  background: var(--bg-solid);
 }
 
-.runtime-task-card.status-done .runtime-status-badge {
-  background: rgba(52, 211, 153, 0.15);
-  color: #34d399;
-}
-.runtime-task-card.status-running .runtime-status-badge {
-  background: rgba(251, 146, 60, 0.15);
-  color: #fb923c;
-}
-.runtime-task-card.status-pending .runtime-status-badge {
-  background: rgba(148, 163, 184, 0.15);
-  color: var(--text-dim);
-}
-.runtime-task-card.status-failed .runtime-status-badge {
-  background: rgba(248, 113, 113, 0.15);
-  color: #f87171;
+.runtime-task-card:hover .runtime-quick-actions,
+.runtime-task-card:focus-within .runtime-quick-actions {
+  display: inline-flex;
 }
 
 .runtime-status-dot {
@@ -6039,6 +6036,55 @@ body.super-agent-active .file-sidebar {
   padding: 5px 8px;
 }
 
+.runtime-project-picker {
+  display: grid;
+  gap: 5px;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.runtime-project-select {
+  width: 100%;
+  min-height: 28px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 11px;
+  padding: 4px 7px;
+}
+
+.runtime-task-form {
+  display: grid;
+  gap: 8px;
+}
+
+.runtime-task-form label {
+  display: grid;
+  gap: 4px;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.runtime-task-form input,
+.runtime-task-form select,
+.runtime-task-form textarea {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 11px;
+  padding: 5px 7px;
+}
+
+.runtime-task-form textarea {
+  min-height: 72px;
+  resize: vertical;
+}
+
 .runtime-task-error {
   font-size: 11px;
   color: #f87171;
@@ -6048,11 +6094,47 @@ body.super-agent-active .file-sidebar {
   word-break: break-word;
 }
 
+.runtime-task-history {
+  display: grid;
+  gap: 6px;
+}
+
+.runtime-task-history-list {
+  display: grid;
+  gap: 6px;
+  border-left: 1px solid var(--border);
+  padding-left: 8px;
+}
+
+.runtime-task-history-item {
+  display: grid;
+  gap: 2px;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.runtime-task-history-item strong {
+  color: var(--text-secondary);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.runtime-task-history-item p {
+  margin: 0;
+  color: var(--text-secondary);
+  word-break: break-word;
+}
+
 .runtime-approve-row {
   display: flex;
   align-items: center;
   gap: 6px;
   margin-top: 2px;
+}
+
+.runtime-form-actions {
+  display: flex;
+  gap: 6px;
 }
 
 /* Reuse sa-btn styles from existing CSS, or define here */
@@ -6239,6 +6321,31 @@ body.super-agent-active .file-sidebar {
 
 .sa-btn:hover {
   opacity: 0.8;
+}
+
+.runtime-quick-actions .sa-btn {
+  padding: 2px 6px;
+  font-size: 10px;
+}
+
+.runtime-task-history > .sa-btn {
+  justify-self: flex-start;
+}
+
+.runtime-bulk-actions {
+  display: flex;
+  gap: 6px;
+  padding: 0 14px 8px;
+  flex-shrink: 0;
+}
+
+.runtime-bulk-actions .sa-btn {
+  flex: 1;
+}
+
+.runtime-bulk-actions .sa-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .sa-btn-approve {

@@ -298,22 +298,31 @@ export class MessageRenderer {
 
     // Add footer (usage + copy button) after streaming finishes
     if (!messageElement.querySelector(".message-footer")) {
+      const copyableText = this.getCopyableText(messageElement);
+      const hasUsage = Boolean(usage?.cost && usage.cost.total > 0);
+      if (!copyableText && !hasUsage) {
+        messageElement.remove();
+        return;
+      }
+
       const footer = document.createElement("div");
       footer.className = "message-footer";
 
-      if (usage?.cost && usage.cost.total > 0) {
+      if (hasUsage) {
         const span = document.createElement("span");
         span.className = "message-usage";
         span.textContent = `$${usage.cost.total.toFixed(4)}`;
         footer.appendChild(span);
       }
 
-      const btn = document.createElement("button");
-      btn.className = "message-copy-btn";
-      btn.setAttribute("aria-label", "Copy message");
-      btn.innerHTML =
-        '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
-      footer.appendChild(btn);
+      if (copyableText) {
+        const btn = document.createElement("button");
+        btn.className = "message-copy-btn";
+        btn.setAttribute("aria-label", "Copy message");
+        btn.innerHTML =
+          '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+        footer.appendChild(btn);
+      }
 
       messageElement.appendChild(footer);
       this._setupCopyBtn(messageElement);
@@ -340,9 +349,8 @@ export class MessageRenderer {
     const btn = messageEl.querySelector(".message-copy-btn");
     if (!btn) return;
     btn.addEventListener("click", () => {
-      const content = messageEl.querySelector(".message-content");
-      if (!content) return;
-      const text = content.textContent;
+      const text = this.getCopyableText(messageEl);
+      if (!text) return;
       // Fallback for non-HTTPS (LAN access)
       const copyText = (t) => {
         if (navigator.clipboard) return navigator.clipboard.writeText(t);
@@ -362,6 +370,16 @@ export class MessageRenderer {
         }, 1500);
       });
     });
+  }
+
+  getCopyableText(messageEl) {
+    const content = messageEl.querySelector(".message-content");
+    if (!content) return "";
+    const copyContent = content.cloneNode(true);
+    copyContent.querySelectorAll(".thinking-block").forEach((block) => {
+      block.remove();
+    });
+    return copyContent.textContent.trim();
   }
 
   highlightTextNode(node, pattern, onMatch) {

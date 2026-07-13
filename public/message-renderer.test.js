@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MessageRenderer } from "./message-renderer.js";
 
 describe("MessageRenderer streaming markdown preview", () => {
@@ -28,6 +28,15 @@ describe("MessageRenderer streaming markdown preview", () => {
     expect(content.innerHTML).toContain("<code>code</code>");
   });
 
+  it("does not add a copy footer to empty finalized streaming messages", () => {
+    const el = renderer.renderAssistantMessage({ content: "" }, true);
+
+    renderer.finalizeStreamingMessage(el);
+
+    expect(el.querySelector(".message-footer")).toBeNull();
+    expect(el.querySelector(".message-copy-btn")).toBeNull();
+  });
+
   it("keeps a partial code block previewing as a code block", () => {
     const el = renderer.renderAssistantMessage({ content: "" }, true);
     renderer.updateStreamingMessage(el, "```js\nconst a = 1;");
@@ -52,6 +61,29 @@ describe("MessageRenderer streaming markdown preview", () => {
 
     const content = el.querySelector(".message-content");
     expect(content.querySelector("script")).toBeNull();
+  });
+
+  it("copies assistant text without thinking label or content", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+
+    const el = renderer.renderAssistantMessage(
+      {
+        content: [
+          { type: "thinking", thinking: "private reasoning" },
+          { type: "text", text: "Visible answer" },
+        ],
+      },
+      false,
+      true,
+    );
+
+    el.querySelector(".message-copy-btn").click();
+
+    expect(writeText).toHaveBeenCalledWith("Visible answer");
   });
 
   it("highlights keyword matches across rendered messages", () => {

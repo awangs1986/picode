@@ -36,6 +36,14 @@ import { ensureSuperAgentSession } from "./super-agent-bootstrap.js";
 import { getRunningSuperAgentPorts, isSuperAgentSession } from "./super-agent-session.js";
 import { isSuperAgentEnabled } from "./super-agent-settings.js";
 import { planSuperAgentShutdown } from "./super-agent-stop-plan.js";
+import {
+  buildProjectAgentPrompt,
+  buildSuperAgentNotificationPrompt,
+  buildTaskComposerPrompt,
+  markTaskFinished,
+  markTaskForDispatch,
+  normalizeSuperAgentTasks,
+} from "./super-agent-task-state.js";
 import { applyTheme, getCurrentTheme, themes } from "./themes.js";
 import { ToolCardRenderer } from "./tool-card.js";
 import { initTransport } from "./transport.js";
@@ -198,6 +206,9 @@ window.__saNav = {
 
 // <super-agent-runtime> fires 'sa-dispatch' when the user approves a task.
 document.addEventListener("sa-dispatch", (e) => dispatchSuperAgentTask(e.detail));
+document.addEventListener("sa-ask", (e) => notifySuperAgentClarification(e.detail));
+document.addEventListener("sa-prompt-task", (e) => insertTaskPrompt(e.detail));
+document.addEventListener("sa-view-session", (e) => viewSuperAgentChildSession(e.detail));
 
 // <sa-chat-header> service buttons open Settings > Chat tab
 window.__saOpenSettings = () => {
@@ -273,7 +284,7 @@ async function stopSuperAgentInstances() {
     ),
   );
   if (shutdown.navigateToPort) {
-    const dismiss = showSwapOverlay("Closing Super Agent...");
+    const dismiss = showSwapOverlay("Closing Agent Inbox...");
     try {
       const url = new URL(withBrokerWs(buildWorkspaceUrl(shutdown.navigateToPort), transport));
       if (shutdown.portsToStopAfterNavigation.length > 0) {
@@ -324,6 +335,15 @@ const sendBtn = document.getElementById("send-btn");
 const abortBtn = document.getElementById("abort-btn");
 const statusIndicator = document.getElementById("status-indicator");
 const statusText = document.getElementById("status-text");
+
+function insertTaskPrompt(task) {
+  if (!task) return;
+  const draft = messageInput.value.trim();
+  messageInput.value = `${buildTaskComposerPrompt(task)}${draft ? `\n${draft}` : ""}`;
+  messageInput.style.height = "auto";
+  messageInput.style.height = `${Math.min(messageInput.scrollHeight, 160)}px`;
+  messageInput.focus();
+}
 const openFolderBtn = document.getElementById("open-folder-btn");
 const sidebarEl = document.getElementById("sidebar");
 const sidebarToggle = document.getElementById("sidebar-toggle");
@@ -1000,13 +1020,18 @@ async function dispatchSuperAgentTask(task) {
     });
     // Use the current port as the super-agent port if not set by the agent
     const saPort = task.superAgentPort || getCurrentPort();
-    dispatchedTasks.set(newPort, {
-      taskId: task.id,
+    const dispatchTask = markTaskForDispatch(task, {
       superAgentPort: saPort,
-      title: task.title,
+      childPort: newPort,
+    });
+    await updateSuperAgentTask(saPort, dispatchTask.id, () => dispatchTask);
+    dispatchedTasks.set(newPort, {
+      taskId: dispatchTask.id,
+      superAgentPort: saPort,
+      title: dispatchTask.title,
     });
     // Send the task description as the first message to the new session
-    const msg = `${task.title}\n\n${task.description || ""}`.trim();
+    const msg = buildProjectAgentPrompt(dispatchTask);
     await fetch(`http://localhost:${newPort}/api/rpc`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1019,30 +1044,25 @@ async function dispatchSuperAgentTask(task) {
 
 async function notifySuperAgent(port, taskId, title, status, failReason) {
   if (!port) return;
-  // Update the task status in tasks.json directly
+  const summary =
+    status === "done"
+      ? "Project agent ended. Review the child session for details."
+      : failReason || "Project agent reported a failure.";
+  let updatedTask = null;
+  // Update the task status in tasks.json directly.
   try {
-    const res = await fetch(`http://localhost:${port}/api/super-agent/tasks`);
-    if (res.ok) {
-      const data = await res.json();
-      const task = (data.tasks || []).find((t) => t.id === taskId);
-      if (task) {
-        task.status = status;
-        if (failReason) task.failReason = failReason;
-        await fetch(`http://localhost:${port}/api/super-agent/tasks`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(data),
-        });
-      }
-    }
+    updatedTask = await updateSuperAgentTask(port, taskId, (task) =>
+      markTaskFinished(task, { status, summary, failReason }),
+    );
   } catch (e) {
     console.warn("[SuperAgent] task status update failed:", e);
   }
   // Also notify the SA agent via chat so it can reply to the original sender
-  const msg =
-    status === "done"
-      ? `Task completed: "${title}" (id: ${taskId})`
-      : `Task failed: "${title}" (id: ${taskId})\nReason: ${failReason || "Unknown error"}`;
+  const msg = buildSuperAgentNotificationPrompt(updatedTask || { id: taskId, title }, {
+    status,
+    summary,
+    failReason,
+  });
   try {
     await fetch(`http://localhost:${port}/api/rpc`, {
       method: "POST",
@@ -1052,6 +1072,63 @@ async function notifySuperAgent(port, taskId, title, status, failReason) {
   } catch (e) {
     console.warn("[SuperAgent] notify failed:", e);
   }
+}
+
+async function notifySuperAgentClarification(task) {
+  const port = task?.dispatch?.superAgentPort || task?.superAgentPort || getCurrentPort();
+  if (!port || !task) return;
+  const msg = buildSuperAgentNotificationPrompt(task, {
+    status: "needs_input",
+    failReason: task.result?.failReason || task.failReason,
+  });
+  try {
+    await fetch(`http://localhost:${port}/api/rpc`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type: "prompt", message: msg }),
+    });
+  } catch (e) {
+    console.warn("[SuperAgent] clarification notify failed:", e);
+  }
+}
+
+async function viewSuperAgentChildSession(task) {
+  const childPort = Number(task?.dispatch?.childPort || task?.childPort);
+  if (!Number.isFinite(childPort) || childPort <= 0) return;
+
+  await pollInstances().catch(() => {});
+  const childInstance = liveInstances.find((instance) => instance?.port === childPort);
+  if (!childInstance) return;
+
+  const sessionFile = childInstance.sessionFile;
+  if (sessionFile) {
+    const projects = await sidebar.loadSessions().catch(() => sidebar.projects || []);
+    for (const project of projects || []) {
+      const session = (project.sessions || []).find((item) => item.filePath === sessionFile);
+      if (session) {
+        await switchSession(sessionFile, session, project);
+        return;
+      }
+    }
+  }
+
+  navigateInWindow(withBrokerWs(buildWorkspaceUrl(childPort), transport));
+}
+
+async function updateSuperAgentTask(port, taskId, updateTask) {
+  const res = await fetch(`http://localhost:${port}/api/super-agent/tasks`);
+  if (!res.ok) return null;
+  const data = await res.json();
+  const tasks = normalizeSuperAgentTasks(data.tasks || []);
+  const index = tasks.findIndex((task) => task.id === taskId);
+  if (index < 0) return null;
+  tasks[index] = updateTask(tasks[index]);
+  await fetch(`http://localhost:${port}/api/super-agent/tasks`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...data, tasks }),
+  });
+  return tasks[index];
 }
 
 function handleCompactionEnd(event) {
@@ -2223,7 +2300,7 @@ async function activateNewParallelSession(port, cwd) {
 
 async function newSession() {
   if (isSuperAgentSession(null, { path: getCurrentWorkspacePath() }, superAgentPath)) {
-    messageRenderer.renderSystemMessage("Super Agent uses one shared session.");
+    messageRenderer.renderSystemMessage("Agent Inbox uses one shared session.");
     return;
   }
 

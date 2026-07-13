@@ -23,7 +23,7 @@ describe("super agent session helpers", () => {
     ).toMatchObject({
       filePath: "/new.jsonl",
       kind: "super-agent",
-      name: "Super Agent",
+      name: "Agent Inbox",
     });
   });
 
@@ -51,7 +51,7 @@ describe("super agent session helpers", () => {
     ).toMatchObject({
       filePath: "/chat-listener.jsonl",
       kind: "super-agent",
-      name: "Super Agent",
+      name: "Agent Inbox",
     });
   });
 

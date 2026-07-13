@@ -630,7 +630,7 @@ export class SessionSidebar {
     header.className = "project-header super-agent-pinned-header";
     header.innerHTML = `
       <span class="fav-star">★</span>
-      <span>Super Agent</span>
+      <span>Agent Inbox</span>
       <span class="project-count">Pinned</span>
     `;
     group.appendChild(header);
