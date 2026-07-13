@@ -53,10 +53,24 @@ export function setupSettingsEditors({
     return String(value).replace(/["\\]/g, "\\$&");
   }
 
+  function getProviderModels(provider) {
+    return Array.isArray(provider.models) ? provider.models : [];
+  }
+
   function buildApiKeyRow(p) {
     const row = document.createElement("div");
     row.className = "api-key-row";
     row.dataset.provider = p.provider;
+
+    const header = document.createElement("div");
+    header.className = "api-key-row-header";
+
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "api-provider-toggle";
+    toggle.setAttribute("aria-label", `Toggle ${p.displayName || p.provider} models`);
+    toggle.setAttribute("aria-expanded", "false");
+    toggle.textContent = "⌄";
 
     const info = document.createElement("div");
     info.className = "api-key-row-info";
@@ -75,6 +89,18 @@ export function setupSettingsEditors({
     setBtn.type = "button";
     setBtn.textContent = p.configured ? "Update" : "Set key";
     setBtn.addEventListener("click", () => openApiKeyEditor(row, p));
+
+    const models = getProviderModels(p);
+    const hasConfiguredModels = p.configured && models.length > 0;
+    if (hasConfiguredModels) {
+      const checkHealthBtn = document.createElement("button");
+      checkHealthBtn.type = "button";
+      checkHealthBtn.className = "api-model-check-visible api-key-row-health-check";
+      checkHealthBtn.textContent = "Check health";
+      checkHealthBtn.disabled = !models.some((model) => model.visible !== false && model.available);
+      checkHealthBtn.addEventListener("click", () => checkModelHealth(p.provider));
+      actions.appendChild(checkHealthBtn);
+    }
     actions.appendChild(setBtn);
     if (p.configured && p.source === "stored") {
       const removeBtn = document.createElement("button");
@@ -85,10 +111,27 @@ export function setupSettingsEditors({
       actions.appendChild(removeBtn);
     }
 
-    row.appendChild(info);
-    row.appendChild(actions);
-    const modelList = buildModelList(p);
-    if (modelList) row.appendChild(modelList);
+    const modelList = hasConfiguredModels ? buildModelList(p) : null;
+    header.appendChild(toggle);
+    header.appendChild(info);
+    if (hasConfiguredModels) {
+      const summary = document.createElement("div");
+      summary.className = "api-key-row-summary";
+      summary.textContent = describeProviderSummary(models);
+      header.appendChild(summary);
+    }
+    header.appendChild(actions);
+    row.appendChild(header);
+    if (modelList) {
+      toggle.setAttribute("aria-expanded", "true");
+      toggle.addEventListener("click", () => {
+        modelList.hidden = !modelList.hidden;
+        toggle.setAttribute("aria-expanded", String(!modelList.hidden));
+      });
+      row.appendChild(modelList);
+    } else {
+      toggle.hidden = true;
+    }
     return row;
   }
 
@@ -96,33 +139,32 @@ export function setupSettingsEditors({
     const wrap = document.createElement("div");
     wrap.className = "api-model-list";
 
-    const models = Array.isArray(p.models) ? p.models : [];
+    const models = getProviderModels(p);
     if (models.length === 0) {
       return null;
     }
 
     const bulkActions = document.createElement("div");
     bulkActions.className = "api-model-list-actions";
-    const unhealthyModels = models.filter(
-      (model) => model.visible !== false && model.health?.status === "unhealthy",
+    const hiddenHealthyModels = models.filter(
+      (model) => model.visible === false && model.health?.status === "healthy",
     );
-    const checkVisible = document.createElement("button");
-    checkVisible.type = "button";
-    checkVisible.className = "api-model-check-visible";
-    checkVisible.textContent = "Check visible models";
-    checkVisible.disabled = !models.some((model) => model.visible && model.available);
-    checkVisible.addEventListener("click", () => checkModelHealth(p.provider));
-    const disableUnhealthy = document.createElement("button");
-    disableUnhealthy.type = "button";
-    disableUnhealthy.className = "api-model-disable-unhealthy";
-    disableUnhealthy.textContent = "Disable unhealthy";
-    disableUnhealthy.disabled = unhealthyModels.length === 0;
-    disableUnhealthy.addEventListener("click", () =>
-      disableUnhealthyModels(p.provider, unhealthyModels),
+    const enableHealthy = document.createElement("button");
+    enableHealthy.type = "button";
+    enableHealthy.className = "api-model-disable-unhealthy";
+    enableHealthy.textContent = "Enable healthy models";
+    enableHealthy.disabled = hiddenHealthyModels.length === 0;
+    enableHealthy.addEventListener("click", () =>
+      enableHealthyModels(p.provider, hiddenHealthyModels),
     );
-    bulkActions.appendChild(disableUnhealthy);
-    bulkActions.appendChild(checkVisible);
+    bulkActions.appendChild(enableHealthy);
     wrap.appendChild(bulkActions);
+
+    const columnLabels = document.createElement("div");
+    columnLabels.className = "api-model-list-heading";
+    columnLabels.innerHTML =
+      "<span></span><span>Model</span><span>Context</span><span>Enabled</span>";
+    wrap.appendChild(columnLabels);
 
     for (const model of models) {
       wrap.appendChild(buildModelRow(model));
@@ -130,13 +172,13 @@ export function setupSettingsEditors({
     return wrap;
   }
 
-  async function disableUnhealthyModels(provider, models) {
+  async function enableHealthyModels(provider, models) {
     for (const model of models) {
       await rpcCommand({
         type: "set_model_visibility",
         provider,
         modelId: model.id,
-        visible: false,
+        visible: true,
       });
     }
     await onModelConfigurationChanged?.();
@@ -168,11 +210,16 @@ export function setupSettingsEditors({
     const actions = document.createElement("div");
     actions.className = "api-model-actions";
 
+    const context = document.createElement("span");
+    context.className = "api-model-context";
+    context.textContent = model.contextWindow ? `${Math.round(model.contextWindow / 1000)}k` : "—";
+
     const visibilityLabel = document.createElement("label");
     visibilityLabel.className = "api-model-visibility";
     const visibility = document.createElement("input");
     visibility.type = "checkbox";
     visibility.className = "api-model-visibility-toggle";
+    visibility.setAttribute("aria-label", `Enable ${model.name || model.id}`);
     visibility.checked = model.visible !== false;
     visibility.addEventListener("change", async () => {
       visibility.disabled = true;
@@ -191,12 +238,13 @@ export function setupSettingsEditors({
       }
     });
     visibilityLabel.appendChild(visibility);
-    visibilityLabel.appendChild(document.createTextNode("Show"));
 
     const healthBtn = document.createElement("button");
     healthBtn.type = "button";
     healthBtn.className = "api-model-health-check";
-    healthBtn.textContent = "Check health";
+    healthBtn.textContent = "↻";
+    healthBtn.setAttribute("aria-label", `Check health for ${model.name || model.id}`);
+    healthBtn.title = "Check health";
     healthBtn.disabled = !model.available;
     healthBtn.addEventListener("click", () => checkModelHealth(model.provider, model.id, row));
 
@@ -205,6 +253,7 @@ export function setupSettingsEditors({
 
     row.appendChild(healthDot);
     row.appendChild(label);
+    row.appendChild(context);
     row.appendChild(actions);
     return row;
   }
@@ -212,9 +261,15 @@ export function setupSettingsEditors({
   function describeModelStatus(model) {
     const parts = [];
     if (!model.available) parts.push("No key available");
-    if (model.contextWindow) parts.push(`${Math.round(model.contextWindow / 1000)}k context`);
     parts.push(describeModelHealth(model.health || { status: "unknown" }));
     return parts.join(" · ");
+  }
+
+  function describeProviderSummary(models) {
+    const enabled = models.filter((model) => model.visible !== false).length;
+    const healthy = models.filter((model) => model.health?.status === "healthy").length;
+    const issues = models.filter((model) => model.health?.status === "unhealthy").length;
+    return `${enabled} enabled · ${healthy} healthy · ${issues} issues`;
   }
 
   function describeModelHealth(health) {

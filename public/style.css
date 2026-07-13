@@ -2245,47 +2245,79 @@ body {
 }
 
 .api-key-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-  padding: 10px 12px;
+  overflow: hidden;
   background: var(--bg-glass);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
 }
 
+.api-key-row-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 46px;
+  padding: 8px 12px;
+}
+
+.api-provider-toggle {
+  width: 20px;
+  padding: 0;
+  color: var(--text-dim);
+  font-size: 18px;
+  line-height: 1;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.api-provider-toggle[aria-expanded="false"] {
+  transform: rotate(-90deg);
+}
+
 .api-key-row-info {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
+  align-items: center;
+  gap: 7px;
   min-width: 0;
-  flex: 1;
 }
 
 .api-key-row-name {
   font-size: 13px;
+  font-weight: 600;
   color: var(--text-primary);
 }
 
 .api-key-row-status {
-  font-size: 11px;
   color: var(--text-dim);
+  padding: 2px 7px;
+  font-size: 10px;
+  background: var(--bg-glass-strong, var(--bg-glass));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  white-space: nowrap;
+}
+
+.api-key-row-summary {
+  color: var(--text-dim);
+  font-size: 11px;
+  white-space: nowrap;
 }
 
 .api-key-row-status.configured {
-  color: var(--accent, #4caf50);
+  color: var(--accent-text, var(--accent, #4caf50));
+  background: var(--accent-subtle);
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
 }
 
 .api-key-row-actions {
   display: flex;
   gap: 6px;
+  margin-left: auto;
   flex-shrink: 0;
 }
 
 .api-key-row-actions button {
-  padding: 4px 10px;
+  padding: 5px 9px;
   background: var(--bg-glass-strong, var(--bg-glass));
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
@@ -2308,14 +2340,16 @@ body {
   width: 100%;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding-top: 8px;
+  gap: 0;
   border-top: 1px solid var(--border);
 }
 
 .api-model-list-actions {
   display: flex;
   justify-content: flex-end;
+  padding: 7px 12px;
+  background: var(--bg-glass-strong, var(--bg-glass));
+  border-bottom: 1px solid var(--border);
 }
 
 .api-model-check-visible,
@@ -2337,13 +2371,31 @@ body {
   opacity: 0.5;
 }
 
+.api-model-list-heading,
 .api-model-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) 58px 70px;
   align-items: center;
-  gap: 8px;
-  padding: 7px 8px;
-  border-radius: var(--radius-sm);
-  background: var(--bg-glass);
+  column-gap: 8px;
+}
+
+.api-model-list-heading {
+  padding: 7px 12px 5px;
+  color: var(--text-dim);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.api-model-list-heading span:last-child {
+  justify-self: center;
+}
+
+.api-model-row {
+  min-height: 44px;
+  padding: 6px 12px;
+  border-top: 1px solid var(--border);
 }
 
 .api-model-health-dot {
@@ -2371,7 +2423,6 @@ body {
 
 .api-model-label {
   min-width: 0;
-  flex: 1;
 }
 
 .api-model-name {
@@ -2389,19 +2440,34 @@ body {
   font-size: 10px;
 }
 
+.api-model-context {
+  padding: 3px 5px;
+  color: var(--text-dim);
+  font-family: "SF Mono", "Menlo", "Monaco", monospace;
+  font-size: 10px;
+  text-align: center;
+  background: var(--bg-glass-strong, var(--bg-glass));
+  border-radius: var(--radius-sm);
+}
+
 .api-model-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  justify-content: center;
+  gap: 5px;
   flex-shrink: 0;
 }
 
 .api-model-visibility {
   display: flex;
   align-items: center;
-  gap: 4px;
-  color: var(--text-dim);
-  font-size: 11px;
+  gap: 0;
+}
+
+.api-model-health-check {
+  width: 22px;
+  padding: 2px;
+  line-height: 1;
 }
 
 .api-key-editor {
@@ -2723,7 +2789,7 @@ body {
   }
 
   .settings-extension-row,
-  .api-key-row {
+  .api-key-row-header {
     flex-direction: column;
     align-items: flex-start;
     gap: 10px;
@@ -2734,6 +2800,10 @@ body {
     width: 100%;
     justify-content: flex-end;
     flex-wrap: wrap;
+  }
+
+  .api-key-row-summary {
+    margin-left: 28px;
   }
 
   .pkg-browse-filters {

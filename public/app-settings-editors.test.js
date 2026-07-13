@@ -122,6 +122,63 @@ describe("settings API key model refresh", () => {
     expect(document.querySelector(".api-model-row")?.textContent).toContain("claude-sonnet-5");
     expect(document.querySelector(".api-model-health-dot.healthy")).not.toBeNull();
     expect(document.querySelector(".api-model-visibility-toggle").checked).toBe(true);
+    expect(document.querySelector(".api-model-health-status").textContent).not.toContain(
+      "200k context",
+    );
+  });
+
+  test("renders a compact provider card with health actions and collapsible models", async () => {
+    const rpcCommand = vi.fn(async (command) => {
+      if (command.type === "list_model_catalog") {
+        return {
+          success: true,
+          data: {
+            providers: [
+              {
+                provider: "anthropic",
+                displayName: "Anthropic",
+                configured: true,
+                source: "stored",
+                models: [
+                  {
+                    provider: "anthropic",
+                    id: "claude-sonnet-5",
+                    available: true,
+                    health: { status: "healthy" },
+                  },
+                ],
+              },
+            ],
+          },
+        };
+      }
+      throw new Error(`Unexpected command: ${command.type}`);
+    });
+
+    const { loadApiKeysPanel } = setupSettingsEditors({
+      rpcCommand,
+      closeSettings: vi.fn(),
+      onModelConfigurationChanged: vi.fn(),
+      clearSettingsSaveMessage: vi.fn(),
+      setSettingsSaveButtonSaving: vi.fn(),
+      showSettingsSaveError: vi.fn(),
+      showSettingsSaveSuccess: vi.fn(),
+    });
+
+    await loadApiKeysPanel();
+
+    expect(document.querySelector(".api-key-row-summary").textContent).toBe(
+      "1 enabled · 1 healthy · 0 issues",
+    );
+    expect(document.querySelector(".api-model-check-visible").textContent).toBe("Check health");
+    expect(document.querySelector(".api-key-row-health-check").disabled).toBe(false);
+    expect(document.querySelector(".api-model-disable-unhealthy").textContent).toBe(
+      "Enable healthy models",
+    );
+
+    document.querySelector(".api-provider-toggle").click();
+
+    expect(document.querySelector(".api-model-list").hidden).toBe(true);
   });
 
   test("does not render health controls when a provider has no keyed models", async () => {
@@ -135,7 +192,15 @@ describe("settings API key model refresh", () => {
                 provider: "openai",
                 displayName: "OpenAI",
                 configured: false,
-                models: [],
+                models: [
+                  {
+                    provider: "openai",
+                    id: "gpt-4.1",
+                    available: false,
+                    visible: false,
+                    health: { status: "unknown" },
+                  },
+                ],
               },
             ],
           },
@@ -161,6 +226,7 @@ describe("settings API key model refresh", () => {
     expect(document.querySelector(".api-model-row")).toBeNull();
     expect(document.querySelector(".api-model-health-check")).toBeNull();
     expect(document.querySelector(".api-model-check-visible")).toBeNull();
+    expect(document.querySelector(".api-key-row-summary")).toBeNull();
   });
 
   test("toggling model visibility persists and refreshes model info", async () => {
@@ -286,7 +352,7 @@ describe("settings API key model refresh", () => {
     );
   });
 
-  test("disables all visible unhealthy models for one provider", async () => {
+  test("enables all hidden healthy models for one provider", async () => {
     const onModelConfigurationChanged = vi.fn();
     const rpcCommand = vi.fn(async (command) => {
       if (command.type === "list_model_catalog") {
@@ -304,22 +370,22 @@ describe("settings API key model refresh", () => {
                     provider: "anthropic",
                     id: "claude-sonnet-5",
                     available: true,
-                    visible: true,
-                    health: { status: "unhealthy" },
+                    visible: false,
+                    health: { status: "healthy" },
                   },
                   {
                     provider: "anthropic",
                     id: "claude-haiku-5",
                     available: true,
                     visible: true,
-                    health: { status: "healthy" },
+                    health: { status: "unhealthy" },
                   },
                   {
                     provider: "anthropic",
                     id: "claude-opus-5",
                     available: true,
                     visible: false,
-                    health: { status: "unhealthy" },
+                    health: { status: "unknown" },
                   },
                 ],
               },
@@ -351,19 +417,19 @@ describe("settings API key model refresh", () => {
       type: "set_model_visibility",
       provider: "anthropic",
       modelId: "claude-sonnet-5",
-      visible: false,
+      visible: true,
     });
     expect(rpcCommand).not.toHaveBeenCalledWith({
       type: "set_model_visibility",
       provider: "anthropic",
       modelId: "claude-haiku-5",
-      visible: false,
+      visible: true,
     });
     expect(rpcCommand).not.toHaveBeenCalledWith({
       type: "set_model_visibility",
       provider: "anthropic",
       modelId: "claude-opus-5",
-      visible: false,
+      visible: true,
     });
     expect(onModelConfigurationChanged).toHaveBeenCalledTimes(1);
   });
