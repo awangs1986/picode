@@ -2344,6 +2344,10 @@ body {
   border-top: 1px solid var(--border);
 }
 
+.api-model-list[hidden] {
+  display: none;
+}
+
 .api-model-list-actions {
   display: flex;
   justify-content: flex-end;

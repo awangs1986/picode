@@ -12,4 +12,11 @@ describe("settings API key editor style", () => {
     expect(rule).toContain("background: var(--bg-glass-strong");
     expect(rule).not.toContain("#fff");
   });
+
+  test("hides collapsed provider model lists despite their flex layout", () => {
+    const rule = css.match(/\.api-model-list\[hidden\]\s*\{(?<body>[^}]+)\}/)?.groups?.body;
+
+    expect(rule).toBeTruthy();
+    expect(rule).toContain("display: none");
+  });
 });
