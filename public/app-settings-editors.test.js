@@ -172,12 +172,14 @@ describe("settings API key model refresh", () => {
       "1 enabled · 1 healthy · 0 issues",
     );
     expect(document.querySelector(".api-model-check-visible").textContent).toBe("Check health");
-    expect(document.querySelector(".api-key-row-health-check").disabled).toBe(false);
+    expect(
+      document.querySelector(".api-model-list-heading-actions .api-model-check-visible"),
+    ).not.toBeNull();
     expect(document.querySelector(".api-model-disable-unhealthy").textContent).toBe(
       "Disable unhealthy models",
     );
     expect(
-      document.querySelector(".api-key-row-actions .api-model-disable-unhealthy"),
+      document.querySelector(".api-model-list-heading-actions .api-model-disable-unhealthy"),
     ).not.toBeNull();
     expect(document.querySelector(".api-model-list-actions")).toBeNull();
 
@@ -462,7 +464,7 @@ describe("settings API key model refresh", () => {
 
     await loadApiKeysPanel();
     const providerRow = document.querySelector(".api-key-row");
-    document.querySelector(".api-key-row-health-check").click();
+    document.querySelector(".api-model-list-heading-actions .api-model-check-visible").click();
     await Promise.resolve();
 
     expect(rpcCommand).toHaveBeenCalledTimes(2);

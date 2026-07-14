@@ -88,27 +88,6 @@ export function setupSettingsEditors({
 
     const models = getProviderModels(p);
     const hasConfiguredModels = p.configured && models.length > 0;
-    if (hasConfiguredModels) {
-      const checkHealthBtn = document.createElement("button");
-      checkHealthBtn.type = "button";
-      checkHealthBtn.className = "api-model-check-visible api-key-row-health-check";
-      checkHealthBtn.textContent = "Check health";
-      checkHealthBtn.disabled = !models.some((model) => model.visible !== false && model.available);
-      checkHealthBtn.addEventListener("click", () => checkModelHealth(p.provider));
-      actions.appendChild(checkHealthBtn);
-
-      const disableUnhealthy = document.createElement("button");
-      disableUnhealthy.type = "button";
-      disableUnhealthy.className = "api-model-disable-unhealthy";
-      disableUnhealthy.textContent = "Disable unhealthy models";
-      disableUnhealthy.disabled = !models.some(
-        (model) => model.visible !== false && model.health?.status === "unhealthy",
-      );
-      disableUnhealthy.addEventListener("click", () =>
-        disableUnhealthyModels(p.provider, getVisibleUnhealthyModels(p.provider)),
-      );
-      actions.appendChild(disableUnhealthy);
-    }
     actions.appendChild(setBtn);
     if (p.configured && p.source === "stored") {
       const removeBtn = document.createElement("button");
@@ -168,8 +147,32 @@ export function setupSettingsEditors({
 
     const columnLabels = document.createElement("div");
     columnLabels.className = "api-model-list-heading";
-    columnLabels.innerHTML =
-      "<span></span><span>Model</span><span>Context</span><span>Enabled</span>";
+    const labels = document.createElement("div");
+    labels.className = "api-model-list-column-labels";
+    labels.innerHTML = "<span></span><span>Model</span><span>Context</span><span>Enabled</span>";
+    columnLabels.appendChild(labels);
+
+    const actions = document.createElement("div");
+    actions.className = "api-model-list-heading-actions";
+    const checkHealthBtn = document.createElement("button");
+    checkHealthBtn.type = "button";
+    checkHealthBtn.className = "api-model-check-visible";
+    checkHealthBtn.textContent = "Check health";
+    checkHealthBtn.disabled = !models.some((model) => model.visible !== false && model.available);
+    checkHealthBtn.addEventListener("click", () => checkModelHealth(p.provider));
+    const disableUnhealthy = document.createElement("button");
+    disableUnhealthy.type = "button";
+    disableUnhealthy.className = "api-model-disable-unhealthy";
+    disableUnhealthy.textContent = "Disable unhealthy models";
+    disableUnhealthy.disabled = !models.some(
+      (model) => model.visible !== false && model.health?.status === "unhealthy",
+    );
+    disableUnhealthy.addEventListener("click", () =>
+      disableUnhealthyModels(p.provider, getVisibleUnhealthyModels(p.provider)),
+    );
+    actions.appendChild(checkHealthBtn);
+    actions.appendChild(disableUnhealthy);
+    columnLabels.appendChild(actions);
     wrap.appendChild(columnLabels);
 
     for (const model of models) {
