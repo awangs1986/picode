@@ -176,6 +176,10 @@ describe("settings API key model refresh", () => {
     expect(document.querySelector(".api-model-disable-unhealthy").textContent).toBe(
       "Disable unhealthy models",
     );
+    expect(
+      document.querySelector(".api-key-row-actions .api-model-disable-unhealthy"),
+    ).not.toBeNull();
+    expect(document.querySelector(".api-model-list-actions")).toBeNull();
 
     document.querySelector(".api-provider-toggle").click();
 

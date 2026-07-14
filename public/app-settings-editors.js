@@ -96,6 +96,18 @@ export function setupSettingsEditors({
       checkHealthBtn.disabled = !models.some((model) => model.visible !== false && model.available);
       checkHealthBtn.addEventListener("click", () => checkModelHealth(p.provider));
       actions.appendChild(checkHealthBtn);
+
+      const disableUnhealthy = document.createElement("button");
+      disableUnhealthy.type = "button";
+      disableUnhealthy.className = "api-model-disable-unhealthy";
+      disableUnhealthy.textContent = "Disable unhealthy models";
+      disableUnhealthy.disabled = !models.some(
+        (model) => model.visible !== false && model.health?.status === "unhealthy",
+      );
+      disableUnhealthy.addEventListener("click", () =>
+        disableUnhealthyModels(p.provider, getVisibleUnhealthyModels(p.provider)),
+      );
+      actions.appendChild(disableUnhealthy);
     }
     actions.appendChild(setBtn);
     if (p.configured && p.source === "stored") {
@@ -153,22 +165,6 @@ export function setupSettingsEditors({
     if (models.length === 0) {
       return null;
     }
-
-    const bulkActions = document.createElement("div");
-    bulkActions.className = "api-model-list-actions";
-    const visibleUnhealthyModels = models.filter(
-      (model) => model.visible !== false && model.health?.status === "unhealthy",
-    );
-    const disableUnhealthy = document.createElement("button");
-    disableUnhealthy.type = "button";
-    disableUnhealthy.className = "api-model-disable-unhealthy";
-    disableUnhealthy.textContent = "Disable unhealthy models";
-    disableUnhealthy.disabled = visibleUnhealthyModels.length === 0;
-    disableUnhealthy.addEventListener("click", () =>
-      disableUnhealthyModels(p.provider, getVisibleUnhealthyModels(p.provider)),
-    );
-    bulkActions.appendChild(disableUnhealthy);
-    wrap.appendChild(bulkActions);
 
     const columnLabels = document.createElement("div");
     columnLabels.className = "api-model-list-heading";
