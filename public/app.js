@@ -2159,6 +2159,16 @@ document.addEventListener("keydown", (e) => {
       });
     }
   }
+
+  // Cmd+Shift+T (macOS) / Ctrl+Shift+T — Toggle Agent Inbox (Runtime panel).
+  if ((e.key === "t" || e.key === "T") && (e.metaKey || e.ctrlKey) && e.shiftKey && !e.altKey) {
+    e.preventDefault();
+    const runtimePanel = document.querySelector("super-agent-runtime");
+    if (runtimePanel) {
+      const collapsed = runtimePanel.classList.toggle("collapsed");
+      localStorage.setItem("sa-runtime-collapsed", collapsed ? "1" : "0");
+    }
+  }
 });
 
 function isInInput() {
