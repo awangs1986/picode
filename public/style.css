@@ -2268,7 +2268,7 @@ body {
 }
 
 .api-provider-toggle {
-  width: 20px;
+  width: 12px;
   padding: 0;
   color: var(--text-dim);
   font-size: 8px;
@@ -2377,13 +2377,14 @@ body {
 
 .api-model-row {
   display: grid;
-  grid-template-columns: 14px minmax(0, 1fr) 58px 70px;
+  grid-template-columns: 14px minmax(0, 1fr) max-content 58px 70px;
   align-items: center;
   column-gap: 8px;
 }
 
 .api-model-list-heading {
-  display: flex;
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) max-content 58px 70px;
   align-items: center;
   gap: 8px;
   padding: 7px 12px 5px;
@@ -2394,15 +2395,7 @@ body {
   text-transform: uppercase;
 }
 
-.api-model-list-column-labels {
-  display: grid;
-  grid-template-columns: 14px minmax(0, 1fr) 58px 70px;
-  flex: 1;
-  align-items: center;
-  column-gap: 8px;
-}
-
-.api-model-list-column-labels span:last-child {
+.api-model-list-heading > span:last-child {
   justify-self: center;
 }
 
@@ -2415,6 +2408,14 @@ body {
 .api-model-list-heading-actions .api-model-disable-unhealthy {
   padding: 3px 6px;
   font-size: 10px;
+}
+
+.api-model-context {
+  grid-column: 4;
+}
+
+.api-model-actions {
+  grid-column: 5;
 }
 
 .api-model-row {

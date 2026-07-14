@@ -147,10 +147,9 @@ export function setupSettingsEditors({
 
     const columnLabels = document.createElement("div");
     columnLabels.className = "api-model-list-heading";
-    const labels = document.createElement("div");
-    labels.className = "api-model-list-column-labels";
-    labels.innerHTML = "<span></span><span>Model</span><span>Context</span><span>Enabled</span>";
-    columnLabels.appendChild(labels);
+    const statusColumn = document.createElement("span");
+    const modelColumn = document.createElement("span");
+    modelColumn.textContent = "Model";
 
     const actions = document.createElement("div");
     actions.className = "api-model-list-heading-actions";
@@ -172,7 +171,11 @@ export function setupSettingsEditors({
     );
     actions.appendChild(checkHealthBtn);
     actions.appendChild(disableUnhealthy);
-    columnLabels.appendChild(actions);
+    const contextColumn = document.createElement("span");
+    contextColumn.textContent = "Context";
+    const enabledColumn = document.createElement("span");
+    enabledColumn.textContent = "Enabled";
+    columnLabels.append(statusColumn, modelColumn, actions, contextColumn, enabledColumn);
     wrap.appendChild(columnLabels);
 
     for (const model of models) {

@@ -182,6 +182,10 @@ describe("settings API key model refresh", () => {
       document.querySelector(".api-model-list-heading-actions .api-model-disable-unhealthy"),
     ).not.toBeNull();
     expect(document.querySelector(".api-model-list-actions")).toBeNull();
+    const heading = document.querySelector(".api-model-list-heading");
+    expect(heading.children[2].className).toBe("api-model-list-heading-actions");
+    expect(heading.children[3].textContent).toBe("Context");
+    expect(heading.children[4].textContent).toBe("Enabled");
 
     document.querySelector(".api-provider-toggle").click();
 
