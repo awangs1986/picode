@@ -16,8 +16,8 @@ class ChatSettingsPanel extends HTMLElement {
           <div class="settings-section-title">Agent Inbox</div>
           <div class="settings-row" id="setting-super-agent">
             <span class="settings-label settings-label-stack">
-              <span class="settings-label-main">Agent Inbox</span>
-              <span class="settings-label-sub">Start automatically</span>
+              <span class="settings-label-main">Start automatically</span>
+              <span class="settings-label-sub">Launch Agent Inbox when Picot opens</span>
             </span>
             <button class="settings-toggle" id="toggle-super-agent"></button>
           </div>

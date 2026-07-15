@@ -73,10 +73,10 @@ describe("chat-settings-panel", () => {
     await flushPromises();
 
     expect(panel.querySelector("#setting-super-agent .settings-label-main")?.textContent).toBe(
-      "Agent Inbox",
+      "Start automatically",
     );
     expect(panel.querySelector("#setting-super-agent .settings-label-sub")?.textContent).toBe(
-      "Start automatically",
+      "Launch Agent Inbox when Picot opens",
     );
     expect(panel.querySelector("#toggle-super-agent")).not.toBeNull();
     expect(panel.textContent).toContain("Telegram listener is connected.");

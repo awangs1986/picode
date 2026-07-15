@@ -26,7 +26,11 @@ import {
   showSettingsSaveError,
   showSettingsSaveSuccess,
 } from "./settings/save-status.js";
-import { bindSuperAgentStartupToggle, setupSettingsToggles } from "./settings/toggles.js";
+import {
+  bindSuperAgentStartupToggle,
+  renderThinkingEffort,
+  setupSettingsToggles,
+} from "./settings/toggles.js";
 import { setupSidebarSearchControl } from "./sidebar/search-control.js";
 import { SessionSidebar } from "./sidebar/sidebar.js";
 import { setupSkillSlashCommand } from "./skill-slash-command.js";
@@ -1854,9 +1858,6 @@ const modelDropdownBtn = document.getElementById("model-dropdown-btn");
 const modelDropdownLabel = document.getElementById("model-dropdown-label");
 const modelDropdownMenu = document.getElementById("model-dropdown-menu");
 const thinkingBtn = document.getElementById("thinking-btn");
-function formatThinkingLevelLabel(level) {
-  return `Thinking: ${level || "off"}`;
-}
 function formatCompactThinkingLevelLabel(level) {
   return `Think ${level || "off"}`;
 }
@@ -1868,6 +1869,11 @@ function updateThinkingBtn() {
     `Thinking effort: ${currentThinkingLevel}. Click to cycle reasoning depth.`,
   );
   thinkingBtn.classList.toggle("off", currentThinkingLevel === "off");
+  renderThinkingEffort(currentThinkingLevel || "off", {
+    thinkingSteps: thinkingEffortSteps,
+    thinkingMarker: thinkingEffortMarker,
+    thinkingName: thinkingEffortName,
+  });
 }
 let currentModelId = "";
 let availableModels = [];
@@ -2185,7 +2191,9 @@ function isMobile() {
 }
 
 function updateSidebarToggleIcon() {
-  sidebarToggle.textContent = "☰";
+  // Icon is a static inline SVG in index.html; keep it as-is regardless of
+  // sidebar open/closed state. (Previously this overwrote the SVG with the
+  // "\u2630" text glyph on first toggle, changing the icon's appearance.)
 }
 
 function toggleSidebar() {
@@ -3287,7 +3295,9 @@ const settingsTabs = Array.from(document.querySelectorAll(".settings-tab"));
 const themeGrid = document.getElementById("theme-grid");
 
 const toggleAutoCompact = document.getElementById("toggle-auto-compact");
-const btnThinkingLevel = document.getElementById("btn-thinking-level");
+const thinkingEffortSteps = document.getElementById("thinking-effort-steps");
+const thinkingEffortMarker = document.getElementById("thinking-effort-marker");
+const thinkingEffortName = document.getElementById("thinking-effort-name");
 const toggleShowThinking = document.getElementById("toggle-show-thinking");
 let toggleSuperAgent = document.getElementById("toggle-super-agent");
 const toggleAuth = document.getElementById("toggle-auth");
@@ -3891,7 +3901,6 @@ async function openSettings() {
       // Auto-compaction toggle
       toggleAutoCompact.className = `settings-toggle${s.autoCompactionEnabled ? " on" : ""}`;
       // Thinking level
-      btnThinkingLevel.textContent = formatThinkingLevelLabel(s.thinkingLevel);
       currentThinkingLevel = s.thinkingLevel || "off";
       updateThinkingBtn();
       // Session name
@@ -3942,7 +3951,9 @@ settingsNavItems.forEach((item) => {
 
 setupSettingsToggles({
   toggleAutoCompact,
-  btnThinkingLevel,
+  thinkingSteps: thinkingEffortSteps,
+  thinkingMarker: thinkingEffortMarker,
+  thinkingName: thinkingEffortName,
   toggleShowThinking,
   toggleAuth,
   toggleSuperAgent,

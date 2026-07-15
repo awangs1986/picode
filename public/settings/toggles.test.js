@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { JSDOM } from "jsdom";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { SUPER_AGENT_ENABLED_STORAGE_KEY } from "../super-agent/settings.js";
-import { setupSettingsToggles } from "./toggles.js";
+import { renderThinkingEffort, setupSettingsToggles } from "./toggles.js";
 
 describe("thinking effort cycle controls", () => {
   afterEach(() => {
@@ -20,11 +20,13 @@ describe("thinking effort cycle controls", () => {
     expect(thinkingBtn.getAttribute("title")).toContain("Click to cycle");
   });
 
-  test("describes thinking effort in Settings without changing it to a dropdown", () => {
+  test("renders thinking effort in Settings as a Faster↔Smarter segmented slider", () => {
     const html = readFileSync(join(process.cwd(), "public/index.html"), "utf8");
     const dom = new JSDOM(html);
     const { document } = dom.window;
-    const settingsButton = document.querySelector("#btn-thinking-level");
+    const dots = Array.from(
+      document.querySelectorAll("#thinking-effort-steps .thinking-effort-dot"),
+    );
 
     expect(document.querySelector("#setting-thinking .settings-label-main")?.textContent).toBe(
       "Thinking effort",
@@ -32,20 +34,31 @@ describe("thinking effort cycle controls", () => {
     expect(document.querySelector("#setting-thinking .settings-label-sub")?.textContent).toBe(
       "Reasoning depth",
     );
-    expect(settingsButton.tagName).toBe("BUTTON");
-    expect(settingsButton.textContent.trim()).toBe("Thinking: off");
+    expect(dots.map((s) => s.dataset.level)).toEqual(["off", "minimal", "low", "medium", "high"]);
+    const ends = Array.from(
+      document.querySelectorAll(
+        "#thinking-effort .thinking-effort-ends > span:not(.thinking-effort-name)",
+      ),
+    );
+    expect(ends.map((e) => e.textContent.trim())).toEqual(["Faster", "Smarter"]);
+    expect(document.querySelector("#thinking-effort-name")?.textContent.trim()).toBe("off");
+    expect(document.querySelector("#thinking-effort-marker")).not.toBeNull();
   });
 
-  test("keeps Settings thinking effort as click-to-cycle behavior", async () => {
-    const dom = new JSDOM('<button id="btn-thinking-level">Thinking: off</button>');
-    const button = dom.window.document.querySelector("#btn-thinking-level");
-    const rpcCommand = vi.fn().mockResolvedValue({ success: true, data: { level: "medium" } });
+  test("sets the thinking level when a dot is clicked and moves the thumb", async () => {
+    const html = readFileSync(join(process.cwd(), "public/index.html"), "utf8");
+    const dom = new JSDOM(html);
+    const { document } = dom.window;
+    const track = document.querySelector("#thinking-effort-steps");
+    const thumb = document.querySelector("#thinking-effort-marker");
+    const rpcCommand = vi.fn().mockResolvedValue({ success: true });
     const setCurrentThinkingLevel = vi.fn();
     const updateThinkingBtn = vi.fn();
 
     setupSettingsToggles({
       toggleAutoCompact: null,
-      btnThinkingLevel: button,
+      thinkingSteps: track,
+      thinkingMarker: thumb,
       toggleShowThinking: null,
       toggleAuth: null,
       rpcCommand,
@@ -54,13 +67,38 @@ describe("thinking effort cycle controls", () => {
       updateThinkingBtn,
     });
 
-    button.click();
+    const mediumDot = track.querySelector('[data-level="medium"]');
+    mediumDot.click();
     await Promise.resolve();
 
-    expect(rpcCommand).toHaveBeenCalledWith({ type: "cycle_thinking_level" });
-    expect(button.textContent).toBe("Thinking: medium");
+    expect(rpcCommand).toHaveBeenCalledWith({ type: "set_thinking_level", level: "medium" });
     expect(setCurrentThinkingLevel).toHaveBeenCalledWith("medium");
     expect(updateThinkingBtn).toHaveBeenCalled();
+    expect(mediumDot.classList.contains("active")).toBe(true);
+    expect(mediumDot.getAttribute("aria-checked")).toBe("true");
+    // Thumb over segment index 3 of 5 → left = calc(60% + 3px), width = calc(20% - 6px).
+    expect(thumb.style.left).toBe("calc(60% + 3px)");
+    expect(thumb.style.width).toBe("calc(20% - 6px)");
+  });
+
+  test("renderThinkingEffort highlights the active level and positions the thumb", () => {
+    const html = readFileSync(join(process.cwd(), "public/index.html"), "utf8");
+    const dom = new JSDOM(html);
+    const { document } = dom.window;
+    const track = document.querySelector("#thinking-effort-steps");
+    const thumb = document.querySelector("#thinking-effort-marker");
+    const name = document.querySelector("#thinking-effort-name");
+
+    renderThinkingEffort("high", {
+      thinkingSteps: track,
+      thinkingMarker: thumb,
+      thinkingName: name,
+    });
+
+    expect(track.querySelector('[data-level="high"]').classList.contains("active")).toBe(true);
+    // segment index 4 of 5 → left = calc(80% + 3px).
+    expect(thumb.style.left).toBe("calc(80% + 3px)");
+    expect(name.textContent).toBe("high");
   });
 
   test("uses neutral styling for every thinking level chip state", () => {
@@ -98,7 +136,8 @@ describe("thinking effort cycle controls", () => {
 
     setupSettingsToggles({
       toggleAutoCompact: null,
-      btnThinkingLevel: null,
+      thinkingSteps: null,
+      thinkingMarker: null,
       toggleShowThinking: null,
       toggleAuth: null,
       toggleSuperAgent: toggle,

@@ -816,13 +816,77 @@
                                         >Reasoning depth</span
                                     >
                                 </span>
-                                <button
-                                    class="settings-value-btn"
-                                    id="btn-thinking-level"
-                                    title="Click to cycle: off, minimal, low, medium, high"
+                                <div
+                                    class="thinking-effort"
+                                    id="thinking-effort"
+                                    role="radiogroup"
+                                    aria-label="Thinking effort"
                                 >
-                                    Thinking: off
-                                </button>
+                                    <div class="thinking-effort-ends">
+                                        <span>Faster</span>
+                                        <span
+                                            class="thinking-effort-name"
+                                            id="thinking-effort-name"
+                                            >off</span
+                                        >
+                                        <span>Smarter</span>
+                                    </div>
+                                    <div
+                                        class="thinking-effort-track"
+                                        id="thinking-effort-steps"
+                                    >
+                                        <span
+                                            class="thinking-effort-thumb"
+                                            id="thinking-effort-marker"
+                                            aria-hidden="true"
+                                        ></span>
+                                        <button
+                                            type="button"
+                                            class="thinking-effort-dot"
+                                            data-level="off"
+                                            role="radio"
+                                            aria-checked="true"
+                                            aria-label="off"
+                                            title="off"
+                                        ></button>
+                                        <button
+                                            type="button"
+                                            class="thinking-effort-dot"
+                                            data-level="minimal"
+                                            role="radio"
+                                            aria-checked="false"
+                                            aria-label="minimal"
+                                            title="minimal"
+                                        ></button>
+                                        <button
+                                            type="button"
+                                            class="thinking-effort-dot"
+                                            data-level="low"
+                                            role="radio"
+                                            aria-checked="false"
+                                            aria-label="low"
+                                            title="low"
+                                        ></button>
+                                        <button
+                                            type="button"
+                                            class="thinking-effort-dot"
+                                            data-level="medium"
+                                            role="radio"
+                                            aria-checked="false"
+                                            aria-label="medium"
+                                            title="medium"
+                                        ></button>
+                                        <button
+                                            type="button"
+                                            class="thinking-effort-dot"
+                                            data-level="high"
+                                            role="radio"
+                                            aria-checked="false"
+                                            aria-label="high"
+                                            title="high"
+                                        ></button>
+                                    </div>
+                                </div>
                             </div>
                             <div class="settings-row">
                                 <span class="settings-label"

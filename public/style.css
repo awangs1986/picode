@@ -881,19 +881,16 @@ body {
 
 .session-item.mirror-live .session-title::before {
   background: var(--success);
-  box-shadow: 0 0 6px rgba(52, 211, 153, 0.5);
 }
 
 .session-item.unread .session-title::before {
   background: #3b82f6;
-  box-shadow: 0 0 6px rgba(59, 130, 246, 0.55);
 }
 
 .session-item.streaming .session-title::before {
   width: 7px;
   height: 7px;
   background: var(--success, #34d399);
-  box-shadow: 0 0 0 0 color-mix(in srgb, var(--success, #34d399) 70%, transparent);
   animation: session-streaming-pulse 1.2s ease-in-out infinite;
 }
 
@@ -2602,6 +2599,100 @@ body {
 .settings-value-btn:hover {
   background: var(--bg-glass-hover);
   border-color: var(--border-hover);
+}
+
+/* Thinking effort: compact Faster↔Smarter segmented slider */
+.thinking-effort {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  width: 190px;
+  flex-shrink: 0;
+}
+
+.thinking-effort-ends {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  color: var(--text-dim);
+  font-size: 12px;
+  padding: 0 2px;
+}
+
+.thinking-effort-name {
+  color: var(--accent-text, var(--accent));
+  font-weight: 600;
+  font-family: "SF Mono", "Menlo", "Monaco", monospace;
+  text-align: center;
+}
+
+.thinking-effort-track {
+  position: relative;
+  display: flex;
+  height: 20px;
+  border-radius: 7px;
+  background: var(--bg-glass-strong);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.thinking-effort-thumb {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: 3px;
+  width: calc(100% / 5 - 6px);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--text-primary) 24%, transparent);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  transition: left 0.22s var(--spring);
+  pointer-events: none;
+}
+
+.thinking-effort-dot {
+  position: relative;
+  flex: 1 1 0;
+  height: 100%;
+  padding: 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+.thinking-effort-dot::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  background: color-mix(in srgb, var(--text-primary) 32%, transparent);
+  transition:
+    background var(--duration) var(--ease),
+    transform var(--duration) var(--ease);
+}
+
+/* Rightmost dot hints the "Smarter" end in accent */
+.thinking-effort-dot:last-child::before {
+  background: var(--accent);
+}
+
+.thinking-effort-dot:hover::before {
+  transform: translate(-50%, -50%) scale(1.4);
+}
+
+.thinking-effort-dot.active::before {
+  background: var(--text-primary);
+}
+
+.thinking-effort-dot:focus-visible {
+  outline: none;
+}
+
+.thinking-effort-dot:focus-visible::before {
+  box-shadow: 0 0 0 3px var(--accent-glow);
 }
 
 .settings-static-value {

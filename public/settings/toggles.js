@@ -1,5 +1,7 @@
 import { isSuperAgentEnabled, setSuperAgentEnabled } from "../super-agent/settings.js";
 
+export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high"];
+
 export function bindSuperAgentStartupToggle(toggleSuperAgent, onSuperAgentEnabledChanged) {
   if (!toggleSuperAgent || toggleSuperAgent.dataset.superAgentToggleBound === "true") return;
   toggleSuperAgent.dataset.superAgentToggleBound = "true";
@@ -12,9 +14,39 @@ export function bindSuperAgentStartupToggle(toggleSuperAgent, onSuperAgentEnable
   });
 }
 
+/**
+ * Reflect the current thinking level on the Faster↔Smarter segmented slider:
+ * highlight the matching dot and slide the pill thumb over it.
+ */
+export function renderThinkingEffort(level, { thinkingSteps, thinkingMarker, thinkingName }) {
+  const normalized = THINKING_LEVELS.includes(level) ? level : "off";
+  const dots = thinkingSteps
+    ? Array.from(thinkingSteps.querySelectorAll(".thinking-effort-dot"))
+    : [];
+  const count = dots.length || THINKING_LEVELS.length;
+  let activeIdx = THINKING_LEVELS.indexOf(normalized);
+  if (activeIdx < 0) activeIdx = 0;
+
+  dots.forEach((dot, idx) => {
+    const isActive = idx === activeIdx;
+    dot.classList.toggle("active", isActive);
+    dot.setAttribute("aria-checked", String(isActive));
+  });
+
+  if (thinkingMarker) {
+    const segment = 100 / count;
+    thinkingMarker.style.width = `calc(${segment}% - 6px)`;
+    thinkingMarker.style.left = `calc(${activeIdx * segment}% + 3px)`;
+  }
+
+  if (thinkingName) thinkingName.textContent = normalized;
+}
+
 export function setupSettingsToggles({
   toggleAutoCompact,
-  btnThinkingLevel,
+  thinkingSteps,
+  thinkingMarker,
+  thinkingName,
   toggleShowThinking,
   toggleAuth,
   toggleSuperAgent,
@@ -24,20 +56,29 @@ export function setupSettingsToggles({
   updateThinkingBtn,
   onSuperAgentEnabledChanged,
 }) {
-  const formatThinkingLevelLabel = (level) => `Thinking: ${level || "off"}`;
-
   toggleAutoCompact?.addEventListener("click", async () => {
     const isOn = toggleAutoCompact.classList.contains("on");
     toggleAutoCompact.className = `settings-toggle${isOn ? "" : " on"}`;
     await rpcCommand({ type: "set_auto_compaction", enabled: !isOn });
   });
 
-  btnThinkingLevel?.addEventListener("click", async () => {
-    const data = await rpcCommand({ type: "cycle_thinking_level" });
-    if (data?.success && data.data?.level) {
-      btnThinkingLevel.textContent = formatThinkingLevelLabel(data.data.level);
-      setCurrentThinkingLevel(data.data.level);
+  // Click a dot to set the reasoning depth directly.
+  thinkingSteps?.addEventListener("click", async (event) => {
+    const step = event.target.closest(".thinking-effort-dot");
+    if (!step) return;
+    const level = step.dataset.level || "off";
+    // Optimistically move the marker for snappy feedback.
+    renderThinkingEffort(level, { thinkingSteps, thinkingMarker, thinkingName });
+    const data = await rpcCommand({ type: "set_thinking_level", level });
+    if (data?.success) {
+      setCurrentThinkingLevel(level);
       updateThinkingBtn();
+    } else {
+      renderThinkingEffort(getCurrentThinkingLevel?.() || "off", {
+        thinkingSteps,
+        thinkingMarker,
+        thinkingName,
+      });
     }
   });
 
