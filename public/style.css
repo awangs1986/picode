@@ -1778,7 +1778,6 @@ body {
 
 .settings-section-title {
   font-size: 14px;
-  text-transform: uppercase;
   letter-spacing: 0.06em;
   margin-bottom: 8px;
 }
@@ -3201,14 +3200,13 @@ body {
 /* Welcome */
 .welcome {
   text-align: center;
-  padding: 48px 20px 32px;
   color: var(--text-dim);
+  margin-top: 120px;
   animation: fadeIn 0.5s var(--ease);
 }
 
 .welcome-icon {
   font-size: 56px;
-  margin-bottom: 16px;
   opacity: 0.25;
   font-weight: 200;
 }
