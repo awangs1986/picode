@@ -112,11 +112,6 @@ export class MessageRenderer {
     this.container.innerHTML = `
       <div class="welcome">
         <div class="welcome-icon"><img src="icons/logo-dark.svg" alt="Picot logo" class="tau-icon-welcome"></div>
-        <p>Welcome to Picot</p>
-        <div class="shortcuts-hint">
-          <span>/ Focus input</span>
-          <span>Esc Abort</span>
-        </div>
       </div>
     `;
   }
