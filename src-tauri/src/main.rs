@@ -711,19 +711,14 @@ fn find_latest_session_boot_target() -> Option<(String, String)> {
     Some((cwd, session_path.to_string_lossy().to_string()))
 }
 
-fn extract_session_id(session_path: &str) -> Option<String> {
-    let file = File::open(session_path).ok()?;
-    for line in BufReader::new(file).lines().take(20).flatten() {
-        let value: Value = serde_json::from_str(line.trim()).ok()?;
-        if value.get("type").and_then(Value::as_str) == Some("session") {
-            return value
-                .get("id")
-                .or_else(|| value.get("sessionId"))
-                .and_then(Value::as_str)
-                .map(str::to_owned);
-        }
-    }
-    None
+fn select_fresh_startup_target(
+    home_cwd: String,
+    latest_session: Option<(String, String)>,
+) -> (String, Option<String>) {
+    let cwd = latest_session
+        .map(|(session_cwd, _session_path)| session_cwd)
+        .unwrap_or(home_cwd);
+    (cwd, None)
 }
 
 fn native_runtime_enabled() -> bool {
@@ -736,9 +731,8 @@ fn setup_native_runtime(app: &mut tauri::App, static_dir: PathBuf) -> Result<(),
         .unwrap_or_default()
         .to_string_lossy()
         .into_owned();
-    let (cwd, session_path) = find_latest_session_boot_target()
-        .map(|(cwd, session)| (cwd, Some(session)))
-        .unwrap_or((home_cwd, None));
+    let (cwd, session_path) =
+        select_fresh_startup_target(home_cwd, find_latest_session_boot_target());
     let metadata_path = app
         .path()
         .app_data_dir()
@@ -746,10 +740,7 @@ fn setup_native_runtime(app: &mut tauri::App, static_dir: PathBuf) -> Result<(),
         .join("picot.sqlite3");
     let mut metadata = MetadataStore::open(&metadata_path)?;
     let workspace_id = metadata.workspace_id_for_path(std::path::Path::new(&cwd))?;
-    let session_id = session_path
-        .as_deref()
-        .and_then(extract_session_id)
-        .unwrap_or_else(|| format!("temporary-{}", uuid::Uuid::new_v4().simple()));
+    let session_id = format!("temporary-{}", uuid::Uuid::new_v4().simple());
     let target = RuntimeTarget::new(
         workspace_id,
         session_id,
@@ -791,10 +782,8 @@ async fn cmd_retry_startup(
         .unwrap_or_default()
         .to_string_lossy()
         .to_string();
-    let (cwd, session_path) = match find_latest_session_boot_target() {
-        Some((resolved_cwd, resolved_session_path)) => (resolved_cwd, Some(resolved_session_path)),
-        None => (home_cwd, None),
-    };
+    let (cwd, session_path) =
+        select_fresh_startup_target(home_cwd, find_latest_session_boot_target());
     // Mirror the main setup hook: never adopt a port we don't own. Always
     // claim a fresh one so the resulting pi is driveable via our PiManager.
     let initial_port = manager.next_port();
@@ -1080,22 +1069,12 @@ fn main() {
                 .unwrap_or_default()
                 .to_string_lossy()
                 .to_string();
-            let (cwd, session_path) = match find_latest_session_boot_target() {
-                Some((resolved_cwd, resolved_session_path)) => {
-                    log::info!(
-                        "[pi-desktop] startup resume target selected: cwd={} session={}",
-                        resolved_cwd, resolved_session_path
-                    );
-                    (resolved_cwd, Some(resolved_session_path))
-                }
-                None => {
-                    log::info!(
-                        "[pi-desktop] startup resume fallback: using home directory {}",
-                        home_cwd
-                    );
-                    (home_cwd, None)
-                }
-            };
+            let (cwd, session_path) =
+                select_fresh_startup_target(home_cwd, find_latest_session_boot_target());
+            log::info!(
+                "[pi-desktop] fresh startup session selected for cwd={}",
+                cwd
+            );
 
             // Pick the first free port at/above 47821. We deliberately do NOT
             // reuse a port that is already in use, even if "something pi-shaped"
@@ -1213,4 +1192,22 @@ fn main() {
                 }
             }
         });
+}
+
+#[cfg(test)]
+mod startup_tests {
+    use super::select_fresh_startup_target;
+
+    #[test]
+    fn keeps_the_latest_workspace_but_never_resumes_its_session_on_app_start() {
+        let selected = select_fresh_startup_target(
+            "/home/user".to_string(),
+            Some((
+                "/work/project".to_string(),
+                "/sessions/old-session.jsonl".to_string(),
+            )),
+        );
+
+        assert_eq!(selected, ("/work/project".to_string(), None));
+    }
 }

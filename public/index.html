@@ -10,6 +10,7 @@
         <link rel="icon" type="image/svg+xml" href="icons/logo-dark.svg" />
         <meta name="theme-color" content="#f5f3ef" />
         <link rel="stylesheet" href="style-theme.css" />
+        <link rel="stylesheet" href="design-system.css" />
         <link rel="stylesheet" href="style.css" />
         <script>
             // Detect macOS for overlay title bar padding (TitleBarStyle::Overlay in Rust
@@ -91,7 +92,7 @@
                         <input
                             type="text"
                             id="session-search-input"
-                            class="sidebar-search-input"
+                            class="ui-input ui-input--sm sidebar-search-input"
                             placeholder="Search..."
                             autocomplete="off"
                         />
@@ -118,7 +119,7 @@
                     </div>
                     <div class="sidebar-actions">
                         <button
-                            class="icon-btn"
+                            class="ui-icon-button ui-icon-button--sm ui-icon-button--ghost icon-btn"
                             id="open-folder-btn"
                             title="Open folder as workspace"
                             aria-label="Open folder"
@@ -141,7 +142,7 @@
                             </svg>
                         </button>
                         <button
-                            class="icon-btn"
+                            class="ui-icon-button ui-icon-button--sm ui-icon-button--ghost icon-btn"
                             id="refresh-sessions-btn"
                             title="Refresh sessions"
                             aria-label="Refresh sessions"
@@ -170,7 +171,7 @@
                 <div class="sidebar-footer">
                     <div class="sidebar-settings-row">
                         <button
-                            class="sidebar-settings-btn"
+                            class="ui-icon-button ui-icon-button--sm sidebar-settings-btn"
                             id="settings-btn"
                             title="Settings"
                             aria-label="Settings"
@@ -234,7 +235,7 @@
                             </svg>
                         </button>
                         <button
-                            class="icon-btn lan-qr-btn hidden"
+                            class="ui-icon-button ui-icon-button--sm ui-icon-button--ghost icon-btn lan-qr-btn hidden"
                             id="lan-qr-btn"
                             title="Show mobile QR code"
                             aria-label="Show mobile QR code"
@@ -300,7 +301,7 @@
                             role="group"
                         >
                             <button
-                                class="header-open-app-btn"
+                                class="ui-button ui-button--sm ui-button--secondary header-open-app-btn"
                                 id="header-open-app-btn"
                                 title="Open workspace"
                                 aria-label="Open workspace in app"
@@ -340,7 +341,7 @@
                             ></div>
                         </span>
                         <button
-                            class="icon-btn"
+                            class="ui-icon-button ui-icon-button--sm ui-icon-button--ghost icon-btn"
                             id="file-sidebar-toggle"
                             title="Files"
                             aria-label="Toggle file browser"
@@ -383,7 +384,7 @@
                 </div>
 
                 <!-- Scroll to bottom + new message indicator -->
-                <button class="scroll-bottom-btn hidden" id="scroll-bottom-btn">
+                <button class="ui-icon-button ui-button--secondary scroll-bottom-btn hidden" id="scroll-bottom-btn">
                     <span
                         class="scroll-bottom-badge hidden"
                         id="scroll-bottom-badge"
@@ -469,7 +470,7 @@
                                 <div class="composer-toolbar-left">
                                     <button
                                         type="button"
-                                        class="input-icon-btn"
+                                        class="ui-icon-button ui-icon-button--sm ui-icon-button--ghost input-icon-btn"
                                         id="attach-btn"
                                         title="Attach image"
                                         aria-label="Attach image"
@@ -501,7 +502,7 @@
                                     </button>
                                     <button
                                         type="button"
-                                        class="input-icon-btn"
+                                        class="ui-icon-button ui-icon-button--sm ui-icon-button--ghost input-icon-btn"
                                         id="command-btn"
                                         title="Commands"
                                         aria-label="Open commands"
@@ -540,7 +541,7 @@
                                     >
                                         <button
                                             type="button"
-                                            class="model-dropdown-btn"
+                                            class="ui-button ui-button--sm ui-button--ghost model-dropdown-btn"
                                             id="model-dropdown-btn"
                                             title="Switch model"
                                             tabindex="-1"
@@ -583,7 +584,7 @@
                                     </button>
                                     <button
                                         type="button"
-                                        class="input-mic-btn"
+                                        class="ui-icon-button ui-icon-button--sm ui-icon-button--ghost input-mic-btn"
                                         id="mic-btn"
                                         title="Voice input"
                                         tabindex="-1"
@@ -686,7 +687,7 @@
                         >Files</span
                     >
                     <button
-                        class="icon-btn"
+                        class="ui-icon-button ui-icon-button--sm ui-icon-button--ghost icon-btn"
                         id="file-sidebar-up"
                         title="Parent directory"
                     >
@@ -705,7 +706,7 @@
                         </svg>
                     </button>
                     <button
-                        class="icon-btn"
+                        class="ui-icon-button ui-icon-button--sm ui-icon-button--ghost icon-btn"
                         id="file-sidebar-finder"
                         title="Open in file manager"
                     >
@@ -725,7 +726,7 @@
                         </svg>
                     </button>
                     <button
-                        class="icon-btn app-side-panel-close-btn"
+                        class="ui-icon-button ui-icon-button--sm ui-icon-button--ghost icon-btn app-side-panel-close-btn"
                         id="file-sidebar-close"
                         title="Close"
                         aria-label="Close file browser"
@@ -926,7 +927,7 @@
                                     >Check for updates</span
                                 >
                                 <button
-                                    class="settings-value-btn"
+                                    class="ui-button ui-button--secondary settings-value-btn"
                                     id="btn-check-updates"
                                 >
                                     Check now
@@ -954,7 +955,7 @@
                                     >Update available</span
                                 >
                                 <button
-                                    class="settings-value-btn"
+                                    class="ui-button ui-button--secondary settings-value-btn"
                                     id="btn-install-update"
                                 >
                                     Download &amp; install
@@ -1122,7 +1123,7 @@
                                 ></span>
                             </div>
                             <textarea
-                                class="config-editor-textarea settings-config-textarea"
+                                class="ui-textarea config-editor-textarea settings-config-textarea"
                                 id="inline-config-textarea"
                                 spellcheck="false"
                                 autocomplete="off"
@@ -1136,7 +1137,7 @@
                                 ></div>
                                 <div class="settings-config-button-group">
                                     <button
-                                        class="btn-primary"
+                                        class="ui-button ui-button--primary btn-primary"
                                         id="inline-config-save"
                                     >
                                         Save
@@ -1170,7 +1171,7 @@
                                 ></span>
                             </div>
                             <textarea
-                                class="config-editor-textarea settings-config-textarea"
+                                class="ui-textarea config-editor-textarea settings-config-textarea"
                                 id="inline-models-textarea"
                                 spellcheck="false"
                                 autocomplete="off"
@@ -1185,13 +1186,13 @@
                                 ></div>
                                 <div class="settings-config-button-group">
                                     <button
-                                        class="settings-value-btn"
+                                        class="ui-button ui-button--secondary settings-value-btn"
                                         id="inline-models-insert-example"
                                     >
                                         Insert example
                                     </button>
                                     <button
-                                        class="btn-primary"
+                                        class="ui-button ui-button--primary btn-primary"
                                         id="inline-models-save"
                                     >
                                         Save
@@ -1241,7 +1242,7 @@
             </div>
             <div class="config-editor-body">
                 <textarea
-                    class="config-editor-textarea"
+                    class="ui-textarea config-editor-textarea"
                     id="config-editor-textarea"
                     spellcheck="false"
                     autocomplete="off"
@@ -1257,7 +1258,7 @@
                 <button class="config-editor-cancel" id="config-editor-cancel">
                     Cancel
                 </button>
-                <button class="btn-primary" id="config-editor-save">
+                <button class="ui-button ui-button--primary btn-primary" id="config-editor-save">
                     Save
                 </button>
             </div>
@@ -1290,7 +1291,7 @@
                 <div class="lan-qr-modal-header">
                     <span class="lan-qr-modal-title">Open on Mobile</span>
                     <button
-                        class="lan-qr-modal-close icon-btn"
+                        class="ui-icon-button ui-icon-button--sm ui-icon-button--ghost lan-qr-modal-close icon-btn"
                         id="lan-qr-modal-close"
                         aria-label="Close"
                     >

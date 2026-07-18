@@ -5,6 +5,7 @@ import { HostRuntimeAdapter, resolveHostWebSocketUrl } from "./host-runtime-adap
 import { showNativeDialog } from "./native-dialog.js";
 import { NativeFileBrowser } from "./native-file-browser.js";
 import { RuntimeGateway } from "./runtime-gateway.js";
+import { reconcileSnapshotTarget } from "./session/bootstrap-target.js";
 import { createSessionStore, reduceSessionState } from "./session-store.js";
 import { buildCommandCatalog, resolveComposerInput } from "./slash-commands.js";
 import { applyTheme, getCurrentTheme } from "./themes.js";
@@ -105,6 +106,7 @@ async function loadBootstrapTarget(currentRoute) {
 
 async function hydrateSnapshot() {
   const snapshot = await runtime.snapshot(target.sessionId);
+  await adoptTarget(reconcileSnapshotTarget(target, snapshot.target));
   store = reduceSessionState(store, snapshot);
   renderHistory(snapshot.state.messages ?? []);
   const pi = snapshot.state.pi ?? {};
@@ -249,12 +251,18 @@ async function handleRuntimeEvent(event) {
       showError(new Error(event.error || "Extension failed"));
       break;
     case "session_bound":
-      replaceTemporarySessionRoute(history, target.workspaceId, target.sessionId, event.sessionId);
-      target = { ...target, sessionId: event.sessionId };
-      adapter.subscribeTarget(target);
-      await extensionUi.setForegroundSession(target.sessionId);
+      await adoptTarget({ ...target, sessionId: event.sessionId });
       break;
   }
+}
+
+async function adoptTarget(nextTarget) {
+  if (nextTarget.sessionId === target.sessionId) return;
+  replaceTemporarySessionRoute(history, target.workspaceId, target.sessionId, nextTarget.sessionId);
+  target = nextTarget;
+  store = { ...store, target: { ...nextTarget } };
+  adapter.subscribeTarget(target);
+  await extensionUi.setForegroundSession(target.sessionId);
 }
 
 function renderHistory(messages) {

@@ -36,11 +36,11 @@ class ChatSettingsPanel extends HTMLElement {
           <div class="telegram-setup-card">
             <label class="telegram-token-label" for="telegram-bot-token">Bot token</label>
             <div class="telegram-token-row">
-              <input id="telegram-bot-token" class="settings-input telegram-token-input"
+              <input id="telegram-bot-token" class="ui-input telegram-token-input"
                 data-token-input type="password" autocomplete="off" spellcheck="false"
                 placeholder="123456:ABCDEF..." />
-              <button class="btn-primary" data-action="connect-telegram">Connect Telegram</button>
-              <button class="sa-btn" data-action="cancel-telegram" hidden>Cancel</button>
+              <button class="ui-button ui-button--primary" data-action="connect-telegram">Connect Telegram</button>
+              <button class="ui-button ui-button--secondary" data-action="cancel-telegram" hidden>Cancel</button>
             </div>
             <div class="settings-save-status hidden" data-status></div>
             <div class="telegram-bind-instructions hidden" data-bind-instructions></div>
@@ -48,7 +48,7 @@ class ChatSettingsPanel extends HTMLElement {
           <div class="telegram-doctor-card" data-telegram-doctor>
             <div class="chat-account-header">
               <span class="chat-account-name">Telegram Doctor</span>
-              <button class="sa-btn" data-action="run-telegram-doctor">Run Doctor</button>
+              <button class="ui-button ui-button--secondary" data-action="run-telegram-doctor">Run Doctor</button>
             </div>
             <div class="settings-help" data-telegram-doctor-summary>Not checked yet.</div>
             <div class="telegram-doctor-checks" data-telegram-doctor-checks></div>
@@ -62,12 +62,12 @@ class ChatSettingsPanel extends HTMLElement {
             Internal config stored in <code>~/.pi/agent/chat/config.json</code>. You normally do not
             need to edit this manually.
           </p>
-          <textarea class="config-editor-textarea settings-config-textarea"
+          <textarea class="ui-textarea config-editor-textarea settings-config-textarea"
             data-textarea spellcheck="false" autocomplete="off"
             autocorrect="off" autocapitalize="off" placeholder="Loading…"></textarea>
           <div class="settings-config-actions">
             <div class="settings-config-button-group">
-              <button class="btn-primary" data-action="save">Save Raw Config</button>
+              <button class="ui-button ui-button--primary" data-action="save">Save Raw Config</button>
             </div>
           </div>
         </details>
@@ -298,7 +298,7 @@ class ChatSettingsPanel extends HTMLElement {
           <div class="chat-account-detail">Authorized DM: ${esc(authorizedUser)}</div>
           <div class="chat-account-detail">Internal ID: <code>${esc(id)}</code></div>
           <div class="chat-account-actions">
-            <button class="sa-btn sa-btn-reject" data-action="disconnect-telegram">Disconnect</button>
+            <button class="ui-button ui-button--danger" data-action="disconnect-telegram">Disconnect</button>
           </div>
         </div>
       `;
@@ -318,7 +318,7 @@ class ChatSettingsPanel extends HTMLElement {
       </ol>
       ${
         link
-          ? `<a class="sa-btn telegram-open-link" href="${escAttr(link)}" target="_blank" rel="noreferrer">Open Telegram</a>`
+          ? `<a class="ui-button ui-button--secondary telegram-open-link" href="${escAttr(link)}" target="_blank" rel="noreferrer">Open Telegram</a>`
           : ""
       }
     `;

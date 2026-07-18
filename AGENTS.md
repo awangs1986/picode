@@ -112,6 +112,10 @@ bun run format:fix    # auto-fix formatting
 - Only mark the task complete if `bun run check` exits 0 (or all remaining violations are intentional and documented).
 - Prefer `bun run check:fix` over manual reformatting — Biome is the source of truth for style.
 
+## Design system
+
+Before editing CSS or UI controls, read [`docs/DESIGN.md`](docs/DESIGN.md). Use tokens from `public/style-theme.css` and primitives from `public/design-system.css`; do not add literal design dimensions. After CSS, UI markup, or inline-style changes, run `bun run check` (or focused `bun run check:design`).
+
 ## Module Design
 
 The frontend (`public/`) is vanilla JS with **no framework**. Keep it modular:

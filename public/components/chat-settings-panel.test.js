@@ -79,6 +79,10 @@ describe("chat-settings-panel", () => {
       "Launch Agent Inbox when Picot opens",
     );
     expect(panel.querySelector("#toggle-super-agent")).not.toBeNull();
+    expect(panel.querySelector("[data-token-input]")?.classList.contains("ui-input")).toBe(true);
+    for (const button of panel.querySelectorAll("button[data-action]")) {
+      expect(button.classList.contains("ui-button"), button.dataset.action).toBe(true);
+    }
     expect(panel.textContent).toContain("Telegram listener is connected.");
     expect(panel.textContent).toContain("Telegram messages enter Agent Inbox first.");
     expect(panel.textContent).toContain("6085028519");
