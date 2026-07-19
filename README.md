@@ -20,22 +20,54 @@ Picot ships a known-good build of the `pi` runtime **inside the .app bundle**, s
 
 ## Install
 
+You **do not** need to install the `pi` CLI separately — Picot bundles its own pi runtime.
+
+### One-liner install (recommended)
+
+**macOS / Linux:**
+```bash
+curl -fsSL https://raw.githubusercontent.com/shixin-guo/picot/main/scripts/install.sh | bash
+```
+
+**Windows (PowerShell):**
+```powershell
+irm https://raw.githubusercontent.com/shixin-guo/picot/main/scripts/install.ps1 | iex
+```
+
+The script auto-detects your OS and architecture, downloads the right package, installs it, and on macOS automatically clears the Gatekeeper quarantine bit — so the app opens directly without any "Open Anyway" prompt.
+
+To install a specific version:
+```bash
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/shixin-guo/picot/main/scripts/install.sh | bash -s -- --version v0.3.0
+
+# Windows — enterprise MSI deployment
+& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/shixin-guo/picot/main/scripts/install.ps1'))) -Version v0.3.0 -MSI
+```
+
+### Manual download
+
 [Download from GitHub Releases](https://github.com/shixin-guo/picot/releases)
 
-You **do not** need to install the `pi` CLI separately — Picot bundles its own pi runtime.
+| Platform | File |
+|----------|------|
+| macOS Apple Silicon | `Picot_*_aarch64.dmg` |
+| macOS Intel | `Picot_*_x64.dmg` |
+| Linux x86\_64 (Debian/Ubuntu) | `Picot_*_amd64.deb` |
+| Linux arm64 (Debian/Ubuntu) | `Picot_*_arm64.deb` |
+| Linux x86\_64 (RHEL/Fedora) | `Picot-*-1.x86_64.rpm` |
+| Linux arm64 (RHEL/Fedora) | `Picot-*-1.aarch64.rpm` |
+| Windows x64 | `Picot_*_x64-setup.exe` |
+| Windows arm64 | `Picot_*_arm64-setup.exe` |
 
 ### macOS unsigned release notice
 
-Picot currently ships macOS builds without Apple Developer ID signing/notarization. Expected Gatekeeper behavior:
-
-`"Picot" cannot be opened because the developer cannot be verified.`
-
-**To allow it:**
+Picot currently ships macOS builds without Apple Developer ID signing/notarization.
+The one-liner install script handles this automatically. If you install manually:
 
 1. Drag `Picot.app` into `/Applications`
 2. Right-click → **Open**
 3. If blocked: **System Settings → Privacy & Security → Open Anyway**
-
 
 <p align="center">
   <img width="420" alt="macOS Gatekeeper warning" src="docs/images/gatekeeper-warning.webp" />

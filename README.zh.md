@@ -18,17 +18,50 @@ Picot 将 `pi` 运行时**直接打包进 .app**，无需单独安装 `pi`，无
 
 ## 安装
 
+**无需单独安装 `pi` CLI** — Picot 内置了自己的 pi 运行时。
+
+### 一键安装（推荐）
+
+**macOS / Linux：**
+```bash
+curl -fsSL https://raw.githubusercontent.com/shixin-guo/picot/main/scripts/install.sh | bash
+```
+
+**Windows（PowerShell）：**
+```powershell
+irm https://raw.githubusercontent.com/shixin-guo/picot/main/scripts/install.ps1 | iex
+```
+
+脚本会自动识别系统和架构，下载对应安装包并完成安装。macOS 下还会自动清除 Gatekeeper 检疫属性，无需手动点击「仍要打开」。
+
+安装指定版本：
+```bash
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/shixin-guo/picot/main/scripts/install.sh | bash -s -- --version v0.3.0
+
+# Windows — 企业 MSI 部署
+& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/shixin-guo/picot/main/scripts/install.ps1'))) -Version v0.3.0 -MSI
+```
+
+### 手动下载
+
 [从 GitHub Releases 下载](https://github.com/shixin-guo/picot/releases)
 
-**无需单独安装 `pi` CLI** — Picot 内置了自己的 pi 运行时。
+| 平台 | 文件 |
+|------|------|
+| macOS Apple Silicon | `Picot_*_aarch64.dmg` |
+| macOS Intel | `Picot_*_x64.dmg` |
+| Linux x86\_64（Debian/Ubuntu） | `Picot_*_amd64.deb` |
+| Linux arm64（Debian/Ubuntu） | `Picot_*_arm64.deb` |
+| Linux x86\_64（RHEL/Fedora） | `Picot-*-1.x86_64.rpm` |
+| Linux arm64（RHEL/Fedora） | `Picot-*-1.aarch64.rpm` |
+| Windows x64 | `Picot_*_x64-setup.exe` |
+| Windows arm64 | `Picot_*_arm64-setup.exe` |
 
 ### macOS 未签名提示
 
-Picot 目前发布的 macOS 版本未经 Apple 开发者 ID 签名/公证，系统可能弹出：
-
-`"Picot" 无法打开，因为无法验证开发者。`
-
-**解决方法：**
+Picot 目前发布的 macOS 版本未经 Apple 开发者 ID 签名/公证。
+使用一键安装脚本会自动处理此问题。如需手动安装：
 
 1. 将 `Picot.app` 拖入 `/Applications`
 2. 右键点击 → **打开**
