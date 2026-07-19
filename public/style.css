@@ -6,6 +6,7 @@
   margin: 0;
   padding: 0;
   box-sizing: border-box;
+  scrollbar-width: thin;
 }
 
 html,
@@ -922,21 +923,6 @@ body {
   background: var(--success, #34d399);
 }
 
-@keyframes session-streaming-pulse {
-  0% {
-    transform: scale(0.85);
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--success, #34d399) 70%, transparent);
-  }
-  50% {
-    transform: scale(1.15);
-    box-shadow: 0 0 0 4px color-mix(in srgb, var(--success, #34d399) 0%, transparent);
-  }
-  100% {
-    transform: scale(0.85);
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--success, #34d399) 0%, transparent);
-  }
-}
-
 /* Mirror mode: read-only input */
 .input-area.mirror-readonly {
   opacity: 1;
@@ -1433,15 +1419,6 @@ body {
 .compaction-done {
   color: var(--accent);
   opacity: 0.8;
-}
-
-@keyframes spin {
-  from {
-    transform: rotate(0deg);
-  }
-  to {
-    transform: rotate(360deg);
-  }
 }
 
 /* Model button — prominent in header */
@@ -4018,19 +3995,6 @@ body.hide-thinking .thinking-block {
   align-items: center;
 }
 
-@keyframes typingBounce {
-  0%,
-  60%,
-  100% {
-    transform: translateY(0);
-    opacity: 0.3;
-  }
-  30% {
-    transform: translateY(-4px);
-    opacity: 1;
-  }
-}
-
 /* ═══════════════════════════════════════════════════════
    Input Area — floating glass field
    ═══════════════════════════════════════════════════════ */
@@ -4319,6 +4283,8 @@ body.hide-thinking .thinking-block {
   background: transparent;
   border-color: transparent;
   color: var(--text-dim);
+  height: var(--control-height-sm);
+  padding: 0 var(--space-2);
 }
 
 .composer-toolbar .model-dropdown-btn:hover {
@@ -4330,6 +4296,10 @@ body.hide-thinking .thinking-block {
 .composer-toolbar .thinking-tag {
   background: transparent;
   border-color: transparent;
+  height: var(--control-height-sm);
+  padding: 0 var(--space-2);
+  display: flex;
+  align-items: center;
 }
 
 .composer-toolbar .thinking-tag:hover {
@@ -4836,7 +4806,7 @@ body.hide-thinking .thinking-block {
 /* Individual tick — button is the (large) hit target; ::after is the visual line */
 .conv-nav-dot {
   width: 28px; /* wide hit target */
-  height: 4px; /* tall hit target */
+  height: 2px; /* tall hit target */
   display: flex;
   align-items: center;
   justify-content: flex-end; /* bar hugs the right/rail edge */
@@ -4849,7 +4819,7 @@ body.hide-thinking .thinking-block {
 
 .conv-nav-dot::after {
   content: "";
-  height: 4px;
+  height: 2px;
   width: var(--nav-w, 16px);
   border-radius: var(--radius-pill);
   background: var(--border-hover);
@@ -4863,11 +4833,11 @@ body.hide-thinking .thinking-block {
 }
 
 .conv-nav-dot:hover::after {
-  width: max(var(--nav-w, 16px), 20px);
+  width: max(var(--nav-w, 13px), 18px);
 }
 
 .conv-nav-dot.active::after {
-  height: 4px;
+  height: 2px;
   background: var(--accent);
   opacity: 1;
   box-shadow: 2px 0 6px var(--accent-glow);

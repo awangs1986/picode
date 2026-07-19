@@ -843,7 +843,7 @@ function flashJumpHighlight(target) {
 
 function jumpToConversation(turn, idx) {
   // Lock active index immediately so dot highlights right away, even before
-  // the smooth scroll settles (or if scrollIntoView doesn't scroll at all).
+  // the smooth scroll settles (or if the scroll ends up being a no-op).
   if (idx !== undefined) {
     _navLockedIdx = idx;
     clearTimeout(_navLockTimer);
@@ -852,7 +852,19 @@ function jumpToConversation(turn, idx) {
       rebuildNavDots();
     }, 800);
   }
-  turn.user.scrollIntoView({ block: "start", behavior: "smooth" });
+  // Use an explicit scrollTo instead of turn.user.scrollIntoView(): scrollIntoView's
+  // "start" alignment is computed against the raw scroll container, not the space
+  // the floating sticky header covers, and its target can land within a few px of
+  // the current position (e.g. when only a couple of short conversations exist and
+  // the max scroll range is tiny) — some webviews then silently skip the scroll
+  // instead of nudging to it. Computing the delta ourselves guarantees a real,
+  // header-aware scrollTo happens every time.
+  const visibleTop =
+    headerEl?.getBoundingClientRect().bottom || messagesContainer.getBoundingClientRect().top;
+  const delta = turn.user.getBoundingClientRect().top - visibleTop;
+  const maxScrollTop = messagesContainer.scrollHeight - messagesContainer.clientHeight;
+  const targetScrollTop = Math.max(0, Math.min(messagesContainer.scrollTop + delta, maxScrollTop));
+  messagesContainer.scrollTo({ top: targetScrollTop, behavior: "smooth" });
   flashJumpHighlight(turn.user);
   rebuildNavDots();
 }
@@ -918,12 +930,12 @@ function rebuildNavDots() {
     });
   }
 
-  const waveWidths = [30, 26, 22, 19, 17];
   [...convNavTrack.children].forEach((dot, i) => {
     dot.classList.toggle("active", i === activeIdx);
     dot.setAttribute("aria-label", `Jump to conversation ${i + 1}`);
     const dist = Math.abs(i - activeIdx);
-    const w = waveWidths[Math.min(dist, waveWidths.length - 1)];
+    // Gaussian bell curve: peak=20, base=13, sigma=5
+    const w = Math.round(13 + 7 * Math.exp(-(dist * dist) / (2 * 5 * 5)));
     dot.style.setProperty("--nav-w", w + "px");
   });
 
