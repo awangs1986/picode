@@ -7,6 +7,8 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use crate::native_pi_manager::NativeLaunchSpec;
+
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -324,6 +326,58 @@ impl PiManager {
         }
     }
 
+    #[allow(dead_code)]
+    pub fn native_launch_spec(
+        &self,
+        cwd: &str,
+        session_path: Option<&str>,
+    ) -> Result<NativeLaunchSpec, String> {
+        let binary = self.resolve_bundled_pi()?;
+        let mut candidates = Vec::new();
+        if let Some(resources) = self.static_dir.parent() {
+            candidates.push(resources.join("extensions").join("picot-bridge.mjs"));
+        }
+        if cfg!(debug_assertions) {
+            candidates.push(
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("..")
+                    .join("extensions")
+                    .join("dist")
+                    .join("picot-bridge.mjs"),
+            );
+            candidates.push(
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("..")
+                    .join("extensions")
+                    .join("picot-bridge.ts"),
+            );
+        }
+        let bridge = candidates
+            .iter()
+            .find(|candidate| candidate.is_file())
+            .cloned()
+            .ok_or_else(|| {
+                format!(
+                    "Could not find picot-bridge extension. Tried:\n{}",
+                    candidates
+                        .iter()
+                        .map(|path| format!("  - {}", path.display()))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                )
+            })?;
+        Ok(NativeLaunchSpec {
+            binary,
+            cwd: PathBuf::from(cwd),
+            session_path: session_path.map(PathBuf::from),
+            extensions: vec![PathBuf::from(sanitize_extension_path_for_pi(
+                &strip_verbatim_prefix(&bridge.to_string_lossy()),
+            ))],
+            pi_version: locked_pi_version().to_owned(),
+            path_env: build_augmented_path(),
+        })
+    }
+
     /// Locate the embedded pi binary shipped inside the Tauri bundle.
     ///
     /// Lookup order:
@@ -473,6 +527,41 @@ impl PiManager {
         ))
     }
 
+    /// Locate the bundled pi-chat extension, if present.
+    ///
+    /// Returns `None` when the extension cannot be found (e.g. in a dev build
+    /// before `bun run build:extensions` has been run). The caller should treat
+    /// a missing pi-chat extension as non-fatal — pi-chat is optional.
+    fn resolve_pi_chat_extension_path(&self) -> Option<String> {
+        let mut candidates: Vec<PathBuf> = Vec::new();
+
+        if cfg!(debug_assertions) {
+            candidates.push(
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("..")
+                    .join("extensions")
+                    .join("dist")
+                    .join("pi-chat.mjs"),
+            );
+            if let Ok(cwd) = std::env::current_dir() {
+                candidates.push(cwd.join("extensions").join("dist").join("pi-chat.mjs"));
+            }
+        }
+
+        if let Some(parent) = self.static_dir.parent() {
+            candidates.push(parent.join("extensions").join("pi-chat.mjs"));
+        }
+
+        for candidate in &candidates {
+            if candidate.exists() {
+                return Some(sanitize_extension_path_for_pi(&strip_verbatim_prefix(
+                    &candidate.to_string_lossy(),
+                )));
+            }
+        }
+        None
+    }
+
     pub fn spawn(&self, cwd: &str, port: u16, session_path: Option<&str>) -> Result<(), String> {
         let pi_bin = self.resolve_bundled_pi()?;
         // Tauri resolves resource paths as `\\?\`-prefixed extended-length
@@ -512,12 +601,28 @@ impl PiManager {
         let extension_path =
             sanitize_extension_path_for_pi(&strip_verbatim_prefix(&extension.path));
 
-        let mut args: Vec<String> = vec![
-            "--extension".to_string(),
-            extension_path,
-            "--mode".to_string(),
-            "rpc".to_string(),
-        ];
+        let mut args: Vec<String> = vec!["--extension".to_string(), extension_path];
+
+        // Load pi-chat extension only in the Super Agent workspace to avoid
+        // multiple processes competing for the same Telegram updates.
+        let is_super_agent_workspace = std::env::var("HOME")
+            .map(|home| cwd == format!("{}/.pi/agent/super-agent", home))
+            .unwrap_or(false);
+        if is_super_agent_workspace {
+            if let Some(pi_chat_path) = self.resolve_pi_chat_extension_path() {
+                log::info!(
+                    "[pi-desktop] pi-chat extension resolved for super-agent workspace: {}",
+                    pi_chat_path
+                );
+                args.push("--extension".to_string());
+                args.push(pi_chat_path);
+            } else {
+                log::debug!("[pi-desktop] pi-chat extension not found; skipping");
+            }
+        }
+
+        args.extend(["--mode".to_string(), "rpc".to_string()]);
+
         if let Some(session) = session_path {
             args.push("--session".to_string());
             args.push(session.to_string());

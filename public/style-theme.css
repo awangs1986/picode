@@ -1,13 +1,48 @@
 /* Shared design tokens + per-theme color tokens */
 
 :root {
+  /* Typography */
+  --font-size-sm: 12px;
+  --font-size-md: 14px;
+  --font-size-lg: 16px;
+  --font-size-xl: 20px;
+  --font-size-2xl: 24px;
+
+  /* Spacing — 4px base scale with compact desktop increments */
+  --space-0: 0;
+  --space-0-5: 2px;
+  --space-1: 4px;
+  --space-1-5: 6px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+
+  /* Controls */
+  --control-height-xs: 24px;
+  --control-height-sm: 28px;
+  --control-height-md: 32px;
+  --control-height-lg: 40px;
+  --textarea-min-height: 72px;
+
+  /* Stable component semantics */
+  --focus-ring-width: 3px;
+  --disabled-opacity: 0.5;
+  --panel-padding: var(--space-4);
+  --card-padding: var(--space-3);
+  --toolbar-gap: var(--space-2);
+
   /* Shape */
   --radius-xs: 4px;
   --radius-sm: 6px;
   --radius-md: 10px;
   --radius: 16px;
   --radius-lg: 24px;
-  --radius-pill: 100px;
+  --radius-pill: 999px;
 
   /* Sizing */
   --sidebar-width: 272px;

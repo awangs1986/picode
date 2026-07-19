@@ -29,15 +29,17 @@
  *   `PI_STUDIO_PI_VERSION` env var.
  */
 
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as http from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
-import type {
-  ExtensionAPI,
-  ExtensionContext,
-  ModelRegistry,
+import {
+  createAgentSession,
+  type ExtensionAPI,
+  type ExtensionContext,
+  type ModelRegistry,
+  SessionManager,
 } from "@earendil-works/pi-coding-agent";
 import QRCode from "qrcode";
 import { type WebSocket, WebSocketServer } from "ws";
@@ -46,6 +48,14 @@ import {
   buildEmptyCostDashboardPayload,
   type CostSession,
 } from "./cost-dashboard-data.ts";
+import {
+  buildTelegramDmConfig,
+  buildTelegramDoctorReport,
+  getLatestTelegramUpdateId,
+  getTelegramBotIdentity,
+  observeTelegramPrivateDm,
+  type TelegramBotIdentity,
+} from "./pi-chat-setup";
 import { buildProjectSearchMatch } from "./session-search";
 
 // `pi` is compiled with `bun build --compile`. Inside that runtime,
@@ -206,6 +216,8 @@ function findPublicDir(): string {
   return path.resolve(process.cwd(), "public");
 }
 const SESSIONS_DIR = path.join(PI_AGENT_ROOT, "sessions");
+const PICOT_MODELS_PREFS_PATH = path.join(PI_AGENT_ROOT, "picot-models.json");
+const CHAT_WORKER_STATUS_DIR = path.join(PI_AGENT_ROOT, "chat", "worker-status");
 // TODO(rename->picot): directory `pistudio-instances` kept for backward compat — migrate to `picot-instances` once existing users are handled.
 const INSTANCES_DIR = path.join(path.dirname(PI_AGENT_ROOT), "pistudio-instances");
 
@@ -217,7 +229,13 @@ const INSTANCES_DIR = path.join(path.dirname(PI_AGENT_ROOT), "pistudio-instances
 // manages all pi processes it spawns.
 function registerInstance(port: number, sessionFile: string, cwd: string) {
   fs.mkdirSync(INSTANCES_DIR, { recursive: true });
-  const info = { port, pid: process.pid, sessionFile, cwd, startedAt: new Date().toISOString() };
+  const info = {
+    port,
+    pid: process.pid,
+    sessionFile,
+    cwd,
+    startedAt: new Date().toISOString(),
+  };
   fs.writeFileSync(path.join(INSTANCES_DIR, `${process.pid}.json`), JSON.stringify(info));
 }
 
@@ -231,31 +249,239 @@ function updateInstanceSession(sessionFile: string) {
   } catch {}
 }
 
+export function isLiveProcessStat(stat: string): boolean {
+  return !stat.trim().startsWith("Z");
+}
+
+function isLiveProcess(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+  } catch {
+    return false;
+  }
+  if (process.platform === "win32") return true;
+  try {
+    const stat = execFileSync("ps", ["-p", String(pid), "-o", "stat="], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    return isLiveProcessStat(stat);
+  } catch {
+    return false;
+  }
+}
+
 function getRunningInstances(): Array<{
   port: number;
   pid: number;
   sessionFile: string;
   cwd: string;
+  startedAt?: string;
 }> {
   if (!fs.existsSync(INSTANCES_DIR)) return [];
-  const instances: Array<{ port: number; pid: number; sessionFile: string; cwd: string }> = [];
+  const instances: Array<{
+    port: number;
+    pid: number;
+    sessionFile: string;
+    cwd: string;
+    startedAt?: string;
+  }> = [];
   for (const file of fs.readdirSync(INSTANCES_DIR)) {
     if (!file.endsWith(".json")) continue;
     try {
-      const info = JSON.parse(fs.readFileSync(path.join(INSTANCES_DIR, file), "utf8"));
-      // Check if process is still alive
-      try {
-        process.kill(info.pid, 0);
+      const filePath = path.join(INSTANCES_DIR, file);
+      const info = JSON.parse(fs.readFileSync(filePath, "utf8"));
+      if (isLiveProcess(info.pid)) {
         instances.push(info);
-      } catch {
-        // Process dead — clean up stale file
+      } else {
         try {
-          fs.unlinkSync(path.join(INSTANCES_DIR, file));
+          fs.unlinkSync(filePath);
         } catch {}
       }
     } catch {}
   }
   return instances;
+}
+
+type SessionListProject = {
+  path: string;
+  dirName: string;
+  // biome-ignore lint/suspicious/noExplicitAny: session list entries are parsed from dynamic JSONL headers
+  sessions: any[];
+};
+
+type RunningInstanceInfo = {
+  port: number;
+  pid: number;
+  sessionFile: string;
+  cwd: string;
+  startedAt?: string;
+};
+
+type SuperAgentProjectRegistryOptions = {
+  superAgentPath?: string;
+};
+
+export function buildSuperAgentProjectRegistry(
+  instances: RunningInstanceInfo[],
+  options: SuperAgentProjectRegistryOptions = {},
+) {
+  const superAgentPath = normalizeProjectPath(
+    options.superAgentPath || path.join(PI_AGENT_ROOT, "super-agent"),
+  );
+  const projects = new Map<
+    string,
+    {
+      id: string;
+      name: string;
+      cwd: string;
+      status: "running";
+      activePort: number;
+      lastActiveAt?: string;
+    }
+  >();
+
+  for (const instance of instances) {
+    const cwd = normalizeProjectPath(instance.cwd);
+    if (!cwd || cwd === superAgentPath) continue;
+    const existing = projects.get(cwd);
+    if (existing && compareIso(instance.startedAt, existing.lastActiveAt) <= 0) continue;
+    projects.set(cwd, {
+      id: cwd,
+      name: path.basename(cwd) || cwd,
+      cwd,
+      status: "running",
+      activePort: instance.port,
+      lastActiveAt: instance.startedAt,
+    });
+  }
+
+  return {
+    projects: [...projects.values()].sort((a, b) => compareIso(b.lastActiveAt, a.lastActiveAt)),
+  };
+}
+
+function normalizeProjectPath(projectPath: unknown): string {
+  return String(projectPath || "").replace(/\/+$/, "");
+}
+
+function compareIso(a: string | undefined, b: string | undefined): number {
+  const left = Date.parse(a || "");
+  const right = Date.parse(b || "");
+  return (Number.isNaN(left) ? 0 : left) - (Number.isNaN(right) ? 0 : right);
+}
+
+type ChatWorkerStatusInfo = {
+  state?: string;
+  sessionFile?: string;
+  conversationId?: string;
+  updatedAt?: string;
+  lastError?: string;
+};
+
+function getChatWorkerStatuses(): ChatWorkerStatusInfo[] {
+  if (!fs.existsSync(CHAT_WORKER_STATUS_DIR)) return [];
+  const statuses: ChatWorkerStatusInfo[] = [];
+  for (const file of fs.readdirSync(CHAT_WORKER_STATUS_DIR)) {
+    if (!file.endsWith(".json")) continue;
+    try {
+      statuses.push(JSON.parse(fs.readFileSync(path.join(CHAT_WORKER_STATUS_DIR, file), "utf8")));
+    } catch {}
+  }
+  return statuses;
+}
+
+export function mergeLiveInstanceSessions(
+  projects: SessionListProject[],
+  instances: RunningInstanceInfo[],
+): SessionListProject[] {
+  const merged = projects.map((project) => ({
+    ...project,
+    sessions: [...project.sessions],
+  }));
+  const existingFiles = new Set(
+    merged.flatMap((project) => project.sessions.map((session) => session.filePath)),
+  );
+  const existingSessions = new Map<
+    string,
+    { session: Record<string, unknown>; project: SessionListProject }
+  >();
+  for (const project of merged) {
+    for (const session of project.sessions) {
+      if (typeof session?.filePath === "string") {
+        existingSessions.set(session.filePath, { session, project });
+      }
+    }
+  }
+
+  for (const instance of instances) {
+    if (!instance.sessionFile) continue;
+    const existing = existingSessions.get(instance.sessionFile);
+    if (existing) {
+      Object.assign(existing.session, {
+        port: instance.port,
+        pid: instance.pid,
+        cwd: instance.cwd || existing.project.path || existing.session.cwd,
+        isRunning: true,
+        startedAt: instance.startedAt,
+      });
+      continue;
+    }
+    const dirName = path.basename(path.dirname(instance.sessionFile));
+    const file = path.basename(instance.sessionFile);
+    const projectPath =
+      instance.cwd || dirName.replace(/^--/, "/").replace(/--$/, "").replace(/-/g, "/");
+    const session = {
+      file,
+      filePath: instance.sessionFile,
+      cwd: projectPath,
+      name: "New Session",
+      timestamp: instance.startedAt || new Date().toISOString(),
+      mtime: instance.startedAt ? new Date(instance.startedAt).getTime() : Date.now(),
+      ctime: instance.startedAt ? new Date(instance.startedAt).getTime() : Date.now(),
+      port: instance.port,
+      pid: instance.pid,
+      isRunning: true,
+      startedAt: instance.startedAt,
+    };
+
+    let project = merged.find((candidate) => candidate.path === projectPath);
+    if (!project) {
+      project = { path: projectPath, dirName, sessions: [] };
+      merged.push(project);
+    }
+    project.sessions.unshift(session);
+    existingFiles.add(instance.sessionFile);
+    existingSessions.set(instance.sessionFile, { session, project });
+  }
+
+  return merged;
+}
+
+export function markChatWorkerSessions(
+  projects: SessionListProject[],
+  statuses: ChatWorkerStatusInfo[],
+): SessionListProject[] {
+  const connectedBySession = new Map(
+    statuses
+      .filter((status) => status.state === "connected" && status.sessionFile)
+      .map((status) => [status.sessionFile as string, status]),
+  );
+  if (connectedBySession.size === 0) return projects;
+
+  return projects.map((project) => ({
+    ...project,
+    sessions: project.sessions.map((session) => {
+      const status = connectedBySession.get(session?.filePath);
+      if (!status) return session;
+      return {
+        ...session,
+        chatConnected: true,
+        chatConversationId: status.conversationId,
+        chatUpdatedAt: status.updatedAt,
+      };
+    }),
+  }));
 }
 
 type GitBranchContextLike = {
@@ -276,7 +502,12 @@ export function resolveGitBranchCwd({
 }: {
   foregroundPort: number | null;
   fallbackCwd: string;
-  instances: Array<{ port: number; pid: number; sessionFile: string; cwd: string }>;
+  instances: Array<{
+    port: number;
+    pid: number;
+    sessionFile: string;
+    cwd: string;
+  }>;
   latestCtx: GitBranchContextLike;
 }): string {
   if (typeof foregroundPort === "number" && Number.isFinite(foregroundPort)) {
@@ -380,6 +611,41 @@ interface RpcCommand {
   [key: string]: unknown;
 }
 
+type SlashCommandLike = {
+  name?: string;
+  description?: string;
+  source?: string;
+  sourceInfo?: {
+    scope?: string;
+  };
+};
+
+export type SkillCommand = {
+  command: string;
+  name: string;
+  description: string;
+  scope: "personal" | "project" | "temporary";
+};
+
+export function normalizeSkillCommands(commands: SlashCommandLike[]): SkillCommand[] {
+  return commands
+    .filter(
+      (command): command is SlashCommandLike & { name: string } =>
+        command.source === "skill" && typeof command.name === "string" && command.name.length > 0,
+    )
+    .map((command) => ({
+      command: `/${command.name}`,
+      name: command.name.replace(/^skill:/, ""),
+      description: typeof command.description === "string" ? command.description.trim() : "",
+      scope:
+        command.sourceInfo?.scope === "project"
+          ? "project"
+          : command.sourceInfo?.scope === "temporary"
+            ? "temporary"
+            : "personal",
+    }));
+}
+
 type UnifiedWS = {
   readyState: number;
   send: (data: string) => unknown;
@@ -434,6 +700,256 @@ type EmbeddedServerGlobal = {
   sessionMetricsCache: Map<string, SessionFileCacheEntry<unknown>>;
 };
 
+type AvailableModelRegistry = {
+  getAvailable: () => Promise<unknown[]>;
+};
+
+type CatalogModel = {
+  provider?: string;
+  id?: string;
+  name?: string;
+  contextWindow?: number;
+};
+
+type ModelHealthStatus = "unknown" | "healthy" | "unhealthy";
+
+type ModelHealth = {
+  status: ModelHealthStatus;
+  checkedAt?: string;
+  latencyMs?: number;
+  error?: string;
+};
+
+type ModelPreferencesFile = {
+  visibility?: Record<string, boolean>;
+  health?: Record<string, ModelHealth>;
+};
+
+function modelPreferenceKey(provider: string, modelId: string) {
+  return `${provider}/${modelId}`;
+}
+
+function normalizeModelHealth(value: unknown): ModelHealth {
+  if (!value || typeof value !== "object") return { status: "unknown" };
+  const candidate = value as Partial<ModelHealth>;
+  if (candidate.status !== "healthy" && candidate.status !== "unhealthy") {
+    return { status: "unknown" };
+  }
+  const health: ModelHealth = {
+    status: candidate.status,
+    checkedAt: typeof candidate.checkedAt === "string" ? candidate.checkedAt : undefined,
+    latencyMs: typeof candidate.latencyMs === "number" ? candidate.latencyMs : undefined,
+  };
+  if (typeof candidate.error === "string") health.error = candidate.error;
+  return health;
+}
+
+export function sanitizeHealthError(error: unknown): string {
+  const raw = errMessage(error) || "Health check failed";
+  return raw
+    .replace(/sk-[A-Za-z0-9_-]{6,}/g, "[REDACTED]")
+    .replace(/\bbearer\s+[A-Za-z0-9._~+/=-]{6,}/gi, "bearer [REDACTED]")
+    .slice(0, 240);
+}
+
+export class ModelPreferencesStore {
+  readonly path: string;
+
+  constructor(filePath = PICOT_MODELS_PREFS_PATH) {
+    this.path = filePath;
+  }
+
+  read(): Required<ModelPreferencesFile> {
+    if (!fs.existsSync(this.path)) return { visibility: {}, health: {} };
+    try {
+      const parsed = JSON.parse(fs.readFileSync(this.path, "utf8")) as ModelPreferencesFile;
+      return {
+        visibility:
+          parsed.visibility &&
+          typeof parsed.visibility === "object" &&
+          !Array.isArray(parsed.visibility)
+            ? parsed.visibility
+            : {},
+        health:
+          parsed.health && typeof parsed.health === "object" && !Array.isArray(parsed.health)
+            ? parsed.health
+            : {},
+      };
+    } catch {
+      return { visibility: {}, health: {} };
+    }
+  }
+
+  write(next: Required<ModelPreferencesFile>) {
+    fs.mkdirSync(path.dirname(this.path), { recursive: true });
+    fs.writeFileSync(this.path, JSON.stringify(next, null, 2), "utf8");
+  }
+
+  isVisible(provider: string, modelId: string) {
+    const prefs = this.read();
+    return prefs.visibility[modelPreferenceKey(provider, modelId)] !== false;
+  }
+
+  setVisibility(provider: string, modelId: string, visible: boolean) {
+    const prefs = this.read();
+    prefs.visibility[modelPreferenceKey(provider, modelId)] = visible;
+    this.write(prefs);
+  }
+
+  getHealth(provider: string, modelId: string): ModelHealth {
+    const prefs = this.read();
+    return normalizeModelHealth(prefs.health[modelPreferenceKey(provider, modelId)]);
+  }
+
+  setHealth(provider: string, modelId: string, health: ModelHealth) {
+    const prefs = this.read();
+    prefs.health[modelPreferenceKey(provider, modelId)] = normalizeModelHealth(health);
+    this.write(prefs);
+  }
+}
+
+export async function getAvailableModelsForRpc(
+  ctx: { modelRegistry?: AvailableModelRegistry } | null,
+  fallbackRegistry: AvailableModelRegistry | null,
+  preferences = new ModelPreferencesStore(),
+) {
+  const registry = ctx?.modelRegistry ?? fallbackRegistry;
+  if (!registry) throw new Error("Model registry not ready yet — try again in a moment.");
+  const models = await registry.getAvailable();
+  return models.filter((model) => {
+    const m = model as CatalogModel;
+    return m.provider && m.id ? preferences.isVisible(m.provider, m.id) : true;
+  });
+}
+
+type CatalogRegistry = {
+  getAll: () => CatalogModel[];
+  getAvailable: () => Promise<CatalogModel[]>;
+  getProviderAuthStatus: (provider: string) => {
+    configured?: boolean;
+    source?: string;
+    label?: string;
+  };
+  getProviderDisplayName: (provider: string) => string;
+};
+
+export async function buildModelCatalog(
+  registry: CatalogRegistry,
+  preferences: ModelPreferencesStore,
+) {
+  const allModels = registry.getAll();
+  const availableModels = await registry.getAvailable();
+  const availableKeys = new Set(
+    availableModels
+      .filter((model) => model.provider && model.id)
+      .map((model) => modelPreferenceKey(model.provider as string, model.id as string)),
+  );
+  const providerNames = Array.from(
+    new Set(allModels.map((model) => model.provider).filter(Boolean)),
+  ).sort();
+
+  return {
+    providers: providerNames.map((provider) => {
+      const providerName = provider as string;
+      const status = registry.getProviderAuthStatus(providerName);
+      return {
+        provider: providerName,
+        displayName: registry.getProviderDisplayName(providerName),
+        configured: Boolean(status.configured),
+        source: status.source,
+        label: status.label,
+        models: allModels
+          .filter(
+            (model) =>
+              model.provider === providerName &&
+              model.id &&
+              availableKeys.has(modelPreferenceKey(providerName, model.id)),
+          )
+          .sort((a, b) => String(a.id).localeCompare(String(b.id)))
+          .map((model) => {
+            const modelId = model.id as string;
+            return {
+              provider: providerName,
+              id: modelId,
+              name: model.name,
+              contextWindow: model.contextWindow,
+              available: availableKeys.has(modelPreferenceKey(providerName, modelId)),
+              visible: preferences.isVisible(providerName, modelId),
+              health: preferences.getHealth(providerName, modelId),
+            };
+          }),
+      };
+    }),
+  };
+}
+
+async function runModelHealthCheck(
+  registry: CatalogRegistry & { authStorage?: unknown },
+  model: CatalogModel,
+  preferences: ModelPreferencesStore,
+): Promise<{ provider: string; modelId: string } & ModelHealth> {
+  const provider = model.provider as string;
+  const modelId = model.id as string;
+  const startedAt = Date.now();
+  let sawAssistantText = false;
+  try {
+    const { session } = await createAgentSession({
+      model,
+      thinkingLevel: "off",
+      tools: [],
+      sessionManager: SessionManager.inMemory(),
+      authStorage: registry.authStorage,
+      modelRegistry: registry,
+    } as Parameters<typeof createAgentSession>[0]);
+    try {
+      const unsubscribe = session.subscribe((event: unknown) => {
+        const evt = event as {
+          assistantMessageEvent?: {
+            type?: string;
+            delta?: string;
+            content?: unknown;
+          };
+        };
+        if (
+          evt.assistantMessageEvent?.type === "text_delta" &&
+          typeof evt.assistantMessageEvent.delta === "string" &&
+          evt.assistantMessageEvent.delta.length > 0
+        ) {
+          sawAssistantText = true;
+        }
+      });
+      try {
+        await session.prompt("Reply exactly: OK");
+      } finally {
+        unsubscribe();
+      }
+    } finally {
+      session.dispose();
+    }
+    const result: { provider: string; modelId: string } & ModelHealth = {
+      provider,
+      modelId,
+      status: sawAssistantText ? "healthy" : "unhealthy",
+      checkedAt: new Date().toISOString(),
+      latencyMs: Date.now() - startedAt,
+      error: sawAssistantText ? undefined : "No assistant text returned",
+    };
+    preferences.setHealth(provider, modelId, result);
+    return result;
+  } catch (e: unknown) {
+    const result: { provider: string; modelId: string } & ModelHealth = {
+      provider,
+      modelId,
+      status: "unhealthy",
+      checkedAt: new Date().toISOString(),
+      latencyMs: Date.now() - startedAt,
+      error: sanitizeHealthError(e),
+    };
+    preferences.setHealth(provider, modelId, result);
+    return result;
+  }
+}
+
 const EMBEDDED_GLOBAL_KEY = "__piStudioEmbeddedServer__";
 
 interface SessionMetrics {
@@ -462,6 +978,36 @@ function errMessage(e: unknown): string {
     if (typeof m === "string") return m;
   }
   return String(e);
+}
+
+function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    req.on("data", (chunk: Buffer) => {
+      body += chunk.toString();
+      if (body.length > 1024 * 1024) reject(new Error("Request body too large"));
+    });
+    req.on("end", () => {
+      try {
+        resolve(body ? JSON.parse(body) : {});
+      } catch (error) {
+        reject(error);
+      }
+    });
+    req.on("error", reject);
+  });
+}
+
+function getStringField(body: unknown, field: string): string | undefined {
+  if (!body || typeof body !== "object") return undefined;
+  const value = (body as Record<string, unknown>)[field];
+  return typeof value === "string" ? value : undefined;
+}
+
+function getNumberField(body: unknown, field: string): number | undefined {
+  if (!body || typeof body !== "object") return undefined;
+  const value = (body as Record<string, unknown>)[field];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function getOrCreateGlobalState(): EmbeddedServerGlobal {
@@ -690,7 +1236,10 @@ export default function (pi: ExtensionAPI) {
       a.setSessionName(title);
       titleSet = true;
       // Broadcast to connected clients
-      broadcast({ type: "event", event: { type: "session_name", name: title } });
+      broadcast({
+        type: "event",
+        event: { type: "session_name", name: title },
+      });
     }
   });
 
@@ -785,13 +1334,24 @@ export default function (pi: ExtensionAPI) {
     const api = currentPi();
 
     const success = (cmd: string, data?: unknown) => {
-      const resp: Record<string, unknown> = { type: "response", command: cmd, success: true, id };
+      const resp: Record<string, unknown> = {
+        type: "response",
+        command: cmd,
+        success: true,
+        id,
+      };
       if (data !== undefined) resp.data = data;
       return resp;
     };
 
     const error = (cmd: string, message: string) => {
-      return { type: "response", command: cmd, success: false, error: message, id };
+      return {
+        type: "response",
+        command: cmd,
+        success: false,
+        error: message,
+        id,
+      };
     };
 
     // Used by every case that performs a session-bound mutation
@@ -807,6 +1367,13 @@ export default function (pi: ExtensionAPI) {
 
     try {
       switch (command.type) {
+        case "list_skills": {
+          const a = requireApi("list_skills");
+          if (!a) break;
+          sendTo(ws, success("list_skills", { skills: normalizeSkillCommands(a.getCommands()) }));
+          break;
+        }
+
         // ─── Prompting ───
         case "prompt": {
           const a = requireApi("prompt");
@@ -824,7 +1391,10 @@ export default function (pi: ExtensionAPI) {
               const validMimes = ["image/png", "image/jpeg", "image/gif", "image/webp"];
               // biome-ignore lint/suspicious/noExplicitAny: mixed text/image content blocks for sendUserMessage
               const content: any[] = [
-                { type: "text", text: command.message || "(see attached image)" },
+                {
+                  type: "text",
+                  text: command.message || "(see attached image)",
+                },
               ];
               for (const img of command.images) {
                 if (!img.data || typeof img.data !== "string") {
@@ -887,6 +1457,46 @@ export default function (pi: ExtensionAPI) {
         case "abort": {
           if (ctx) ctx.abort();
           sendTo(ws, success("abort"));
+          break;
+        }
+
+        // NOTE: `fork` / `clone` are intentionally NOT handled here.
+        //
+        // pi's session-replacement API (`fork`) exists only on the
+        // command-handler ctx, never on the base ExtensionContext we capture as
+        // `latestCtx`; and slash-command dispatch happens in the TUI input
+        // layer, so `pi.sendUserMessage("/fork")` in `--mode rpc` is delivered
+        // to the model as literal text, not executed. The web UI therefore
+        // forks through the desktop broker instead (`transport.fork` →
+        // `send_rpc(port, { type: "fork", entryId })`), which reaches pi's
+        // native RPC `fork` handler over stdin. See `fork_session_core` in
+        // `src-tauri/src/main.rs`.
+
+        case "get_fork_messages": {
+          if (!ctx) {
+            sendTo(ws, error("get_fork_messages", "No context available"));
+            break;
+          }
+          const allEntries = ctx.sessionManager.getEntries();
+          const forkMessages = allEntries
+            .filter(
+              (e: { type?: string; message?: { role?: string; content?: unknown } }) =>
+                e.type === "message" && e.message?.role === "user",
+            )
+            .map((e: { id?: string; message?: { content?: unknown } }) => ({
+              entryId: e.id ?? "",
+              text:
+                typeof e.message?.content === "string"
+                  ? e.message.content
+                  : Array.isArray(e.message?.content)
+                    ? (e.message.content as Array<{ type?: string; text?: string }>)
+                        .filter((b) => b.type === "text")
+                        .map((b) => b.text ?? "")
+                        .join("")
+                    : "",
+            }))
+            .filter((m: { entryId: string }) => m.entryId);
+          sendTo(ws, success("get_fork_messages", { messages: forkMessages }));
           break;
         }
 
@@ -971,12 +1581,90 @@ export default function (pi: ExtensionAPI) {
 
         // ─── Model ───
         case "get_available_models": {
-          if (!ctx) {
-            sendTo(ws, error("get_available_models", "No context available"));
+          const models = await getAvailableModelsForRpc(
+            ctx,
+            globalState.modelRegistry,
+            new ModelPreferencesStore(),
+          );
+          sendTo(ws, success("get_available_models", { models }));
+          break;
+        }
+
+        case "list_model_catalog": {
+          const registry = ctx?.modelRegistry ?? globalState.modelRegistry;
+          if (!registry) {
+            sendTo(
+              ws,
+              error("list_model_catalog", "Model registry not ready yet — try again in a moment."),
+            );
             break;
           }
-          const models = await ctx.modelRegistry.getAvailable();
-          sendTo(ws, success("get_available_models", { models }));
+          const catalog = await buildModelCatalog(
+            registry as unknown as CatalogRegistry,
+            new ModelPreferencesStore(),
+          );
+          sendTo(ws, success("list_model_catalog", catalog));
+          break;
+        }
+
+        case "set_model_visibility": {
+          const provider = typeof command.provider === "string" ? command.provider.trim() : "";
+          const modelId = typeof command.modelId === "string" ? command.modelId.trim() : "";
+          if (!provider || !modelId) {
+            sendTo(ws, error("set_model_visibility", "provider and modelId are required"));
+            break;
+          }
+          const visible = command.visible !== false;
+          const preferences = new ModelPreferencesStore();
+          preferences.setVisibility(provider, modelId, visible);
+          sendTo(ws, success("set_model_visibility", { provider, modelId, visible }));
+          break;
+        }
+
+        case "check_model_health": {
+          const registry = ctx?.modelRegistry ?? globalState.modelRegistry;
+          if (!registry) {
+            sendTo(
+              ws,
+              error("check_model_health", "Model registry not ready yet — try again in a moment."),
+            );
+            break;
+          }
+          const provider = typeof command.provider === "string" ? command.provider.trim() : "";
+          const modelId = typeof command.modelId === "string" ? command.modelId.trim() : "";
+          if (!provider) {
+            sendTo(ws, error("check_model_health", "provider is required"));
+            break;
+          }
+          const preferences = new ModelPreferencesStore();
+          const catalogRegistry = registry as unknown as CatalogRegistry & {
+            authStorage?: unknown;
+          };
+          const availableKeys = new Set(
+            (await catalogRegistry.getAvailable())
+              .filter((model) => model.provider && model.id)
+              .map((model) => modelPreferenceKey(model.provider as string, model.id as string)),
+          );
+          const models = catalogRegistry.getAll().filter((model) => {
+            if (model.provider !== provider || !model.id) return false;
+            if (modelId) return model.id === modelId;
+            return (
+              preferences.isVisible(provider, model.id) &&
+              availableKeys.has(modelPreferenceKey(provider, model.id))
+            );
+          });
+          if (models.length === 0) {
+            sendTo(
+              ws,
+              error("check_model_health", "No matching models available for health check"),
+            );
+            break;
+          }
+          const results = [];
+          for (const model of models) {
+            results.push(await runModelHealthCheck(catalogRegistry, model, preferences));
+          }
+          sendTo(ws, success("check_model_health", { results }));
           break;
         }
 
@@ -1048,7 +1736,10 @@ export default function (pi: ExtensionAPI) {
             break;
           }
           try {
-            registry.authStorage.set(provider, { type: "api_key", key: apiKey });
+            registry.authStorage.set(provider, {
+              type: "api_key",
+              key: apiKey,
+            });
             // Refresh so getAvailable() picks up the new key without restart.
             registry.refresh();
             sendTo(ws, success("set_api_key", { provider }));
@@ -1221,10 +1912,16 @@ export default function (pi: ExtensionAPI) {
             ctx.compact({
               customInstructions: command.customInstructions,
               onComplete: (result: { summary?: string }) => {
-                broadcast({ type: "auto_compaction_end", summary: result?.summary });
+                broadcast({
+                  type: "auto_compaction_end",
+                  summary: result?.summary,
+                });
               },
               onError: (err: unknown) => {
-                broadcast({ type: "auto_compaction_end", summary: `Error: ${errMessage(err)}` });
+                broadcast({
+                  type: "auto_compaction_end",
+                  summary: `Error: ${errMessage(err)}`,
+                });
               },
             });
           }
@@ -1358,7 +2055,10 @@ export default function (pi: ExtensionAPI) {
       const ext = path.extname(filePath).toLowerCase();
       const contentType = MIME_TYPES[ext] || "application/octet-stream";
 
-      res.writeHead(200, { "Content-Type": contentType, "Cache-Control": "no-store" });
+      res.writeHead(200, {
+        "Content-Type": contentType,
+        "Cache-Control": "no-store",
+      });
       fs.createReadStream(filePath).pipe(res);
     });
   }
@@ -1438,6 +2138,15 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
+    if (urlPath === "/api/super-agent/projects" && req.method === "GET") {
+      res.writeHead(200, {
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "*",
+      });
+      res.end(JSON.stringify(buildSuperAgentProjectRegistry(getRunningInstances())));
+      return;
+    }
+
     if (urlPath === "/api/sessions" && req.method === "GET") {
       serveSessionsList(res);
       return;
@@ -1496,7 +2205,7 @@ export default function (pi: ExtensionAPI) {
             if (sessionEntry?.cwd) dirPath = sessionEntry.cwd;
           } catch {}
         }
-        serveFileList(res, dirPath);
+        await serveFileList(res, dirPath);
       } catch (err: unknown) {
         res.writeHead(500, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: errMessage(err) }));
@@ -1560,7 +2269,27 @@ export default function (pi: ExtensionAPI) {
               terminate: () => {},
               ping: () => {},
             };
-            handleCommand(fakeWs, command);
+            // Dispatch through `globalState.handleCommand` rather than the
+            // closure-captured `handleCommand` — this HTTP route handler is
+            // only ever registered once (on the first `startServer` call),
+            // so a direct reference would stay bound to that first session's
+            // `ctx` forever and start returning "No context available" as
+            // soon as that instance shuts down (e.g. after `new_session` /
+            // `switch_session` / `fork`). `globalState.handleCommand` is
+            // re-published on every session_start, so this always dispatches
+            // to whichever extension instance currently owns the live ctx.
+            const dispatch = globalState.handleCommand;
+            if (dispatch) {
+              dispatch(fakeWs, command);
+            } else {
+              resolve({
+                type: "response",
+                command: command?.type || "unknown",
+                success: false,
+                error: "No active session",
+                id: command?.id,
+              });
+            }
           });
           const response = await responsePromise;
           res.writeHead(200, { "Content-Type": "application/json" });
@@ -1709,7 +2438,12 @@ export default function (pi: ExtensionAPI) {
           const { content } = JSON.parse(body);
           if (typeof content !== "string") {
             res.writeHead(400, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ success: false, error: "content must be a string" }));
+            res.end(
+              JSON.stringify({
+                success: false,
+                error: "content must be a string",
+              }),
+            );
             return;
           }
           // Validate JSON before saving
@@ -1764,7 +2498,12 @@ export default function (pi: ExtensionAPI) {
           const { content } = JSON.parse(body);
           if (typeof content !== "string") {
             res.writeHead(400, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ success: false, error: "content must be a string" }));
+            res.end(
+              JSON.stringify({
+                success: false,
+                error: "content must be a string",
+              }),
+            );
             return;
           }
           // Validate as JSON before saving.
@@ -1778,12 +2517,22 @@ export default function (pi: ExtensionAPI) {
               (typeof parsed.providers !== "object" || Array.isArray(parsed.providers))
             ) {
               res.writeHead(400, { "Content-Type": "application/json" });
-              res.end(JSON.stringify({ success: false, error: "'providers' must be an object" }));
+              res.end(
+                JSON.stringify({
+                  success: false,
+                  error: "'providers' must be an object",
+                }),
+              );
               return;
             }
           } else {
             res.writeHead(400, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ success: false, error: "models.json must be a JSON object" }));
+            res.end(
+              JSON.stringify({
+                success: false,
+                error: "models.json must be a JSON object",
+              }),
+            );
             return;
           }
           const configPath = path.join(PI_AGENT_ROOT, "models.json");
@@ -1807,6 +2556,239 @@ export default function (pi: ExtensionAPI) {
           }
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ success: true, refreshed }));
+        } catch (e: unknown) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ success: false, error: errMessage(e) }));
+        }
+      });
+      return;
+    }
+
+    // Home directory — used by the frontend to resolve ~/.pi/agent paths
+    if (urlPath === "/api/home" && req.method === "GET") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ home: os.homedir() }));
+      return;
+    }
+
+    // Telegram guided setup for pi-chat. The UI only asks for a bot token;
+    // these endpoints discover bot identity + the first private DM and then
+    // write the full internal config needed by the runtime.
+    if (urlPath === "/api/chat-telegram/validate" && req.method === "POST") {
+      try {
+        const body = await readJsonBody(req);
+        const botToken = getStringField(body, "botToken")?.trim();
+        if (!botToken) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ success: false, error: "botToken required" }));
+          return;
+        }
+        const identity = await getTelegramBotIdentity(botToken);
+        const afterUpdateId = await getLatestTelegramUpdateId(botToken);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({
+            success: true,
+            bot: {
+              id: identity.id,
+              name: identity.name,
+              username: identity.username,
+              webUrl: identity.username
+                ? `https://web.telegram.org/k/#@${identity.username}`
+                : undefined,
+              appUrl: identity.username ? `tg://resolve?domain=${identity.username}` : undefined,
+            },
+            afterUpdateId,
+          }),
+        );
+      } catch (e: unknown) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ success: false, error: errMessage(e) }));
+      }
+      return;
+    }
+
+    if (urlPath === "/api/chat-telegram/bind" && req.method === "POST") {
+      try {
+        const body = await readJsonBody(req);
+        const botToken = getStringField(body, "botToken")?.trim();
+        if (!botToken) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ success: false, error: "botToken required" }));
+          return;
+        }
+        const afterUpdateId = getNumberField(body, "afterUpdateId");
+        const identity = await getTelegramBotIdentity(botToken);
+        const dm = await observeTelegramPrivateDm(botToken, identity.id, {
+          afterUpdateId,
+          timeoutMs: 90_000,
+        });
+        if (!dm) {
+          res.writeHead(408, { "Content-Type": "application/json" });
+          res.end(
+            JSON.stringify({
+              success: false,
+              error:
+                "Timed out waiting for a private Telegram message. Send /start to the bot and try again.",
+            }),
+          );
+          return;
+        }
+
+        const configPath = path.join(PI_AGENT_ROOT, "chat", "config.json");
+        let existingConfig: Record<string, unknown> = {};
+        if (fs.existsSync(configPath)) {
+          existingConfig = JSON.parse(fs.readFileSync(configPath, "utf8"));
+        }
+        const nextConfig = buildTelegramDmConfig(existingConfig, {
+          botToken,
+          identity,
+          dm,
+        });
+        const content = `${JSON.stringify(nextConfig, null, "\t")}\n`;
+        fs.mkdirSync(path.dirname(configPath), { recursive: true });
+        fs.writeFileSync(configPath, content, {
+          encoding: "utf8",
+          mode: 0o600,
+        });
+        fs.chmodSync(configPath, 0o600);
+
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({
+            success: true,
+            content,
+            bot: {
+              id: identity.id,
+              name: identity.name,
+              username: identity.username,
+            },
+            dm,
+          }),
+        );
+      } catch (e: unknown) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ success: false, error: errMessage(e) }));
+      }
+      return;
+    }
+
+    if (urlPath === "/api/chat-telegram/doctor" && req.method === "GET") {
+      try {
+        const configPath = path.join(PI_AGENT_ROOT, "chat", "config.json");
+        const config = fs.existsSync(configPath)
+          ? JSON.parse(fs.readFileSync(configPath, "utf8"))
+          : {};
+        const telegramAccount = Object.values(
+          (config as { accounts?: Record<string, unknown> }).accounts || {},
+        ).find(
+          (account) =>
+            typeof account === "object" &&
+            account !== null &&
+            (account as { service?: unknown }).service === "telegram",
+        ) as { botToken?: string } | undefined;
+        let bot: TelegramBotIdentity | undefined;
+        let botError: string | undefined;
+        if (telegramAccount?.botToken) {
+          try {
+            bot = await getTelegramBotIdentity(telegramAccount.botToken);
+          } catch (e: unknown) {
+            botError = errMessage(e);
+          }
+        }
+        const report = buildTelegramDoctorReport(config, {
+          bot,
+          botError,
+          workerStatuses: getChatWorkerStatuses(),
+        });
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ success: true, report }));
+      } catch (e: unknown) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ success: false, error: errMessage(e) }));
+      }
+      return;
+    }
+
+    // pi-chat config read/write (~/.pi/agent/chat/config.json)
+    if (urlPath === "/api/chat-config" && req.method === "GET") {
+      try {
+        const configPath = path.join(PI_AGENT_ROOT, "chat", "config.json");
+        const content = fs.existsSync(configPath) ? fs.readFileSync(configPath, "utf8") : "{}";
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ success: true, content }));
+      } catch (e: unknown) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ success: false, error: errMessage(e) }));
+      }
+      return;
+    }
+
+    if (urlPath === "/api/chat-config" && req.method === "PUT") {
+      let body = "";
+      req.on("data", (chunk: Buffer) => {
+        body += chunk.toString();
+      });
+      req.on("end", () => {
+        try {
+          const { content } = JSON.parse(body);
+          if (typeof content !== "string") {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(
+              JSON.stringify({
+                success: false,
+                error: "content must be a string",
+              }),
+            );
+            return;
+          }
+          JSON.parse(content);
+          const configPath = path.join(PI_AGENT_ROOT, "chat", "config.json");
+          fs.mkdirSync(path.dirname(configPath), { recursive: true });
+          fs.writeFileSync(configPath, content, {
+            encoding: "utf8",
+            mode: 0o600,
+          });
+          fs.chmodSync(configPath, 0o600);
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ success: true }));
+        } catch (e: unknown) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ success: false, error: errMessage(e) }));
+        }
+      });
+      return;
+    }
+
+    // Super Agent tasks read/write (~/.pi/agent/super-agent/tasks.json)
+    if (urlPath === "/api/super-agent/tasks" && req.method === "GET") {
+      try {
+        const tasksPath = path.join(PI_AGENT_ROOT, "super-agent", "tasks.json");
+        const content = fs.existsSync(tasksPath)
+          ? fs.readFileSync(tasksPath, "utf8")
+          : '{"tasks":[]}';
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(content);
+      } catch (e: unknown) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: errMessage(e) }));
+      }
+      return;
+    }
+
+    if (urlPath === "/api/super-agent/tasks" && req.method === "PUT") {
+      let body = "";
+      req.on("data", (chunk: Buffer) => {
+        body += chunk.toString();
+      });
+      req.on("end", () => {
+        try {
+          const parsed = JSON.parse(body);
+          const tasksPath = path.join(PI_AGENT_ROOT, "super-agent", "tasks.json");
+          fs.mkdirSync(path.dirname(tasksPath), { recursive: true });
+          fs.writeFileSync(tasksPath, JSON.stringify(parsed, null, 2), "utf8");
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ success: true }));
         } catch (e: unknown) {
           res.writeHead(400, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ success: false, error: errMessage(e) }));
@@ -1925,7 +2907,7 @@ export default function (pi: ExtensionAPI) {
 
       pruneSessionCaches(liveFiles);
 
-      const projects = (
+      const parsedProjects = (
         await mapWithConcurrencyLimit(
           projectWork,
           8,
@@ -1976,6 +2958,10 @@ export default function (pi: ExtensionAPI) {
       ).filter(
         // biome-ignore lint/suspicious/noExplicitAny: dynamic session-list entries
         (p): p is { path: string; dirName: string; sessions: any[] } => p !== null,
+      );
+      const projects = markChatWorkerSessions(
+        mergeLiveInstanceSessions(parsedProjects, getRunningInstances()),
+        getChatWorkerStatuses(),
       );
 
       projects.sort((a, b) => {
@@ -2258,7 +3244,11 @@ export default function (pi: ExtensionAPI) {
       res.end(JSON.stringify(payload));
     } catch (e: unknown) {
       res.writeHead(500, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: errMessage(e) || "Failed to build cost dashboard" }));
+      res.end(
+        JSON.stringify({
+          error: errMessage(e) || "Failed to build cost dashboard",
+        }),
+      );
     }
   }
 
@@ -2396,37 +3386,47 @@ export default function (pi: ExtensionAPI) {
     ".parcel-cache",
   ]);
 
-  function serveFileList(res: http.ServerResponse, dirPath: string) {
+  // Uses fs.promises (not the *Sync variants) so a large/slow/network-mounted
+  // directory listing doesn't block the Node.js event loop — synchronous I/O
+  // here would stall every other in-flight request on this pi process,
+  // including the Super Agent runtime panel's task polling and RPC/WebSocket
+  // traffic for the active chat.
+  async function serveFileList(res: http.ServerResponse, dirPath: string) {
     try {
-      if (!fs.existsSync(dirPath) || !fs.statSync(dirPath).isDirectory()) {
+      const dirStat = await fs.promises.stat(dirPath).catch(() => null);
+      if (!dirStat?.isDirectory()) {
         res.writeHead(400, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "Not a directory" }));
         return;
       }
 
-      const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+      const entries = await fs.promises.readdir(dirPath, {
+        withFileTypes: true,
+      });
+      const candidates = entries.filter(
+        (entry) =>
+          !(entry.name.startsWith(".") && entry.name !== ".env") && !IGNORED_NAMES.has(entry.name),
+      );
+
       // biome-ignore lint/suspicious/noExplicitAny: dynamic file-browser entries (name/isDirectory/etc.)
-      const items: any[] = [];
-
-      for (const entry of entries) {
-        if (entry.name.startsWith(".") && entry.name !== ".env") continue;
-        if (IGNORED_NAMES.has(entry.name)) continue;
-
-        try {
-          const fullPath = path.join(dirPath, entry.name);
-          const stat = fs.statSync(fullPath);
-
-          items.push({
-            name: entry.name,
-            path: fullPath,
-            isDirectory: entry.isDirectory(),
-            size: entry.isDirectory() ? null : stat.size,
-            mtime: stat.mtimeMs,
-          });
-        } catch {
-          /* skip inaccessible */
-        }
-      }
+      const statted: any[] = await Promise.all(
+        candidates.map(async (entry) => {
+          try {
+            const fullPath = path.join(dirPath, entry.name);
+            const stat = await fs.promises.stat(fullPath);
+            return {
+              name: entry.name,
+              path: fullPath,
+              isDirectory: entry.isDirectory(),
+              size: entry.isDirectory() ? null : stat.size,
+              mtime: stat.mtimeMs,
+            };
+          } catch {
+            return null; // skip inaccessible (broken symlink, permission denied, etc.)
+          }
+        }),
+      );
+      const items = statted.filter((item) => item !== null);
 
       // Directories first, then files, both alphabetical
       items.sort((a, b) => {
@@ -2482,7 +3482,10 @@ export default function (pi: ExtensionAPI) {
           try {
             const filePath = path.join(projectDir, file);
             const stream = fs.createReadStream(filePath, { encoding: "utf8" });
-            const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+            const rl = readline.createInterface({
+              input: stream,
+              crlfDelay: Infinity,
+            });
 
             let sessionId = "";
             let sessionName = "";
@@ -2643,7 +3646,10 @@ export default function (pi: ExtensionAPI) {
         const incoming = JSON.parse(text);
         const command =
           incoming?.type === "broker_command"
-            ? { ...(incoming.payload || {}), id: incoming.payload?.id ?? incoming.requestId }
+            ? {
+                ...(incoming.payload || {}),
+                id: incoming.payload?.id ?? incoming.requestId,
+              }
             : incoming;
         const dispatch = globalState.handleCommand;
         if (dispatch) {
@@ -2825,10 +3831,15 @@ export default function (pi: ExtensionAPI) {
           const ext = path.extname(filePath).toLowerCase();
           const contentType = MIME_TYPES[ext] || file.type || "application/octet-stream";
           return new Response(file as unknown as BodyInit, {
-            headers: { "Content-Type": contentType, "Cache-Control": "no-store" },
+            headers: {
+              "Content-Type": contentType,
+              "Cache-Control": "no-store",
+            },
           });
         } catch (err: unknown) {
-          return new Response(`Internal error: ${errMessage(err)}`, { status: 500 });
+          return new Response(`Internal error: ${errMessage(err)}`, {
+            status: 500,
+          });
         }
       }
 

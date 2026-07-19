@@ -8,6 +8,10 @@
       "!src-tauri/gen",
       "!dist",
       "!extensions/dist",
+      "!.cache",
+      "!.claude",
+      "!.pi",
+      "!.worktrees",
       "!node_modules",
       "!public/vendor"
     ]

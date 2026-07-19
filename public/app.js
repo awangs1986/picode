@@ -2,38 +2,66 @@
  * Main App - Ties everything together
  */
 
-import { setupContextViz } from "./app-context-viz.js";
-import { setupSettingsEditors } from "./app-settings-editors.js";
-import { setupSettingsToggles } from "./app-settings-toggles.js";
-import { createAppUpdater } from "./app-updater.js";
-import { setupVoiceInput } from "./app-voice-input.js";
-import { DialogHandler } from "./dialogs.js";
-import { FileBrowser } from "./file-browser.js";
-import { anchorHistoryToBottom } from "./history-scroll-anchor.js";
-import { setupMessagesInsets } from "./layout-insets.js";
-import { MessageRenderer } from "./message-renderer.js";
-import { resolveNewSessionLiveFile } from "./new-session-refresh.js";
-import { getOnboardingState } from "./onboarding-state.js";
-import { renderPackageInstallFailure } from "./package-install-status.js";
-import { findPortForSession, getWorkspacePathForPort } from "./session-routing.js";
-import { SessionSidebar } from "./session-sidebar.js";
+import { setupContextViz } from "./ui/context-viz.js";
+import "./cost/dashboard.js";
+import { StateManager } from "./app/state.js";
+import { initTransport } from "./app/transport.js";
+import { createAppUpdater } from "./app/updater.js";
+import { setupVoiceInput } from "./app/voice-input.js";
+import { resolveWebSocketUrl, WebSocketClient } from "./app/websocket-client.js";
+import { selectModel } from "./models/selection.js";
+import { renderPackageInstallFailure } from "./packages/install-status.js";
+import { getOnboardingState } from "./session/onboarding.js";
+import { resolveNewSessionLiveFile } from "./session/refresh.js";
+import {
+  findPortForSession,
+  getWorkspacePathForPort,
+  shouldSpawnForCrossWorkspaceSelection,
+} from "./session/routing.js";
+import { anchorHistoryToBottom } from "./session/scroll-anchor.js";
+import { setupSettingsEditors } from "./settings/editors.js";
 import {
   clearSettingsSaveMessage,
   setSettingsSaveButtonSaving,
   showSettingsSaveError,
   showSettingsSaveSuccess,
-} from "./settings-save-status.js";
-import { setupSidebarSearchControl } from "./sidebar-search-control.js";
-import { StateManager } from "./state.js";
-import { applyTheme, getCurrentTheme, themes } from "./themes.js";
-import { ToolCardRenderer } from "./tool-card.js";
-import { initTransport } from "./transport.js";
-import { resolveWebSocketUrl, WebSocketClient } from "./websocket-client.js";
+} from "./settings/save-status.js";
 import {
+  bindSuperAgentStartupToggle,
+  renderThinkingEffort,
+  setupSettingsToggles,
+} from "./settings/toggles.js";
+import { SessionSidebar } from "./sidebar/index.js";
+import { setupSidebarSearchControl } from "./sidebar/search-control.js";
+import { ensureSuperAgentSession } from "./super-agent/bootstrap.js";
+import { getRunningSuperAgentPorts, isSuperAgentSession } from "./super-agent/session.js";
+import { isSuperAgentEnabled } from "./super-agent/settings.js";
+import { planSuperAgentShutdown } from "./super-agent/stop-plan.js";
+import {
+  buildProjectAgentPrompt,
+  buildSuperAgentNotificationPrompt,
+  buildTaskComposerPrompt,
+  markTaskFinished,
+  markTaskForDispatch,
+  normalizeSuperAgentTasks,
+} from "./super-agent/task-state.js";
+import { applyTheme, getCurrentTheme, themes } from "./themes.js";
+import { DialogHandler } from "./ui/dialogs.js";
+import { setupMessagesInsets } from "./ui/layout-insets.js";
+import { MessageRenderer } from "./ui/message-renderer.js";
+import { setupResizablePanel } from "./ui/resizable-panel.js";
+import { setupSkillSlashCommand } from "./ui/skill-slash-command.js";
+import { ToolCardRenderer } from "./ui/tool-card.js";
+import {
+  buildWorkspaceUrl,
   openFolderAsWorkspace,
   startInWindowNewSession,
   startNewProjectChat,
-} from "./workspace-actions.js";
+  withBrokerWs,
+} from "./workspace/actions.js";
+import { FileBrowser } from "./workspace/file-browser.js";
+
+const COMPOSER_PLACEHOLDER = "Type a message, or use / to call a skill…";
 
 const fetchInstances = async () => {
   try {
@@ -101,7 +129,7 @@ function hideSwapOverlay() {
   if (overlay) overlay.setAttribute("data-visible", "false");
 }
 
-// Returned to workspace-actions.js — they call this BEFORE openWorkspace
+// Returned to workspace/actions.js — they call this BEFORE openWorkspace
 // (so the overlay covers spawn latency) and the returned dismiss is only
 // invoked on error (success path lets the overlay persist across the
 // navigation boundary).
@@ -158,6 +186,8 @@ const state = new StateManager();
 const messageRenderer = new MessageRenderer(document.getElementById("messages"));
 const toolCardRenderer = new ToolCardRenderer(document.getElementById("messages"));
 const dialogHandler = new DialogHandler(document.getElementById("dialog-container"), wsClient);
+let superAgentPath = "";
+let superAgentAddonsActive = false;
 
 // Session sidebar
 const sidebar = new SessionSidebar(
@@ -167,6 +197,143 @@ const sidebar = new SessionSidebar(
   { onOpenProject: () => handleOpenFolder() },
 );
 
+// ── Super Agent wiring ──────────────────────────────────────────────────────
+// Compatibility surface for Super Agent add-on Web Components.
+window.__saNav = {
+  get transport() {
+    return transport;
+  },
+  fetchInstances,
+  getCurrentPort,
+  buildWorkspaceUrl,
+  withBrokerWs,
+  navigateInWindow,
+  startInWindowNewSession,
+};
+
+// <super-agent-runtime> fires 'sa-dispatch' when the user approves a task.
+document.addEventListener("sa-dispatch", (e) => dispatchSuperAgentTask(e.detail));
+document.addEventListener("sa-ask", (e) => notifySuperAgentClarification(e.detail));
+document.addEventListener("sa-prompt-task", (e) => insertTaskPrompt(e.detail));
+document.addEventListener("sa-view-session", (e) => viewSuperAgentChildSession(e.detail));
+
+// <sa-chat-header> service buttons open Settings > Chat tab
+window.__saOpenSettings = () => {
+  void openSettings("chat");
+};
+// ── end Super Agent wiring ───────────────────────────────────────────────────
+
+async function initSuperAgentPath() {
+  try {
+    const res = await fetch("/api/home");
+    if (!res.ok) return;
+    const data = await res.json();
+    if (!data?.home) return;
+    superAgentPath = `${data.home}/.pi/agent/super-agent`;
+    sidebar.superAgentPath = superAgentPath;
+  } catch (error) {
+    console.warn("[SuperAgent] failed to resolve home directory:", error);
+  }
+}
+
+function updateSuperAgentActiveState(session = null, project = null) {
+  const active = isSuperAgentSession(session, project, superAgentPath);
+  document.body.classList.toggle("super-agent-active", active);
+  document.getElementById("super-agent-chat-header")?.classList.toggle("hidden", !active);
+  if (active && !superAgentAddonsActive && localStorage.getItem("sa-runtime-collapsed") === "0") {
+    document.querySelector("super-agent-runtime")?.classList.remove("collapsed");
+  }
+  superAgentAddonsActive = active;
+}
+
+function updateSuperAgentActiveStateFromWorkspace() {
+  updateSuperAgentActiveState(null, { path: getCurrentWorkspacePath() });
+}
+
+async function loadSessionsWithSuperAgentBootstrap() {
+  const projects = await sidebar.loadSessions();
+  if (!isSuperAgentEnabled()) return projects;
+
+  const created = await ensureSuperAgentSession({
+    superAgentPath,
+    projects,
+    transport,
+  }).catch((error) => {
+    console.warn("[SuperAgent] failed to ensure fixed session:", error);
+    return false;
+  });
+  if (created) {
+    await pollInstances().catch(() => {});
+    return sidebar.loadSessions();
+  }
+  return projects;
+}
+
+async function stopSuperAgentInstances() {
+  const instances = await fetchInstances();
+  const ports = getRunningSuperAgentPorts({
+    projects: sidebar.projects,
+    instances,
+    superAgentPath,
+  });
+  const shutdown = planSuperAgentShutdown({
+    currentPort: getCurrentPort(),
+    superAgentPorts: ports,
+    instances,
+    superAgentPath,
+  });
+  await Promise.all(
+    shutdown.portsToStopBeforeNavigation.map((port) =>
+      transport.stopInstance(port).catch((error) => {
+        console.warn(`[SuperAgent] failed to stop instance on port ${port}:`, error);
+      }),
+    ),
+  );
+  if (shutdown.navigateToPort) {
+    const dismiss = showSwapOverlay("Closing Agent Inbox…");
+    try {
+      const url = new URL(withBrokerWs(buildWorkspaceUrl(shutdown.navigateToPort), transport));
+      if (shutdown.portsToStopAfterNavigation.length > 0) {
+        url.searchParams.set("stopSuperAgentPorts", shutdown.portsToStopAfterNavigation.join(","));
+      }
+      navigateInWindow(url.toString());
+      return;
+    } catch (error) {
+      dismiss();
+      console.warn("[SuperAgent] failed to navigate away before shutdown:", error);
+    }
+  }
+  await pollInstances().catch(() => {});
+  await sidebar.loadSessions().catch(() => {});
+  updateSuperAgentActiveStateFromWorkspace();
+  updateUI();
+}
+
+async function stopSuperAgentPortsFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  const rawPorts = params.get("stopSuperAgentPorts");
+  if (!rawPorts) return;
+  params.delete("stopSuperAgentPorts");
+  const nextQuery = params.toString();
+  const nextUrl = `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ""}${window.location.hash}`;
+  window.history.replaceState({}, "", nextUrl);
+
+  const ports = rawPorts
+    .split(",")
+    .map((port) => Number(port))
+    .filter((port) => Number.isFinite(port) && port > 0 && port !== getCurrentPort());
+  if (ports.length === 0) return;
+
+  await Promise.all(
+    ports.map((port) =>
+      transport.stopInstance(port).catch((error) => {
+        console.warn(`[SuperAgent] failed to stop pending instance on port ${port}:`, error);
+      }),
+    ),
+  );
+  await pollInstances().catch(() => {});
+}
+
 // UI elements
 const messageInput = document.getElementById("message-input");
 const chatForm = document.getElementById("chat-form");
@@ -174,6 +341,28 @@ const sendBtn = document.getElementById("send-btn");
 const abortBtn = document.getElementById("abort-btn");
 const statusIndicator = document.getElementById("status-indicator");
 const statusText = document.getElementById("status-text");
+const skillSlashMenu = document.getElementById("skill-slash-menu");
+
+setupSkillSlashCommand({
+  input: messageInput,
+  container: skillSlashMenu,
+  loadSkills: async () => {
+    const response = await rpcCommand({ type: "list_skills" }, null, true);
+    if (!response?.success) {
+      throw new Error(response?.error || "Failed to load skills");
+    }
+    return response.data?.skills || [];
+  },
+});
+
+function insertTaskPrompt(task) {
+  if (!task) return;
+  const draft = messageInput.value.trim();
+  messageInput.value = `${buildTaskComposerPrompt(task)}${draft ? `\n${draft}` : ""}`;
+  messageInput.style.height = "auto";
+  messageInput.style.height = `${Math.min(messageInput.scrollHeight, 160)}px`;
+  messageInput.focus();
+}
 const openFolderBtn = document.getElementById("open-folder-btn");
 const sidebarEl = document.getElementById("sidebar");
 const sidebarToggle = document.getElementById("sidebar-toggle");
@@ -186,8 +375,16 @@ const typingIndicator = document.getElementById("typing-indicator");
 
 const sessionCostEl = document.getElementById("session-cost");
 const tokenUsageEl = document.getElementById("token-usage");
-const scrollBottomBtn = document.getElementById("scroll-bottom-btn");
+const _scrollBottomBtn = document.getElementById("scroll-bottom-btn"); // hidden legacy stub, unused
 const scrollBottomBadge = document.getElementById("scroll-bottom-badge");
+const _scrollPrevBtn = document.getElementById("scroll-prev-btn"); // hidden legacy stub, unused
+const convNavEl = document.getElementById("conv-nav");
+const convNavTrack = document.getElementById("conv-nav-track");
+
+const convNavTooltip = document.getElementById("conv-nav-tooltip");
+const convNavTooltipQ = document.getElementById("conv-nav-tooltip-q");
+const convNavTooltipA = document.getElementById("conv-nav-tooltip-a");
+const convNavTooltipSep = document.getElementById("conv-nav-tooltip-sep");
 const messagesContainer = document.getElementById("messages");
 const mainContainer = document.querySelector(".main");
 const headerEl = document.querySelector(".header");
@@ -209,6 +406,14 @@ setupMessagesInsets({
 // State tracking
 let currentStreamingElement = null;
 let currentStreamingText = "";
+// True while pi's auto-retry is re-hitting the same model after a transient
+// error (429/overload/5xx). During this window the session stays bound to the
+// failing model, so switching models won't take effect until the stuck run is
+// aborted. Tracked from `auto_retry_start` / `auto_retry_end` events.
+let isAutoRetrying = false;
+// True when the most recent assistant turn ended with stopReason "error"
+// (e.g. a rate-limit 429). Cleared once a fresh run starts or succeeds.
+let lastTurnErrored = false;
 let sessionTotalCost = 0;
 let lastInputTokens = 0;
 let contextWindowSize = 0; // fetched from model info
@@ -242,6 +447,8 @@ let deferredMirrorSync = null;
 let lastRenderedWelcomeWorkspacePath = null;
 // Maps port -> sessionFile for each pi process we're tracking
 const portSessionMap = new Map();
+// Maps port -> { taskId, superAgentPort, title } for dispatched Super Agent tasks
+const dispatchedTasks = new Map();
 // The port that wsClient is currently connected to (the "foreground" session)
 let foregroundPort = getCurrentPort();
 let foregroundWorkspacePath = "";
@@ -328,6 +535,7 @@ function syncWorkspaceIndicatorFromInstances() {
   const workspacePath = getWorkspacePathForPort(liveInstances, foregroundPort);
   if (workspacePath) foregroundWorkspacePath = workspacePath;
   updateWorkspaceIndicator(workspacePath || foregroundWorkspacePath);
+  updateSuperAgentActiveStateFromWorkspace();
   refreshGitBranch();
 }
 
@@ -376,6 +584,12 @@ const fileSidebarUp = document.getElementById("file-sidebar-up");
 const fileList = document.getElementById("file-list");
 const fileSidebarPath = document.getElementById("file-sidebar-path");
 const fileBrowser = new FileBrowser(fileList, fileSidebarPath, messageInput);
+setupResizablePanel(fileSidebar, {
+  storageKey: "pi-studio-file-sidebar-width",
+  defaultWidth: 360,
+  minWidth: 280,
+  maxWidth: 560,
+});
 fileSidebarToggle.addEventListener("click", () => {
   const isCollapsed = fileSidebar.classList.toggle("collapsed");
   if (!isCollapsed && !fileBrowser.currentPath) {
@@ -583,29 +797,252 @@ document.addEventListener("visibilitychange", () => {
 });
 
 // ═══════════════════════════════════════
-// Scroll-to-bottom button + new message indicator
+// Conversation navigator rail (Codex-style)
 // ═══════════════════════════════════════
 
+// Build the list of conversations: each entry is the user message el + its
+// immediately following assistant message el (may be null mid-stream).
+function getConversations() {
+  const turns = [];
+  let node = messagesContainer.firstElementChild;
+  while (node) {
+    if (node.classList?.contains("message") && node.classList.contains("user")) {
+      const next = node.nextElementSibling;
+      const reply =
+        next?.classList?.contains("message") && next.classList.contains("assistant") ? next : null;
+      turns.push({ user: node, assistant: reply });
+    }
+    node = node.nextElementSibling;
+  }
+  return turns;
+}
+
+// Returns the index of the conversation whose user-message is the topmost
+// partially-visible one. The header floats above the scroller, so the true
+// visible top is the header's bottom edge.
+function getActiveConvIndex(turns) {
+  if (_navLockedIdx >= 0 && _navLockedIdx < turns.length) return _navLockedIdx;
+  const visibleTop = Math.max(
+    messagesContainer.getBoundingClientRect().top,
+    headerEl?.getBoundingClientRect().bottom || 0,
+  );
+  for (let i = turns.length - 1; i >= 0; i--) {
+    if (turns[i].user.getBoundingClientRect().top <= visibleTop + 4) return i;
+  }
+  return 0;
+}
+
+function flashJumpHighlight(target) {
+  target.classList.remove("message-jump-highlight");
+  void target.offsetWidth; // force reflow so re-triggering the animation replays
+  target.classList.add("message-jump-highlight");
+  target.addEventListener("animationend", () => target.classList.remove("message-jump-highlight"), {
+    once: true,
+  });
+}
+
+function jumpToConversation(turn, idx) {
+  // Lock active index immediately so dot highlights right away, even before
+  // the smooth scroll settles (or if the scroll ends up being a no-op).
+  if (idx !== undefined) {
+    _navLockedIdx = idx;
+    clearTimeout(_navLockTimer);
+    _navLockTimer = setTimeout(() => {
+      _navLockedIdx = -1;
+      rebuildNavDots();
+    }, 800);
+  }
+  // Use an explicit scrollTo instead of turn.user.scrollIntoView(): scrollIntoView's
+  // "start" alignment is computed against the raw scroll container, not the space
+  // the floating sticky header covers, and its target can land within a few px of
+  // the current position (e.g. when only a couple of short conversations exist and
+  // the max scroll range is tiny) — some webviews then silently skip the scroll
+  // instead of nudging to it. Computing the delta ourselves guarantees a real,
+  // header-aware scrollTo happens every time.
+  const visibleTop =
+    headerEl?.getBoundingClientRect().bottom || messagesContainer.getBoundingClientRect().top;
+  const delta = turn.user.getBoundingClientRect().top - visibleTop;
+  const maxScrollTop = messagesContainer.scrollHeight - messagesContainer.clientHeight;
+  const targetScrollTop = Math.max(0, Math.min(messagesContainer.scrollTop + delta, maxScrollTop));
+  messagesContainer.scrollTo({ top: targetScrollTop, behavior: "smooth" });
+  flashJumpHighlight(turn.user);
+  rebuildNavDots();
+}
+
+function jumpToPreviousUserMessage() {
+  const turns = getConversations();
+  if (!turns.length) return;
+  const idx = getActiveConvIndex(turns);
+  if (idx > 0) jumpToConversation(turns[idx - 1], idx - 1);
+}
+
+// Jumps to the next conversation's user message. If that next conversation
+// is the last one (or there's no next one at all), scroll all the way to the
+// bottom instead — so the full final reply is visible without an extra click.
+function jumpToNextConversationOrBottom() {
+  const turns = getConversations();
+  const lastIdx = turns.length - 1;
+  const idx = getActiveConvIndex(turns);
+  const nextIdx = idx + 1;
+  if (nextIdx <= lastIdx - 1) {
+    jumpToConversation(turns[nextIdx], nextIdx);
+  } else {
+    messagesContainer.scrollTo({ top: messagesContainer.scrollHeight, behavior: "smooth" });
+    scrollBottomBadge.classList.add("hidden");
+  }
+}
+
+// ── Dot track ──────────────────────────────────────────
+let _tooltipHideTimer = null;
+let _navLockedIdx = -1;
+let _navLockTimer = null;
+
+// Minimum height (px) the nav needs to be useful:
+const CONV_NAV_MAX_HEIGHT = 560;
+
+function rebuildNavDots() {
+  const turns = getConversations();
+  const hasConvs = turns.length > 1;
+  convNavEl.classList.toggle("hidden", !hasConvs);
+  if (!hasConvs) return;
+
+  const activeIdx = getActiveConvIndex(turns);
+  // Diff-update dots to avoid full rebuild on each scroll tick
+  const existing = [...convNavTrack.children];
+  // Add missing dots
+  while (convNavTrack.children.length < turns.length) {
+    const dot = document.createElement("button");
+    dot.className = "conv-nav-dot";
+    dot.setAttribute("aria-label", `Jump to conversation ${convNavTrack.children.length + 1}`);
+    convNavTrack.appendChild(dot);
+  }
+  // Remove extra dots
+  while (convNavTrack.children.length > turns.length) {
+    convNavTrack.removeChild(convNavTrack.lastChild);
+  }
+
+  // Update active state and wire events only when the dot count changed
+  if (existing.length !== turns.length) {
+    [...convNavTrack.children].forEach((dot, i) => {
+      dot.onclick = () => jumpToConversation(turns[i], i);
+      dot.onmouseenter = () => showNavTooltip(dot, turns[i]);
+      dot.onmouseleave = () => hideNavTooltip();
+    });
+  }
+
+  [...convNavTrack.children].forEach((dot, i) => {
+    dot.classList.toggle("active", i === activeIdx);
+    dot.setAttribute("aria-label", `Jump to conversation ${i + 1}`);
+    const dist = Math.abs(i - activeIdx);
+    // Gaussian bell curve: peak=20, base=13, sigma=5
+    const w = Math.round(13 + 7 * Math.exp(-(dist * dist) / (2 * 5 * 5)));
+    dot.style.setProperty("--nav-w", w + "px");
+  });
+
+  // Scale the track down if all dots would exceed the max height.
+  const naturalHeight = convNavTrack.scrollHeight;
+  const scale = naturalHeight > CONV_NAV_MAX_HEIGHT ? CONV_NAV_MAX_HEIGHT / naturalHeight : 1;
+  convNavTrack.style.transform = scale < 1 ? `scale(${scale})` : "";
+  convNavTrack.style.transformOrigin = scale < 1 ? "top right" : "";
+  // Keep the nav's layout height in sync with the scaled visual size.
+  convNavEl.style.height = scale < 1 ? `${naturalHeight * scale}px` : "";
+}
+
+function showNavTooltip(dotEl, turn) {
+  clearTimeout(_tooltipHideTimer);
+  const q = turn.user.textContent.trim().slice(0, 120);
+  const a = turn.assistant
+    ? turn.assistant.textContent.trim().replace(/\s+/g, " ").slice(0, 180)
+    : "";
+  convNavTooltipQ.textContent = q;
+  convNavTooltipA.textContent = a;
+  convNavTooltipA.style.display = a ? "" : "none";
+  convNavTooltipSep.style.display = a ? "" : "none";
+
+  // Show first so offsetHeight is measurable, then position vertically on the dot
+  convNavTooltip.classList.remove("hidden");
+  const dotRect = dotEl.getBoundingClientRect();
+  const tipHeight = convNavTooltip.offsetHeight || 90;
+  const top = Math.max(
+    8,
+    Math.min(dotRect.top + dotRect.height / 2 - tipHeight / 2, window.innerHeight - tipHeight - 8),
+  );
+  convNavTooltip.style.top = `${top}px`;
+
+  // Trigger slide-in animation on every fresh hover
+  convNavTooltip.classList.remove("animating");
+  void convNavTooltip.offsetWidth; // reflow so animation re-fires
+  convNavTooltip.classList.add("animating");
+  convNavTooltip.addEventListener(
+    "animationend",
+    () => convNavTooltip.classList.remove("animating"),
+    {
+      once: true,
+    },
+  );
+}
+
+function hideNavTooltip() {
+  _tooltipHideTimer = setTimeout(() => convNavTooltip.classList.add("hidden"), 120);
+}
+
+convNavTooltip.onmouseenter = () => clearTimeout(_tooltipHideTimer);
+convNavTooltip.onmouseleave = () => hideNavTooltip();
+
+// ── Scroll + mutation wiring ────────────────────────────
 messagesContainer.addEventListener("scroll", () => {
   const threshold = 150;
   const atBottom =
     messagesContainer.scrollHeight - messagesContainer.scrollTop - messagesContainer.clientHeight <
     threshold;
   isScrolledUp = !atBottom;
+  if (atBottom) scrollBottomBadge.classList.add("hidden");
+  rebuildNavDots();
+});
 
-  if (atBottom) {
-    scrollBottomBtn.classList.add("hidden");
-    scrollBottomBadge.classList.add("hidden");
-  } else {
-    scrollBottomBtn.classList.remove("hidden");
+// Rebuild whenever messages are added or removed (session switch, history load,
+// streaming new assistant message, etc.) without threading a callback into every
+// call-site in MessageRenderer.
+new MutationObserver(rebuildNavDots).observe(messagesContainer, { childList: true });
+
+// Re-evaluate space availability whenever the window is resized.
+window.addEventListener("resize", rebuildNavDots);
+
+// ── Session fork via "Fork from here" button on user messages ──────────────
+messagesContainer.addEventListener("messagefork", async (e) => {
+  const { entryId } = e.detail || {};
+  if (!entryId) return;
+  if (state.isStreaming) {
+    messageRenderer.renderError("Cannot fork while a response is streaming.");
+    return;
+  }
+  if (!canUseSessionControl()) {
+    messageRenderer.renderError("Fork requires the desktop app.");
+    return;
+  }
+  const btn = e.target.closest(".message-fork-btn");
+  if (btn) {
+    btn.disabled = true;
+    btn.classList.add("forking");
+  }
+  try {
+    // pi forks natively in-place (same process/port) and emits
+    // `session_start { reason: "fork" }`; the resulting mirror_sync snapshot
+    // re-renders the forked history and updates routing. We only nudge the
+    // sidebar so the new forked session file appears in the list.
+    await transport.fork(entryId, getActivePort());
+    refreshSidebarAfterUserPrompt();
+  } catch (err) {
+    messageRenderer.renderError(`Fork failed: ${err}`);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.classList.remove("forking");
+    }
   }
 });
 
-scrollBottomBtn.addEventListener("click", () => {
-  messagesContainer.scrollTo({ top: messagesContainer.scrollHeight, behavior: "smooth" });
-  scrollBottomBtn.classList.add("hidden");
-  scrollBottomBadge.classList.add("hidden");
-});
+// scrollBottomBtn is now a hidden legacy stub; navigation handled by convNavDown.
 
 function showNewMessageBadge() {
   if (isScrolledUp) {
@@ -774,6 +1211,12 @@ function handleRPCEvent(event) {
     case "auto_compaction_end":
       handleCompactionEnd(event);
       break;
+    case "auto_retry_start":
+      handleAutoRetryStart(event);
+      break;
+    case "auto_retry_end":
+      handleAutoRetryEnd(event);
+      break;
     case "extension_ui_request":
       handleExtensionUIRequest(event);
       break;
@@ -795,12 +1238,21 @@ function handleBackgroundRPCEvent(sessionFile, event) {
     case "agent_start":
       sidebar.setStreaming(sessionFile, true);
       break;
-    case "agent_end":
+    case "agent_end": {
       sidebar.setStreaming(sessionFile, false);
       sidebar.markUnread(sessionFile);
       sidebar.loadSessions({ quiet: true }).catch(() => {});
       pollInstances().catch(() => {});
+      // Check if this background session was a dispatched Super Agent task
+      const srcPort = event?.__broker?.sourcePort;
+      if (srcPort && dispatchedTasks.has(srcPort)) {
+        const taskMeta = dispatchedTasks.get(srcPort);
+        dispatchedTasks.delete(srcPort);
+        // agent_end carries no exit status — always mark done and let Super Agent handle
+        notifySuperAgent(taskMeta.superAgentPort, taskMeta.taskId, taskMeta.title, "done", null);
+      }
       break;
+    }
     case "message_end":
       sidebar.markUnread(sessionFile);
       break;
@@ -814,6 +1266,130 @@ function handleCompactionStart() {
   el.innerHTML = '<span class="compaction-spinner">⟳</span> Compacting context…';
   messagesContainer.appendChild(el);
   scrollToBottom();
+}
+
+async function dispatchSuperAgentTask(task) {
+  if (!transport) return;
+  const targetCwd = task.targetProject;
+  if (!targetCwd) return;
+  try {
+    const newPort = await transport.openWorkspace(targetCwd, {
+      forceNewSession: true,
+      openWindow: false,
+      waitForHealth: true,
+      waitForSessions: false,
+    });
+    // Use the current port as the super-agent port if not set by the agent
+    const saPort = task.superAgentPort || getCurrentPort();
+    const dispatchTask = markTaskForDispatch(task, {
+      superAgentPort: saPort,
+      childPort: newPort,
+    });
+    await updateSuperAgentTask(saPort, dispatchTask.id, () => dispatchTask);
+    dispatchedTasks.set(newPort, {
+      taskId: dispatchTask.id,
+      superAgentPort: saPort,
+      title: dispatchTask.title,
+    });
+    // Send the task description as the first message to the new session
+    const msg = buildProjectAgentPrompt(dispatchTask);
+    await fetch(`http://localhost:${newPort}/api/rpc`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type: "prompt", message: msg }),
+    });
+  } catch (e) {
+    console.error("[SuperAgent] dispatch failed:", e);
+  }
+}
+
+async function notifySuperAgent(port, taskId, title, status, failReason) {
+  if (!port) return;
+  const summary =
+    status === "done"
+      ? "Project agent ended. Review the child session for details."
+      : failReason || "Project agent reported a failure.";
+  let updatedTask = null;
+  // Update the task status in tasks.json directly.
+  try {
+    updatedTask = await updateSuperAgentTask(port, taskId, (task) =>
+      markTaskFinished(task, { status, summary, failReason }),
+    );
+  } catch (e) {
+    console.warn("[SuperAgent] task status update failed:", e);
+  }
+  // Also notify the SA agent via chat so it can reply to the original sender
+  const msg = buildSuperAgentNotificationPrompt(updatedTask || { id: taskId, title }, {
+    status,
+    summary,
+    failReason,
+  });
+  try {
+    await fetch(`http://localhost:${port}/api/rpc`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type: "prompt", message: msg }),
+    });
+  } catch (e) {
+    console.warn("[SuperAgent] notify failed:", e);
+  }
+}
+
+async function notifySuperAgentClarification(task) {
+  const port = task?.dispatch?.superAgentPort || task?.superAgentPort || getCurrentPort();
+  if (!port || !task) return;
+  const msg = buildSuperAgentNotificationPrompt(task, {
+    status: "needs_input",
+    failReason: task.result?.failReason || task.failReason,
+  });
+  try {
+    await fetch(`http://localhost:${port}/api/rpc`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type: "prompt", message: msg }),
+    });
+  } catch (e) {
+    console.warn("[SuperAgent] clarification notify failed:", e);
+  }
+}
+
+async function viewSuperAgentChildSession(task) {
+  const childPort = Number(task?.dispatch?.childPort || task?.childPort);
+  if (!Number.isFinite(childPort) || childPort <= 0) return;
+
+  await pollInstances().catch(() => {});
+  const childInstance = liveInstances.find((instance) => instance?.port === childPort);
+  if (!childInstance) return;
+
+  const sessionFile = childInstance.sessionFile;
+  if (sessionFile) {
+    const projects = await sidebar.loadSessions().catch(() => sidebar.projects || []);
+    for (const project of projects || []) {
+      const session = (project.sessions || []).find((item) => item.filePath === sessionFile);
+      if (session) {
+        await switchSession(sessionFile, session, project);
+        return;
+      }
+    }
+  }
+
+  navigateInWindow(withBrokerWs(buildWorkspaceUrl(childPort), transport));
+}
+
+async function updateSuperAgentTask(port, taskId, updateTask) {
+  const res = await fetch(`http://localhost:${port}/api/super-agent/tasks`);
+  if (!res.ok) return null;
+  const data = await res.json();
+  const tasks = normalizeSuperAgentTasks(data.tasks || []);
+  const index = tasks.findIndex((task) => task.id === taskId);
+  if (index < 0) return null;
+  tasks[index] = updateTask(tasks[index]);
+  await fetch(`http://localhost:${port}/api/super-agent/tasks`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...data, tasks }),
+  });
+  return tasks[index];
 }
 
 function handleCompactionEnd(event) {
@@ -877,9 +1453,38 @@ function getCurrentLiveSessionFile(event = null) {
 function handleAgentStart(event = null) {
   state.setStreaming(true);
   showTypingIndicator(true);
+  // A fresh run is under way — clear any prior error latch so a normal turn
+  // isn't treated as "stuck on a failed model" by the model switcher.
+  lastTurnErrored = false;
   updateUI();
   const live = getCurrentLiveSessionFile(event);
   if (live) sidebar.setStreaming(live, true);
+}
+
+// pi's auto-retry is re-hitting the SAME model after a transient error. The
+// session is busy on the failing model during the backoff; surface that so the
+// UI doesn't look idle and the model switcher knows to abort before switching.
+function handleAutoRetryStart(event = null) {
+  isAutoRetrying = true;
+  lastTurnErrored = true;
+  state.setStreaming(true);
+  showTypingIndicator(true);
+  const attempt = event?.attempt;
+  const maxAttempts = event?.maxAttempts;
+  if (attempt && maxAttempts) {
+    statusText.textContent = `Retrying (${attempt}/${maxAttempts})...`;
+  } else {
+    statusText.textContent = "Retrying…";
+  }
+  updateUI();
+}
+
+function handleAutoRetryEnd(event = null) {
+  isAutoRetrying = false;
+  // Success clears the error latch; a final failure keeps it so the next model
+  // switch aborts the dead run.
+  if (event?.success) lastTurnErrored = false;
+  updateUI();
 }
 
 function handleAgentEnd(event = null) {
@@ -1012,6 +1617,11 @@ function handleMessageEnd(message) {
       ? String(message.errorMessage)
       : "Model request failed";
     messageRenderer.renderError(`[${provider}/${model}] ${errorMessage}`);
+    // Latch the error so a subsequent model switch aborts the stuck run
+    // (pi may still be auto-retrying this same failing model).
+    lastTurnErrored = true;
+  } else if (message?.role === "assistant") {
+    lastTurnErrored = false;
   }
   if (!currentStreamingElement && message?.role === "assistant") {
     ensureStreamingAssistantElement(message);
@@ -1127,6 +1737,8 @@ chatForm.addEventListener("submit", (e) => {
 
 messageInput.addEventListener("keydown", (e) => {
   // IME composition uses Enter to confirm candidates; never send during composition.
+  // Some WebKit/IME combinations report Enter candidate confirmation with
+  // `isComposing === false` but `keyCode === 229`, so keep the legacy fallback.
   const isImeComposing = e.isComposing || e.keyCode === 229;
   if (isImeComposing) return;
 
@@ -1373,7 +1985,10 @@ function escapeHtml(text) {
 function flushQueue() {
   if (messageQueue.length > 0 && !state.isStreaming) {
     const cmd = messageQueue.shift();
-    messageRenderer.renderUserMessage({ content: cmd.message, images: cmd.images });
+    messageRenderer.renderUserMessage({
+      content: cmd.message,
+      images: cmd.images,
+    });
     renderQueuedMessages();
     trackPromptDelivery(wsClient.send(cmd), cmd.message);
     refreshSidebarAfterUserPrompt();
@@ -1398,7 +2013,7 @@ const commands = [
     icon: "🗜️",
     label: "Compact",
     desc: "Compact context to save tokens",
-    action: () => rpcCommand({ type: "compact" }, "Compacting..."),
+    action: () => rpcCommand({ type: "compact" }, "Compacting…"),
   },
   {
     icon: "📋",
@@ -1456,37 +2071,43 @@ function closeCommandPalette() {
 commandBtn.addEventListener("click", openCommandPalette);
 commandPaletteOverlay.addEventListener("click", closeCommandPalette);
 
-async function rpcCommand(cmd, statusMsg) {
+async function rpcCommand(cmd, statusMsg, silent = false) {
   try {
-    if (statusMsg) statusText.textContent = statusMsg;
+    if (statusMsg && !silent) statusText.textContent = statusMsg;
     const resp = await fetch("/api/rpc", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(cmd),
     });
     const data = await resp.json();
-    if (data.success) {
+    if (data.success && !silent) {
       statusText.textContent = "Done";
       setTimeout(() => {
         statusText.textContent = "Connected";
       }, 2000);
-    } else {
-      statusText.textContent = data.error || "Failed";
+    } else if (!data.success) {
+      console.error("rpcCommand failed:", cmd.type, data.error);
+      if (!silent) {
+        statusText.textContent = data.error || "Failed";
+        setTimeout(() => {
+          statusText.textContent = "Connected";
+        }, 3000);
+      }
+    }
+    return data;
+  } catch (e) {
+    console.error("rpcCommand error:", cmd.type, e);
+    if (!silent) {
+      statusText.textContent = "Error";
       setTimeout(() => {
         statusText.textContent = "Connected";
       }, 3000);
     }
-    return data;
-  } catch (_e) {
-    statusText.textContent = "Error";
-    setTimeout(() => {
-      statusText.textContent = "Connected";
-    }, 3000);
   }
 }
 
 async function rpcExportHtml() {
-  const data = await rpcCommand({ type: "export_html" }, "Exporting...");
+  const data = await rpcCommand({ type: "export_html" }, "Exporting…");
   if (data?.success && data.data?.path) {
     statusText.textContent = `Exported: ${data.data.path}`;
     setTimeout(() => {
@@ -1496,7 +2117,7 @@ async function rpcExportHtml() {
 }
 
 async function showSessionStats() {
-  const data = await rpcCommand({ type: "get_session_stats" }, "Loading stats...");
+  const data = await rpcCommand({ type: "get_session_stats" }, "Loading stats…");
   if (data?.success && data.data) {
     const s = data.data;
     const lines = [
@@ -1520,9 +2141,6 @@ const modelDropdownBtn = document.getElementById("model-dropdown-btn");
 const modelDropdownLabel = document.getElementById("model-dropdown-label");
 const modelDropdownMenu = document.getElementById("model-dropdown-menu");
 const thinkingBtn = document.getElementById("thinking-btn");
-function formatThinkingLevelLabel(level) {
-  return `Thinking: ${level || "off"}`;
-}
 function formatCompactThinkingLevelLabel(level) {
   return `Think ${level || "off"}`;
 }
@@ -1534,6 +2152,11 @@ function updateThinkingBtn() {
     `Thinking effort: ${currentThinkingLevel}. Click to cycle reasoning depth.`,
   );
   thinkingBtn.classList.toggle("off", currentThinkingLevel === "off");
+  renderThinkingEffort(currentThinkingLevel || "off", {
+    thinkingSteps: thinkingEffortSteps,
+    thinkingMarker: thinkingEffortMarker,
+    thinkingName: thinkingEffortName,
+  });
 }
 let currentModelId = "";
 let availableModels = [];
@@ -1550,7 +2173,7 @@ function currentOnboardingState() {
 }
 
 function openConfigurationSettings() {
-  return openSettings().then(() => selectSettingsTab("configuration"));
+  return openSettings("configuration");
 }
 
 function updateOnboardingUI() {
@@ -1589,12 +2212,28 @@ async function fetchModelInfo() {
     }
     if (stateData.success && stateData.data?.model) {
       currentModelId = stateData.data.model.id || "";
-      updateModelLabel();
 
       const model = availableModels.find((m) => m.id === currentModelId);
-      if (model?.contextWindow) {
-        contextWindowSize = model.contextWindow;
-        updateTokenUsage();
+      if (!model && availableModels.length > 0) {
+        const fallbackModel = availableModels[0];
+        const resp = await rpcCommand({
+          type: "set_model",
+          provider: fallbackModel.provider,
+          modelId: fallbackModel.id,
+        });
+        if (resp?.success) {
+          currentModelId = fallbackModel.id;
+          if (fallbackModel.contextWindow) {
+            contextWindowSize = fallbackModel.contextWindow;
+            updateTokenUsage();
+          }
+        }
+      } else {
+        updateModelLabel();
+        if (model?.contextWindow) {
+          contextWindowSize = model.contextWindow;
+          updateTokenUsage();
+        }
       }
     }
     if (stateData.success && stateData.data?.thinkingLevel) {
@@ -1694,16 +2333,39 @@ function openModelDropdown() {
       el.innerHTML = `<span>${shortName}${providerLabel}</span><span class="model-dropdown-item-ctx">${ctxK}</span>`;
       el.addEventListener("click", async () => {
         closeModelDropdown();
-        const display = m.id.replace(/^claude-/, "").replace(/-\d{8}$/, "");
-        await rpcCommand(
-          { type: "set_model", provider: m.provider, modelId: m.id },
-          `Switching to ${display}...`,
-        );
-        currentModelId = m.id;
-        updateModelLabel();
-        if (m.contextWindow) {
-          contextWindowSize = m.contextWindow;
-          updateTokenUsage();
+        // If the session is stuck auto-retrying the current (failing) model, or
+        // the last turn errored out, the in-flight run stays bound to the old
+        // model and the switch would have no visible effect. Abort the dead run
+        // first so the new model applies to the next prompt immediately. A
+        // healthy stream is left untouched — we only interrupt retry/error runs.
+        if (isAutoRetrying || lastTurnErrored) {
+          wsClient.send({ type: "abort" });
+          isAutoRetrying = false;
+          lastTurnErrored = false;
+          showTypingIndicator(false);
+          if (state.isStreaming) {
+            state.setStreaming(false);
+            currentStreamingElement = null;
+            currentStreamingText = "";
+            currentStreamingThinking = "";
+            updateUI();
+          }
+        }
+        const result = await selectModel({
+          model: m,
+          rpcCommand,
+          refreshModelInfo: fetchModelInfo,
+          applySelectedModel: (selectedModel) => {
+            currentModelId = selectedModel.id;
+            updateModelLabel();
+            if (selectedModel.contextWindow) {
+              contextWindowSize = selectedModel.contextWindow;
+              updateTokenUsage();
+            }
+          },
+        });
+        if (!result?.success) {
+          messageRenderer.renderError(`Model switch failed: ${result?.error || "unknown error"}`);
         }
       });
       itemsContainer.appendChild(el);
@@ -1745,7 +2407,7 @@ document.addEventListener("click", (e) => {
 
 // Thinking level button — cycles through levels
 thinkingBtn.addEventListener("click", async () => {
-  const data = await rpcCommand({ type: "cycle_thinking_level" }, "Cycling thinking...");
+  const data = await rpcCommand({ type: "cycle_thinking_level" }, "Cycling thinking…");
   if (data?.success && data.data?.level) {
     currentThinkingLevel = data.data.level;
     updateThinkingBtn();
@@ -1807,6 +2469,29 @@ document.addEventListener("keydown", (e) => {
       });
     }
   }
+
+  // Cmd/Ctrl+Up — Jump to the previous conversation (skip typing in inputs).
+  if (e.key === "ArrowUp" && (e.metaKey || e.ctrlKey) && !isInInput()) {
+    e.preventDefault();
+    jumpToPreviousUserMessage();
+  }
+
+  // Cmd/Ctrl+Down — Jump to the next conversation, or the bottom if this is
+  // already the last one.
+  if (e.key === "ArrowDown" && (e.metaKey || e.ctrlKey) && !isInInput()) {
+    e.preventDefault();
+    jumpToNextConversationOrBottom();
+  }
+
+  // Cmd+Shift+T (macOS) / Ctrl+Shift+T — Toggle Agent Inbox (Runtime panel).
+  if ((e.key === "t" || e.key === "T") && (e.metaKey || e.ctrlKey) && e.shiftKey && !e.altKey) {
+    e.preventDefault();
+    const runtimePanel = document.querySelector("super-agent-runtime");
+    if (runtimePanel) {
+      const collapsed = runtimePanel.classList.toggle("collapsed");
+      localStorage.setItem("sa-runtime-collapsed", collapsed ? "1" : "0");
+    }
+  }
 });
 
 function isInInput() {
@@ -1823,7 +2508,9 @@ function isMobile() {
 }
 
 function updateSidebarToggleIcon() {
-  sidebarToggle.textContent = "☰";
+  // Icon is a static inline SVG in index.html; keep it as-is regardless of
+  // sidebar open/closed state. (Previously this overwrote the SVG with the
+  // "\u2630" text glyph on first toggle, changing the icon's appearance.)
 }
 
 function toggleSidebar() {
@@ -1929,6 +2616,7 @@ async function resetUiForNewSession() {
   toolCardRenderer.clear();
   renderWorkspaceWelcome();
   sidebar.clearActive();
+  updateSuperAgentActiveState(null, null);
   mirrorActiveSessionFile = null;
   viewingActiveSession = true;
   pendingSessionSwitchPath = null;
@@ -1962,6 +2650,11 @@ async function activateNewParallelSession(port, cwd) {
 }
 
 async function newSession() {
+  if (isSuperAgentSession(null, { path: getCurrentWorkspacePath() }, superAgentPath)) {
+    messageRenderer.renderSystemMessage("Agent Inbox uses one shared session.");
+    return;
+  }
+
   if (nativeAvailable()) {
     // Default behavior is process-efficient: create the new chat in-place on
     // the current pi process. Only spawn a dedicated process when a parallel
@@ -2008,7 +2701,7 @@ async function newSession() {
   lastInputTokens = 0;
   updateCostDisplay();
   updateTokenUsage();
-  const data = await rpcCommand({ type: "new_session" }, "Starting new session...");
+  const data = await rpcCommand({ type: "new_session" }, "Starting new session…");
   if (data?.success === false || data?.data?.cancelled) {
     messageRenderer.renderError(data?.error || "New session was cancelled");
     return;
@@ -2110,6 +2803,7 @@ async function handleSessionSelectImpl(session, project) {
     pendingSessionSwitchPath = null;
   }
   sidebar.setActive(session.filePath);
+  updateSuperAgentActiveState(session, project);
   const targetLiveInstance = liveInstances.find(
     (instance) => instance.sessionFile === session.filePath,
   );
@@ -2161,15 +2855,20 @@ async function handleSessionSelectImpl(session, project) {
       return;
     }
 
-    if (wasStreaming) {
+    const selectedProjectCwd = project?.path || session?.cwd || "";
+    const shouldSpawnForWorkspace =
+      !targetLiveInstance &&
+      shouldSpawnForCrossWorkspaceSelection(liveInstances, foregroundPort, selectedProjectCwd);
+
+    if (wasStreaming || shouldSpawnForWorkspace) {
       if (transport.spawnSessionProcess) {
         let targetPort = null;
         try {
-          const cwd = getCurrentWorkspacePath();
+          const cwd = selectedProjectCwd || getCurrentWorkspacePath();
           targetPort = await transport.spawnSessionProcess(session.filePath, cwd);
         } catch (e) {
           console.error(
-            "[App] Failed to spawn session process, falling back to deferred switch:",
+            "[App] Failed to spawn session process, falling back to deferred/current switch:",
             e,
           );
         }
@@ -2193,6 +2892,14 @@ async function handleSessionSelectImpl(session, project) {
           }
           return;
         }
+      }
+      if (shouldSpawnForWorkspace) {
+        messageRenderer.renderError("Failed to open session in its workspace process.");
+        if (isMobile()) {
+          sidebarEl.classList.add("collapsed");
+          sidebarOverlay.classList.remove("visible");
+        }
+        return;
       }
       // Fallback: defer the switch until the current agent run ends.
       // This preserves the old safe behavior when spawn is unavailable or fails.
@@ -2271,7 +2978,9 @@ async function renderSelectedSessionHistory(session, project) {
       selectedSession: session.filePath,
       entries: data.entries?.length || 0,
     });
-    renderSessionHistory(data.entries || [], { searchQuery: sidebar.searchQuery });
+    renderSessionHistory(data.entries || [], {
+      searchQuery: sidebar.searchQuery,
+    });
   } catch (e) {
     console.error("[Session route] history:fetch-error", {
       selectedSession: session?.filePath,
@@ -2288,7 +2997,7 @@ async function switchSession(sessionFile, session = null, project = null) {
     toolCardRenderer.clear();
 
     if (sessionFile && session) {
-      messageRenderer.renderSystemMessage("Loading session...");
+      messageRenderer.renderSystemMessage("Loading session…");
 
       const dirName = project?.dirName;
       const file = session.file;
@@ -2302,7 +3011,9 @@ async function switchSession(sessionFile, session = null, project = null) {
           console.log("[App] History entries:", data.entries?.length || 0);
 
           messageRenderer.clear();
-          renderSessionHistory(data.entries || [], { searchQuery: sidebar.searchQuery });
+          renderSessionHistory(data.entries || [], {
+            searchQuery: sidebar.searchQuery,
+          });
         } catch (e) {
           console.error("[App] History fetch error:", e);
         }
@@ -2408,6 +3119,7 @@ function handleMirrorSync(data) {
   if (syncWorkspacePath) {
     foregroundWorkspacePath = syncWorkspacePath;
     updateWorkspaceIndicator(syncWorkspacePath);
+    updateSuperAgentActiveStateFromWorkspace();
   }
   wsClient.setRoutingContext({
     workspaceId: data.workspaceId || `workspace:${getCurrentWorkspacePath() || "unknown"}`,
@@ -2508,7 +3220,7 @@ function updateMirrorInputState() {
   const inputArea = document.querySelector(".input-area");
   if (viewingActiveSession) {
     messageInput.disabled = false;
-    messageInput.placeholder = "Message...";
+    messageInput.placeholder = COMPOSER_PLACEHOLDER;
     inputArea?.classList.remove("mirror-readonly");
   } else {
     messageInput.disabled = true;
@@ -2554,8 +3266,12 @@ function renderSessionHistory(entries, { searchQuery = "" } = {}) {
       if (content || images.length > 0) {
         userCount++;
         messageRenderer.renderUserMessage(
-          { content: content || "", images: images.length > 0 ? images : undefined },
+          {
+            content: content || "",
+            images: images.length > 0 ? images : undefined,
+          },
           true,
+          { entryId: entry.id || null },
         );
       }
     } else if (msg.role === "assistant") {
@@ -2706,7 +3422,7 @@ function showCompactButton() {
   btn.textContent = "Compact";
   btn.title = "Context is over 80% — compact to save tokens";
   btn.addEventListener("click", () => {
-    rpcCommand({ type: "compact" }, "Compacting...");
+    rpcCommand({ type: "compact" }, "Compacting…");
     hideCompactButton();
   });
   // Insert next to token usage in header
@@ -2845,7 +3561,7 @@ function updateUI() {
   if (isStreaming) {
     statusIndicator.classList.add("streaming");
     statusIndicator.classList.remove("connected");
-    statusText.textContent = "Working...";
+    statusText.textContent = "Working…";
   } else {
     statusIndicator.classList.remove("streaming");
     statusIndicator.classList.add("connected");
@@ -2872,7 +3588,7 @@ function updateUI() {
     abortBtn.classList.add("hidden");
     messageInput.placeholder = "Waiting for current session to finish…";
   } else if (onboarding.canQuery) {
-    messageInput.placeholder = "Type a message...";
+    messageInput.placeholder = COMPOSER_PLACEHOLDER;
   }
 }
 
@@ -2897,8 +3613,11 @@ const settingsTabs = Array.from(document.querySelectorAll(".settings-tab"));
 const themeGrid = document.getElementById("theme-grid");
 
 const toggleAutoCompact = document.getElementById("toggle-auto-compact");
-const btnThinkingLevel = document.getElementById("btn-thinking-level");
+const thinkingEffortSteps = document.getElementById("thinking-effort-steps");
+const thinkingEffortMarker = document.getElementById("thinking-effort-marker");
+const thinkingEffortName = document.getElementById("thinking-effort-name");
 const toggleShowThinking = document.getElementById("toggle-show-thinking");
+let toggleSuperAgent = document.getElementById("toggle-super-agent");
 const toggleAuth = document.getElementById("toggle-auth");
 const authSection = document.getElementById("settings-auth-section");
 const piVersionValue = document.getElementById("setting-pi-version-value");
@@ -2907,6 +3626,16 @@ let piVersionInflight = null;
 let loadInlineConfigEditor = async () => {};
 let loadInlineModelsEditor = async () => {};
 let loadApiKeysPanel = async () => {};
+
+async function handleSuperAgentEnabledChanged(enabled) {
+  if (!enabled) {
+    await stopSuperAgentInstances();
+    return;
+  }
+  await loadSessionsWithSuperAgentBootstrap();
+  sessionsLoaded = true;
+  updateUI();
+}
 
 function selectSettingsTab(tabKey = "general") {
   const targetTabKey = tabKey === "auth" ? "configuration" : tabKey;
@@ -2923,6 +3652,16 @@ function selectSettingsTab(tabKey = "general") {
   }
   if (targetTabKey === "extensions") {
     loadBrowsePackages();
+  }
+  if (targetTabKey === "usage") {
+    const dashboard = document.getElementById("settings-cost-dashboard");
+    dashboard?.ensureLoaded?.().catch((error) => {
+      console.error("[Cost] Failed to load dashboard:", error);
+    });
+  }
+  if (targetTabKey === "chat") {
+    toggleSuperAgent = document.getElementById("toggle-super-agent");
+    bindSuperAgentStartupToggle(toggleSuperAgent, handleSuperAgentEnabledChanged);
   }
 }
 
@@ -3150,7 +3889,9 @@ function sortBrowsePackages(packages) {
   switch (browseSortMode) {
     case "name":
       sorted.sort((a, b) =>
-        (a.name || "").localeCompare(b.name || "", undefined, { sensitivity: "base" }),
+        (a.name || "").localeCompare(b.name || "", undefined, {
+          sensitivity: "base",
+        }),
       );
       break;
     case "updated":
@@ -3327,10 +4068,10 @@ function createBrowseRow(pkg) {
       button.disabled = true;
       button.classList.add("loading");
       const previous = installed ? "Uninstall" : "Install";
-      setExtensionActionButton(button, installed ? "Uninstalling..." : "Installing...", true);
+      setExtensionActionButton(button, installed ? "Uninstalling…" : "Installing…", true);
       status.hidden = false;
       status.classList.remove("is-error");
-      status.textContent = installed ? "Removing..." : "Installing...";
+      status.textContent = installed ? "Removing…" : "Installing…";
       status.title = status.textContent;
       try {
         if (installed) {
@@ -3451,15 +4192,45 @@ function buildThemeGrid() {
   }
 }
 
-async function openSettings() {
+function normalizeSettingsTabKey(tabKey) {
+  const rawTabKey = typeof tabKey === "string" ? tabKey : "general";
+  const decodedTabKey = decodeURIComponent(rawTabKey || "general");
+  const normalizedTabKey = decodedTabKey === "auth" ? "configuration" : decodedTabKey;
+  return settingsNavItems.some((item) => item.dataset.settingsTab === normalizedTabKey)
+    ? normalizedTabKey
+    : "general";
+}
+
+function settingsHashForTab(tabKey) {
+  return `#/settings/${encodeURIComponent(normalizeSettingsTabKey(tabKey))}`;
+}
+
+function updateSettingsHash(tabKey) {
+  const nextHash = settingsHashForTab(tabKey);
+  if (window.location.hash === nextHash) return;
+  window.history.replaceState(
+    null,
+    "",
+    `${window.location.pathname}${window.location.search}${nextHash}`,
+  );
+}
+
+function clearSettingsHash() {
+  if (!window.location.hash.startsWith("#/settings")) return;
+  window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+}
+
+async function openSettings(tabKey = "general", options = {}) {
+  const targetTabKey = normalizeSettingsTabKey(tabKey);
+  if (options.updateHash !== false) updateSettingsHash(targetTabKey);
   settingsPanel.classList.remove("hidden");
   messagesContainer.style.display = "none";
   document.querySelector(".input-area").style.display = "none";
   document.querySelector(".mode-link:first-child")?.classList.remove("active");
-  selectSettingsTab("general");
+  selectSettingsTab(targetTabKey);
   buildThemeGrid();
   if (piVersionValue) {
-    piVersionValue.textContent = piVersionCache || "Loading...";
+    piVersionValue.textContent = piVersionCache || "Loading…";
   }
   setTimeout(() => {
     if (!settingsPanel.classList.contains("hidden")) loadPiVersion();
@@ -3478,7 +4249,6 @@ async function openSettings() {
       // Auto-compaction toggle
       toggleAutoCompact.className = `settings-toggle${s.autoCompactionEnabled ? " on" : ""}`;
       // Thinking level
-      btnThinkingLevel.textContent = formatThinkingLevelLabel(s.thinkingLevel);
       currentThinkingLevel = s.thinkingLevel || "off";
       updateThinkingBtn();
       // Session name
@@ -3502,18 +4272,33 @@ async function openSettings() {
   }
 }
 
-function closeSettings() {
+function closeSettings(options = {}) {
+  if (options.clearHash !== false) clearSettingsHash();
   settingsPanel.classList.add("hidden");
   messagesContainer.style.display = "";
   document.querySelector(".input-area").style.display = "";
   document.querySelector(".mode-link:first-child")?.classList.add("active");
 }
 
+function restorePageFromHash() {
+  const route = window.location.hash.slice(1);
+  if (route === "/settings" || route.startsWith("/settings/")) {
+    const tabKey = route.split("/")[2] || "general";
+    void openSettings(tabKey, { updateHash: false });
+    return;
+  }
+  if (!settingsPanel.classList.contains("hidden")) {
+    closeSettings({ clearHash: false });
+  }
+}
+
 async function openUpdatesFromSidebar() {
   await updater.openUpdatesFromSidebar();
 }
 
-settingsBtn.addEventListener("click", openSettings);
+settingsBtn.addEventListener("click", () => {
+  void openSettings();
+});
 sidebarUpdateBtn?.addEventListener("click", () => {
   openUpdatesFromSidebar().catch((err) => {
     console.warn("[updater] unable to open updates from sidebar:", err);
@@ -3523,21 +4308,27 @@ settingsClose.addEventListener("click", closeSettings);
 settingsOverlay?.addEventListener("click", closeSettings);
 settingsNavItems.forEach((item) => {
   item.addEventListener("click", () => {
-    selectSettingsTab(item.dataset.settingsTab || "general");
+    const tabKey = item.dataset.settingsTab || "general";
+    selectSettingsTab(tabKey);
+    updateSettingsHash(tabKey);
   });
 });
 
 setupSettingsToggles({
   toggleAutoCompact,
-  btnThinkingLevel,
+  thinkingSteps: thinkingEffortSteps,
+  thinkingMarker: thinkingEffortMarker,
+  thinkingName: thinkingEffortName,
   toggleShowThinking,
   toggleAuth,
+  toggleSuperAgent,
   rpcCommand,
   getCurrentThinkingLevel: () => currentThinkingLevel,
   setCurrentThinkingLevel: (level) => {
     currentThinkingLevel = level;
   },
   updateThinkingBtn,
+  onSuperAgentEnabledChanged: handleSuperAgentEnabledChanged,
 });
 
 ({ loadApiKeysPanel, loadInlineConfigEditor, loadInlineModelsEditor } = setupSettingsEditors({
@@ -3622,22 +4413,29 @@ async function handleOpenFolder() {
 
 openFolderBtn?.addEventListener("click", handleOpenFolder);
 
+window.addEventListener("hashchange", restorePageFromHash);
+restorePageFromHash();
+
 wsClient.connect();
 dismissBootSwapOverlayWhenReady();
 renderWorkspaceWelcome();
-sidebar.loadSessions().then(() => {
-  sessionsLoaded = true;
-  updateUI();
-  if (!hasAnySessionsLoaded()) {
-    renderWorkspaceWelcome();
-  }
-  if (deferredMirrorSync) {
-    const syncData = deferredMirrorSync;
-    deferredMirrorSync = null;
-    handleMirrorSync(syncData);
-  }
-  if (isMirrorMode) updateMirrorLiveIndicator();
-});
+initSuperAgentPath()
+  .catch(() => {})
+  .then(() => stopSuperAgentPortsFromUrl())
+  .then(() => loadSessionsWithSuperAgentBootstrap())
+  .then(() => {
+    sessionsLoaded = true;
+    updateUI();
+    if (!hasAnySessionsLoaded()) {
+      renderWorkspaceWelcome();
+    }
+    if (deferredMirrorSync) {
+      const syncData = deferredMirrorSync;
+      deferredMirrorSync = null;
+      handleMirrorSync(syncData);
+    }
+    if (isMirrorMode) updateMirrorLiveIndicator();
+  });
 
 // Dismiss mobile splash screen
 const splash = document.getElementById("mobile-splash");

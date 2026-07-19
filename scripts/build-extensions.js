@@ -33,7 +33,12 @@ const ROOT = path.resolve(__dirname, "..");
 const SRC_DIR = path.join(ROOT, "extensions");
 const OUT_DIR = path.join(SRC_DIR, "dist");
 
-const ENTRIES = ["embedded-server.ts"];
+// [inputPath, outputName] — outputName defaults to inputPath with .ts→.mjs
+const ENTRIES = [
+  ["embedded-server.ts"],
+  ["picot-bridge.ts"],
+  ["pi-chat-src/extension-entry.ts", "pi-chat.mjs"],
+];
 
 const EXTERNAL = [
   "@earendil-works/pi-coding-agent",
@@ -42,16 +47,18 @@ const EXTERNAL = [
   "@mariozechner/pi-coding-agent",
   "@mariozechner/pi-ai",
   "@mariozechner/pi-tui",
+  "@sinclair/typebox",
   "typebox",
 ];
 
-async function buildOne(entry) {
+async function buildOne(entrySpec) {
+  const [entry, outName] = Array.isArray(entrySpec) ? entrySpec : [entrySpec];
   const inFile = path.join(SRC_DIR, entry);
   if (!fs.existsSync(inFile)) {
     console.warn(`[build-extensions] skip missing entry: ${entry}`);
     return;
   }
-  const outFile = path.join(OUT_DIR, entry.replace(/\.ts$/, ".mjs"));
+  const outFile = path.join(OUT_DIR, outName || entry.replace(/\.ts$/, ".mjs"));
   await esbuild.build({
     entryPoints: [inFile],
     outfile: outFile,
