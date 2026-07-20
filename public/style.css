@@ -2052,8 +2052,9 @@ body {
   overflow: hidden;
 }
 
-.pkg-browse-row:has(.settings-extension-status.is-error:not([hidden])) {
+.pkg-browse-row:has(.settings-extension-status:not([hidden])) {
   height: auto;
+  min-height: 140px;
   overflow: visible;
 }
 

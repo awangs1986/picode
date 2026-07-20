@@ -23,12 +23,11 @@ describe("extensions browse layout", () => {
     expect(descriptionRule).toContain("overflow: hidden");
   });
 
-  test("lets visible install errors expand beyond the card clamp", () => {
-    const errorRule = ruleBody(
-      ".pkg-browse-row:has(.settings-extension-status.is-error:not([hidden]))",
-    );
+  test("lets any visible status (installing/removing/error) expand beyond the card clamp", () => {
+    const statusRule = ruleBody(".pkg-browse-row:has(.settings-extension-status:not([hidden]))");
 
-    expect(errorRule).toContain("height: auto");
-    expect(errorRule).toContain("overflow: visible");
+    expect(statusRule).toContain("height: auto");
+    expect(statusRule).toContain("overflow: visible");
+    expect(statusRule).toContain("min-height: 140px");
   });
 });
