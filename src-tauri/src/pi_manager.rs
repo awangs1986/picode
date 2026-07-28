@@ -563,6 +563,22 @@ impl PiManager {
     }
 
     pub fn spawn(&self, cwd: &str, port: u16, session_path: Option<&str>) -> Result<(), String> {
+        self.spawn_inner(cwd, port, session_path, false)
+    }
+
+    /// Start an isolated Pi runtime that never creates a session in the user's
+    /// chat history. Used for explicit, one-shot semantic processing jobs.
+    pub fn spawn_ephemeral(&self, cwd: &str, port: u16) -> Result<(), String> {
+        self.spawn_inner(cwd, port, None, true)
+    }
+
+    fn spawn_inner(
+        &self,
+        cwd: &str,
+        port: u16,
+        session_path: Option<&str>,
+        ephemeral: bool,
+    ) -> Result<(), String> {
         let pi_bin = self.resolve_bundled_pi()?;
         // Tauri resolves resource paths as `\\?\`-prefixed extended-length
         // paths. Bun (the embedded pi runtime) segfaults on Windows arm64 when
@@ -622,6 +638,10 @@ impl PiManager {
         }
 
         args.extend(["--mode".to_string(), "rpc".to_string()]);
+
+        if ephemeral {
+            args.push("--no-session".to_string());
+        }
 
         if let Some(session) = session_path {
             args.push("--session".to_string());

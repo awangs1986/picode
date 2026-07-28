@@ -216,6 +216,26 @@ export class WsTransport {
     );
   }
 
+  reviewContextCompression(scanId, candidateIds, provider, modelId) {
+    return this._control(
+      "context_compression_review",
+      { scanId, candidateIds, provider, modelId },
+      { timeoutMs: PACKAGE_TIMEOUT_MS },
+    );
+  }
+
+  pickContextPackageSavePath() {
+    return this._control("context_compression_pick_save", {}, { timeoutMs: NO_TIMEOUT });
+  }
+
+  createContextPackage({ reviewId, encrypted, password, destination }) {
+    return this._control(
+      "context_compression_create",
+      { reviewId, encrypted, password, destination },
+      { timeoutMs: NO_TIMEOUT },
+    );
+  }
+
   saveCustomProvider({ providerId, displayName, baseUrl, api, apiKey, modelIds }) {
     return this._control("custom_provider_save", {
       providerId,

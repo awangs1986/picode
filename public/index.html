@@ -1649,6 +1649,135 @@
                         </div>
                         <div
                             class="settings-section"
+                            id="settings-context-compression-section"
+                        >
+                            <div
+                                class="settings-section-title"
+                                data-i18n="contextCompression.title"
+                            >
+                                Compressed context package
+                            </div>
+                            <p
+                                class="settings-help"
+                                data-i18n="contextCompression.help"
+                            >
+                                Create a small, lossy briefing from selected chats using the model currently selected in the chat window. Nothing is sent until you review and confirm the sources and destination model.
+                            </p>
+                            <button
+                                type="button"
+                                class="ui-button ui-button--secondary"
+                                id="context-compression-scan"
+                                data-i18n="contextCompression.loadChats"
+                            >
+                                Choose chats to compress
+                            </button>
+                            <div
+                                class="chat-backup-status"
+                                id="context-compression-status"
+                                role="status"
+                                aria-live="polite"
+                                hidden
+                            ></div>
+                            <div
+                                class="chat-backup-results"
+                                id="context-compression-results"
+                                hidden
+                            ></div>
+                            <div
+                                class="chat-backup-actions"
+                                id="context-compression-actions"
+                                hidden
+                            >
+                                <span
+                                    class="chat-backup-selection"
+                                    id="context-compression-selection"
+                                ></span>
+                                <button
+                                    type="button"
+                                    class="ui-button ui-button--primary"
+                                    id="context-compression-review"
+                                    data-i18n="contextCompression.review"
+                                    disabled
+                                >
+                                    Review before sending
+                                </button>
+                            </div>
+                            <div
+                                class="chat-restore-verify context-compression-review"
+                                id="context-compression-review-panel"
+                                hidden
+                            >
+                                <div
+                                    class="chat-restore-meta"
+                                    id="context-compression-review-meta"
+                                ></div>
+                                <ul
+                                    class="context-compression-review-sources"
+                                    id="context-compression-review-sources"
+                                ></ul>
+                                <div
+                                    class="context-compression-privacy"
+                                    data-i18n="contextCompression.privacyWarning"
+                                >
+                                    Confirming will send cleaned conversation text to the selected provider. Known credential fields and token-like lines are removed, but secrets embedded in ordinary prose cannot be detected perfectly. Raw chats are not stored in the output package.
+                                </div>
+                                <label class="chat-backup-encryption">
+                                    <input
+                                        type="checkbox"
+                                        id="context-compression-encrypted"
+                                        checked
+                                    />
+                                    <span data-i18n="contextCompression.encryptDefault"
+                                        >Encrypt context package (recommended)</span
+                                    >
+                                </label>
+                                <div
+                                    class="chat-backup-passwords"
+                                    id="context-compression-passwords"
+                                >
+                                    <label class="chat-backup-field">
+                                        <span data-i18n="contextCompression.password"
+                                            >Package password</span
+                                        >
+                                        <input
+                                            type="password"
+                                            class="ui-input"
+                                            id="context-compression-password"
+                                            autocomplete="new-password"
+                                        />
+                                    </label>
+                                    <label class="chat-backup-field">
+                                        <span data-i18n="contextCompression.confirmPassword"
+                                            >Confirm password</span
+                                        >
+                                        <input
+                                            type="password"
+                                            class="ui-input"
+                                            id="context-compression-password-confirm"
+                                            autocomplete="new-password"
+                                        />
+                                    </label>
+                                </div>
+                                <div
+                                    class="chat-backup-plaintext-warning"
+                                    id="context-compression-plaintext-warning"
+                                    data-i18n="contextCompression.plaintextWarning"
+                                    hidden
+                                >
+                                    Warning: an unencrypted package exposes its briefing and structured memories.
+                                </div>
+                                <button
+                                    type="button"
+                                    class="ui-button ui-button--primary"
+                                    id="context-compression-create"
+                                    data-i18n="contextCompression.confirmCreate"
+                                >
+                                    Confirm, compress and save
+                                </button>
+                            </div>
+                        </div>
+                        <div
+                            class="settings-section"
                             id="settings-chat-restore-section"
                         >
                             <div

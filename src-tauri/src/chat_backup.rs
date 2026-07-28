@@ -134,6 +134,15 @@ struct PendingBackupScan {
     candidates: Vec<PendingBackupCandidate>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct CompressionSourceChat {
+    pub id: String,
+    pub title: String,
+    pub workspace_path: String,
+    pub updated_at: Option<String>,
+    pub content: Vec<u8>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct BackupManifest {
@@ -166,7 +175,7 @@ struct ManifestAttachment {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct BackupProtection {
+pub(crate) struct BackupProtection {
     mode: String,
     algorithm: Option<String>,
     kdf: Option<KdfDescription>,
@@ -403,6 +412,49 @@ impl ChatBackupService {
         })();
         password.zeroize();
         result
+    }
+
+    pub(crate) fn compression_sources(
+        &self,
+        scan_id: &str,
+        selected_ids: &[String],
+    ) -> Result<Vec<CompressionSourceChat>, String> {
+        if selected_ids.is_empty() {
+            return Err("Select at least one chat to compress".to_string());
+        }
+        let wanted: HashSet<_> = selected_ids.iter().map(String::as_str).collect();
+        if wanted.len() != selected_ids.len() {
+            return Err("The compression selection contains duplicate chats".to_string());
+        }
+        let scans = self
+            .scans
+            .lock()
+            .map_err(|_| "The chat-backup scan lock is poisoned".to_string())?;
+        let scan = scans
+            .get(scan_id)
+            .ok_or("The chat scan expired; load the sessions again")?;
+        let selected: Vec<_> = scan
+            .candidates
+            .iter()
+            .filter(|candidate| wanted.contains(candidate.summary.id.as_str()))
+            .collect();
+        if selected.len() != wanted.len() {
+            return Err("The compression selection is not part of this scan".to_string());
+        }
+        selected
+            .into_iter()
+            .map(|candidate| {
+                let content = read_bounded(&candidate.path, MAX_CHAT_BYTES)?;
+                validate_pi_session(&content)?;
+                Ok(CompressionSourceChat {
+                    id: candidate.summary.id.clone(),
+                    title: candidate.summary.title.clone(),
+                    workspace_path: candidate.summary.workspace_path.clone(),
+                    updated_at: candidate.summary.updated_at.clone(),
+                    content,
+                })
+            })
+            .collect()
     }
 
     pub fn probe_backup(&self, path: &str) -> Result<BackupProbe, String> {
@@ -898,6 +950,27 @@ fn encrypt_payload(
     ))
 }
 
+pub(crate) fn protect_portable_payload(
+    plaintext: &[u8],
+    aad: &[u8],
+    encrypted: bool,
+    password: &str,
+) -> Result<(BackupProtection, String), String> {
+    if encrypted {
+        encrypt_payload(plaintext, aad, password)
+    } else {
+        Ok((
+            BackupProtection {
+                mode: "none".to_string(),
+                algorithm: None,
+                kdf: None,
+                nonce: None,
+            },
+            BASE64.encode(plaintext),
+        ))
+    }
+}
+
 fn decode_payload(
     container: &BackupContainer,
     aad: &[u8],
@@ -1113,11 +1186,11 @@ fn workspace_group_id(workspace: &str) -> String {
     format!("workspace-{}", &sha256_hex(workspace.as_bytes())[..20])
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
+pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
-fn atomic_write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
+pub(crate) fn atomic_write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let parent = path
         .parent()
         .ok_or_else(|| format!("Output path has no parent: {}", path.display()))?;
@@ -1160,7 +1233,7 @@ fn rollback_created(paths: &[PathBuf]) {
     }
 }
 
-fn now_iso() -> String {
+pub(crate) fn now_iso() -> String {
     system_time_iso(SystemTime::now())
 }
 

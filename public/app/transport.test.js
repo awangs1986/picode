@@ -193,6 +193,19 @@ describe("WsTransport", () => {
     await transport.probeChatBackup("C:\\backup.picot-backup");
     await transport.inspectChatBackup("C:\\backup.picot-backup", "password");
     await transport.restoreChatBackup("restore-1", ["chat-1"], { group: "C:\\work" });
+    await transport.reviewContextCompression(
+      "backup-scan",
+      ["chat-1"],
+      "openai-codex",
+      "gpt-5.2-codex",
+    );
+    await transport.pickContextPackageSavePath();
+    await transport.createContextPackage({
+      reviewId: "review-1",
+      encrypted: true,
+      password: "password",
+      destination: "C:\\context.picot-context",
+    });
 
     expect(ws.sendControl).toHaveBeenCalledWith("chat_backup_create", create, { timeoutMs: 0 });
     expect(ws.sendControl).toHaveBeenCalledWith(
@@ -201,6 +214,26 @@ describe("WsTransport", () => {
         restoreId: "restore-1",
         candidateIds: ["chat-1"],
         workspaceBindings: { group: "C:\\work" },
+      },
+      { timeoutMs: 0 },
+    );
+    expect(ws.sendControl).toHaveBeenCalledWith(
+      "context_compression_review",
+      {
+        scanId: "backup-scan",
+        candidateIds: ["chat-1"],
+        provider: "openai-codex",
+        modelId: "gpt-5.2-codex",
+      },
+      { timeoutMs: 120_000 },
+    );
+    expect(ws.sendControl).toHaveBeenCalledWith(
+      "context_compression_create",
+      {
+        reviewId: "review-1",
+        encrypted: true,
+        password: "password",
+        destination: "C:\\context.picot-context",
       },
       { timeoutMs: 0 },
     );

@@ -6,6 +6,7 @@ mod account_vault;
 mod broker_ws;
 mod chat_backup;
 mod chat_migration;
+mod context_compression;
 mod host_data;
 mod host_router;
 mod host_server;
@@ -24,6 +25,7 @@ use account_vault::AccountVault;
 use broker_ws::BrokerWs;
 use chat_backup::{BackupSelectionFlags, ChatBackupService};
 use chat_migration::ChatMigrationService;
+use context_compression::ContextCompressionService;
 use host_server::HostServer;
 use metadata_store::MetadataStore;
 use native_pi_manager::NativePiManager;
@@ -55,6 +57,7 @@ type NativePiManagerState = NativePiManager;
 struct ChatDataServices {
     migration: Arc<ChatMigrationService>,
     backup: Arc<ChatBackupService>,
+    compression: Arc<ContextCompressionService>,
 }
 
 // ─── Tauri Commands ───────────────────────────────────────────────────────────
@@ -272,6 +275,22 @@ async fn pick_backup_open_core(app: &AppHandle) -> Option<String> {
         .file()
         .add_filter("Picot Chat Backup", &["picot-backup"])
         .pick_file(move |path| {
+            let result = path.map(|path| match path {
+                tauri_plugin_fs::FilePath::Path(path) => path.to_string_lossy().into_owned(),
+                tauri_plugin_fs::FilePath::Url(url) => url.to_string(),
+            });
+            let _ = tx.send(result);
+        });
+    rx.await.ok().flatten()
+}
+
+async fn pick_context_save_core(app: &AppHandle) -> Option<String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .add_filter("Picot Compressed Context", &["picot-context"])
+        .set_file_name("picot-compressed-context.picot-context")
+        .save_file(move |path| {
             let result = path.map(|path| match path {
                 tauri_plugin_fs::FilePath::Path(path) => path.to_string_lossy().into_owned(),
                 tauri_plugin_fs::FilePath::Url(url) => url.to_string(),
@@ -1185,6 +1204,7 @@ fn install_control_handler(
             let bindings = bindings.clone();
             let chat_migration = chat_data.migration.clone();
             let chat_backup = chat_data.backup.clone();
+            let context_compression = chat_data.compression.clone();
             let auth_sync = auth_sync.clone();
             let app = app.clone();
             Box::pin(async move {
@@ -1216,6 +1236,9 @@ fn install_control_handler(
                     | "chat_backup_probe"
                     | "chat_backup_inspect"
                     | "chat_backup_restore"
+                    | "context_compression_review"
+                    | "context_compression_pick_save"
+                    | "context_compression_create"
                         if !local_client =>
                     {
                         Err(
@@ -1492,6 +1515,51 @@ fn install_control_handler(
                         )?)
                         .map_err(|error| format!("Cannot encode chat-restore result: {error}"))
                     }
+                    "context_compression_review" => {
+                        let scan_id = arg_str("scanId").ok_or("scanId is required")?;
+                        let selected_ids: Vec<String> = args
+                            .get("candidateIds")
+                            .and_then(Value::as_array)
+                            .ok_or("candidateIds must be an array")?
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_string)
+                            .collect();
+                        let provider = arg_str("provider").ok_or("provider is required")?;
+                        let model_id = arg_str("modelId").ok_or("modelId is required")?;
+                        serde_json::to_value(context_compression.review(
+                            &scan_id,
+                            &selected_ids,
+                            &provider,
+                            &model_id,
+                        )?)
+                        .map_err(|error| format!("Cannot encode compression review: {error}"))
+                    }
+                    "context_compression_pick_save" => {
+                        Ok(match pick_context_save_core(&app).await {
+                            Some(path) => Value::from(path),
+                            None => Value::Null,
+                        })
+                    }
+                    "context_compression_create" => {
+                        let review_id = arg_str("reviewId").ok_or("reviewId is required")?;
+                        let encrypted = arg_bool("encrypted").unwrap_or(true);
+                        let password = arg_str("password").unwrap_or_default();
+                        let destination =
+                            arg_str("destination").ok_or("destination is required")?;
+                        serde_json::to_value(
+                            context_compression
+                                .create_package(
+                                    &manager,
+                                    &review_id,
+                                    encrypted,
+                                    password,
+                                    &destination,
+                                )
+                                .await?,
+                        )
+                        .map_err(|error| format!("Cannot encode context-package result: {error}"))
+                    }
                     "custom_provider_discover" => {
                         let base_url = arg_str("baseUrl").ok_or("baseUrl is required")?;
                         let api = arg_str("api").ok_or("api is required")?;
@@ -1700,6 +1768,10 @@ fn main() {
             );
             let chat_backup =
                 Arc::new(ChatBackupService::for_current_user().map_err(std::io::Error::other)?);
+            let context_compression = Arc::new(ContextCompressionService::new(
+                chat_backup.clone(),
+                &app_data_dir,
+            ));
             let auth_sync = Arc::new(
                 PiAuthSynchronizer::for_current_user().map_err(std::io::Error::other)?,
             );
@@ -1712,6 +1784,7 @@ fn main() {
                 ChatDataServices {
                     migration: chat_migration,
                     backup: chat_backup,
+                    compression: context_compression,
                 },
                 auth_sync,
                 app.handle().clone(),
