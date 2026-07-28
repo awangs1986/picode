@@ -4,6 +4,7 @@ mod account_binding;
 mod account_import;
 mod account_vault;
 mod broker_ws;
+mod chat_backup;
 mod chat_migration;
 mod host_data;
 mod host_router;
@@ -21,6 +22,7 @@ use account_binding::AccountBindingStore;
 use account_import::AccountImportService;
 use account_vault::AccountVault;
 use broker_ws::BrokerWs;
+use chat_backup::{BackupSelectionFlags, ChatBackupService};
 use chat_migration::ChatMigrationService;
 use host_server::HostServer;
 use metadata_store::MetadataStore;
@@ -48,6 +50,12 @@ use tauri_plugin_dialog::MessageDialogKind;
 type PiManagerState = Arc<PiManager>;
 type BrokerWsState = Arc<BrokerWs>;
 type NativePiManagerState = NativePiManager;
+
+#[derive(Clone)]
+struct ChatDataServices {
+    migration: Arc<ChatMigrationService>,
+    backup: Arc<ChatBackupService>,
+}
 
 // ─── Tauri Commands ───────────────────────────────────────────────────────────
 
@@ -239,6 +247,37 @@ async fn pick_folder_core(app: &AppHandle) -> Option<String> {
         });
         let _ = tx.send(result);
     });
+    rx.await.ok().flatten()
+}
+
+async fn pick_backup_save_core(app: &AppHandle) -> Option<String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .add_filter("Picot Chat Backup", &["picot-backup"])
+        .set_file_name("picot-chat-backup.picot-backup")
+        .save_file(move |path| {
+            let result = path.map(|path| match path {
+                tauri_plugin_fs::FilePath::Path(path) => path.to_string_lossy().into_owned(),
+                tauri_plugin_fs::FilePath::Url(url) => url.to_string(),
+            });
+            let _ = tx.send(result);
+        });
+    rx.await.ok().flatten()
+}
+
+async fn pick_backup_open_core(app: &AppHandle) -> Option<String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .add_filter("Picot Chat Backup", &["picot-backup"])
+        .pick_file(move |path| {
+            let result = path.map(|path| match path {
+                tauri_plugin_fs::FilePath::Path(path) => path.to_string_lossy().into_owned(),
+                tauri_plugin_fs::FilePath::Url(url) => url.to_string(),
+            });
+            let _ = tx.send(result);
+        });
     rx.await.ok().flatten()
 }
 
@@ -1130,7 +1169,7 @@ fn install_control_handler(
     manager: Arc<PiManager>,
     accounts: Arc<AccountImportService>,
     bindings: Arc<AccountBindingStore>,
-    chat_migration: Arc<ChatMigrationService>,
+    chat_data: ChatDataServices,
     auth_sync: Arc<PiAuthSynchronizer>,
     app: AppHandle,
 ) {
@@ -1144,7 +1183,8 @@ fn install_control_handler(
             let broker = broker_for_handler.clone();
             let accounts = accounts.clone();
             let bindings = bindings.clone();
-            let chat_migration = chat_migration.clone();
+            let chat_migration = chat_data.migration.clone();
+            let chat_backup = chat_data.backup.clone();
             let auth_sync = auth_sync.clone();
             let app = app.clone();
             Box::pin(async move {
@@ -1169,6 +1209,13 @@ fn install_control_handler(
                     | "chat_prepare_prompt"
                     | "chat_migration_scan"
                     | "chat_migration_import"
+                    | "chat_backup_scan"
+                    | "chat_backup_pick_save"
+                    | "chat_backup_pick_open"
+                    | "chat_backup_create"
+                    | "chat_backup_probe"
+                    | "chat_backup_inspect"
+                    | "chat_backup_restore"
                         if !local_client =>
                     {
                         Err(
@@ -1367,6 +1414,83 @@ fn install_control_handler(
                             &workspace_bindings,
                         )?)
                         .map_err(|error| format!("Cannot encode chat import result: {error}"))
+                    }
+                    "chat_backup_scan" => serde_json::to_value(chat_backup.scan_sessions()?)
+                        .map_err(|error| format!("Cannot encode chat-backup scan: {error}")),
+                    "chat_backup_pick_save" => Ok(match pick_backup_save_core(&app).await {
+                        Some(path) => Value::from(path),
+                        None => Value::Null,
+                    }),
+                    "chat_backup_pick_open" => Ok(match pick_backup_open_core(&app).await {
+                        Some(path) => Value::from(path),
+                        None => Value::Null,
+                    }),
+                    "chat_backup_create" => {
+                        let scan_id = arg_str("scanId").ok_or("scanId is required")?;
+                        let selected_ids: Vec<String> = args
+                            .get("candidateIds")
+                            .and_then(Value::as_array)
+                            .ok_or("candidateIds must be an array")?
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_string)
+                            .collect();
+                        let flags: HashMap<String, BackupSelectionFlags> = serde_json::from_value(
+                            args.get("flags")
+                                .cloned()
+                                .unwrap_or_else(|| serde_json::json!({})),
+                        )
+                        .map_err(|error| format!("Invalid chat-backup flags: {error}"))?;
+                        let encrypted = arg_bool("encrypted").unwrap_or(true);
+                        let password = arg_str("password").unwrap_or_default();
+                        let destination =
+                            arg_str("destination").ok_or("destination is required")?;
+                        serde_json::to_value(chat_backup.create_backup(
+                            &scan_id,
+                            &selected_ids,
+                            &flags,
+                            encrypted,
+                            password,
+                            &destination,
+                        )?)
+                        .map_err(|error| format!("Cannot encode chat-backup result: {error}"))
+                    }
+                    "chat_backup_probe" => {
+                        let path = arg_str("path").ok_or("path is required")?;
+                        serde_json::to_value(chat_backup.probe_backup(&path)?)
+                            .map_err(|error| format!("Cannot encode chat-backup probe: {error}"))
+                    }
+                    "chat_backup_inspect" => {
+                        let path = arg_str("path").ok_or("path is required")?;
+                        let password = arg_str("password").unwrap_or_default();
+                        serde_json::to_value(chat_backup.inspect_backup(&path, password)?)
+                            .map_err(|error| format!("Cannot encode restore preview: {error}"))
+                    }
+                    "chat_backup_restore" => {
+                        let restore_id = arg_str("restoreId").ok_or("restoreId is required")?;
+                        let selected_ids: Vec<String> = args
+                            .get("candidateIds")
+                            .and_then(Value::as_array)
+                            .ok_or("candidateIds must be an array")?
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_string)
+                            .collect();
+                        let workspace_bindings: HashMap<String, String> = args
+                            .get("workspaceBindings")
+                            .and_then(Value::as_object)
+                            .ok_or("workspaceBindings must be an object")?
+                            .iter()
+                            .filter_map(|(key, value)| {
+                                value.as_str().map(|value| (key.clone(), value.to_string()))
+                            })
+                            .collect();
+                        serde_json::to_value(chat_backup.restore_selected(
+                            &restore_id,
+                            &selected_ids,
+                            &workspace_bindings,
+                        )?)
+                        .map_err(|error| format!("Cannot encode chat-restore result: {error}"))
                     }
                     "custom_provider_discover" => {
                         let base_url = arg_str("baseUrl").ok_or("baseUrl is required")?;
@@ -1574,6 +1698,8 @@ fn main() {
                 ChatMigrationService::for_current_user(&app_data_dir)
                     .map_err(std::io::Error::other)?,
             );
+            let chat_backup =
+                Arc::new(ChatBackupService::for_current_user().map_err(std::io::Error::other)?);
             let auth_sync = Arc::new(
                 PiAuthSynchronizer::for_current_user().map_err(std::io::Error::other)?,
             );
@@ -1583,7 +1709,10 @@ fn main() {
                 manager.clone(),
                 accounts.clone(),
                 bindings,
-                chat_migration,
+                ChatDataServices {
+                    migration: chat_migration,
+                    backup: chat_backup,
+                },
                 auth_sync,
                 app.handle().clone(),
             );

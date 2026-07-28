@@ -1544,6 +1544,198 @@
                                 </button>
                             </div>
                         </div>
+                        <div
+                            class="settings-section"
+                            id="settings-chat-backup-section"
+                        >
+                            <div
+                                class="settings-section-title"
+                                data-i18n="chatBackup.title"
+                            >
+                                Chat backup
+                            </div>
+                            <p
+                                class="settings-help"
+                                data-i18n="chatBackup.help"
+                            >
+                                Back up selected Picot chats and their organization metadata. Project files and account credentials are never included.
+                            </p>
+                            <button
+                                type="button"
+                                class="ui-button ui-button--secondary"
+                                id="chat-backup-scan"
+                                data-i18n="chatBackup.loadChats"
+                            >
+                                Choose chats to back up
+                            </button>
+                            <div
+                                class="chat-backup-status"
+                                id="chat-backup-status"
+                                role="status"
+                                aria-live="polite"
+                                hidden
+                            ></div>
+                            <div
+                                class="chat-backup-results"
+                                id="chat-backup-results"
+                                hidden
+                            ></div>
+                            <div
+                                class="chat-backup-options"
+                                id="chat-backup-options"
+                                hidden
+                            >
+                                <label class="chat-backup-encryption">
+                                    <input
+                                        type="checkbox"
+                                        id="chat-backup-encrypted"
+                                        checked
+                                    />
+                                    <span data-i18n="chatBackup.encryptDefault"
+                                        >Encrypt backup (recommended)</span
+                                    >
+                                </label>
+                                <div
+                                    class="chat-backup-passwords"
+                                    id="chat-backup-passwords"
+                                >
+                                    <label class="chat-backup-field">
+                                        <span data-i18n="chatBackup.password"
+                                            >Backup password</span
+                                        >
+                                        <input
+                                            type="password"
+                                            class="ui-input"
+                                            id="chat-backup-password"
+                                            autocomplete="new-password"
+                                        />
+                                    </label>
+                                    <label class="chat-backup-field">
+                                        <span data-i18n="chatBackup.confirmPassword"
+                                            >Confirm password</span
+                                        >
+                                        <input
+                                            type="password"
+                                            class="ui-input"
+                                            id="chat-backup-password-confirm"
+                                            autocomplete="new-password"
+                                        />
+                                    </label>
+                                </div>
+                                <div
+                                    class="chat-backup-plaintext-warning"
+                                    id="chat-backup-plaintext-warning"
+                                    data-i18n="chatBackup.plaintextWarning"
+                                    hidden
+                                >
+                                    Warning: an unencrypted backup exposes the full text of every selected chat to anyone who can read the file.
+                                </div>
+                                <div class="chat-backup-actions">
+                                    <span
+                                        class="chat-backup-selection"
+                                        id="chat-backup-selection"
+                                    ></span>
+                                    <button
+                                        type="button"
+                                        class="ui-button ui-button--primary"
+                                        id="chat-backup-create"
+                                        data-i18n="chatBackup.create"
+                                        disabled
+                                    >
+                                        Create backup
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                        <div
+                            class="settings-section"
+                            id="settings-chat-restore-section"
+                        >
+                            <div
+                                class="settings-section-title"
+                                data-i18n="chatRestore.title"
+                            >
+                                Restore chat backup
+                            </div>
+                            <p
+                                class="settings-help"
+                                data-i18n="chatRestore.help"
+                            >
+                                Picot verifies and decrypts the complete backup before writing anything. Restored workspace groups must be bound to existing folders on this computer.
+                            </p>
+                            <button
+                                type="button"
+                                class="ui-button ui-button--secondary"
+                                id="chat-restore-open"
+                                data-i18n="chatRestore.open"
+                            >
+                                Open backup file
+                            </button>
+                            <div
+                                class="chat-backup-status"
+                                id="chat-restore-status"
+                                role="status"
+                                aria-live="polite"
+                                hidden
+                            ></div>
+                            <div
+                                class="chat-restore-verify"
+                                id="chat-restore-verify"
+                                hidden
+                            >
+                                <div
+                                    class="chat-restore-meta"
+                                    id="chat-restore-meta"
+                                ></div>
+                                <label
+                                    class="chat-backup-field"
+                                    id="chat-restore-password-field"
+                                    hidden
+                                >
+                                    <span data-i18n="chatRestore.password"
+                                        >Backup password</span
+                                    >
+                                    <input
+                                        type="password"
+                                        class="ui-input"
+                                        id="chat-restore-password"
+                                        autocomplete="current-password"
+                                    />
+                                </label>
+                                <button
+                                    type="button"
+                                    class="ui-button ui-button--primary"
+                                    id="chat-restore-inspect"
+                                    data-i18n="chatRestore.verify"
+                                >
+                                    Verify and preview
+                                </button>
+                            </div>
+                            <div
+                                class="chat-backup-results"
+                                id="chat-restore-results"
+                                hidden
+                            ></div>
+                            <div
+                                class="chat-backup-actions"
+                                id="chat-restore-actions"
+                                hidden
+                            >
+                                <span
+                                    class="chat-backup-selection"
+                                    id="chat-restore-selection"
+                                ></span>
+                                <button
+                                    type="button"
+                                    class="ui-button ui-button--primary"
+                                    id="chat-restore-apply"
+                                    data-i18n="chatRestore.restore"
+                                    disabled
+                                >
+                                    Restore selected chats
+                                </button>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </section>

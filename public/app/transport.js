@@ -180,6 +180,42 @@ export class WsTransport {
     );
   }
 
+  scanBackupSessions() {
+    return this._control("chat_backup_scan", {}, { timeoutMs: PACKAGE_TIMEOUT_MS });
+  }
+
+  pickBackupSavePath() {
+    return this._control("chat_backup_pick_save", {}, { timeoutMs: NO_TIMEOUT });
+  }
+
+  pickBackupOpenPath() {
+    return this._control("chat_backup_pick_open", {}, { timeoutMs: NO_TIMEOUT });
+  }
+
+  createChatBackup({ scanId, candidateIds, flags, encrypted, password, destination }) {
+    return this._control(
+      "chat_backup_create",
+      { scanId, candidateIds, flags, encrypted, password, destination },
+      { timeoutMs: NO_TIMEOUT },
+    );
+  }
+
+  probeChatBackup(path) {
+    return this._control("chat_backup_probe", { path }, { timeoutMs: PACKAGE_TIMEOUT_MS });
+  }
+
+  inspectChatBackup(path, password = "") {
+    return this._control("chat_backup_inspect", { path, password }, { timeoutMs: NO_TIMEOUT });
+  }
+
+  restoreChatBackup(restoreId, candidateIds, workspaceBindings) {
+    return this._control(
+      "chat_backup_restore",
+      { restoreId, candidateIds, workspaceBindings },
+      { timeoutMs: NO_TIMEOUT },
+    );
+  }
+
   saveCustomProvider({ providerId, displayName, baseUrl, api, apiKey, modelIds }) {
     return this._control("custom_provider_save", {
       providerId,

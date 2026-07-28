@@ -174,6 +174,38 @@ describe("WsTransport", () => {
     );
   });
 
+  test("chat backups use native dialogs and explicit verified restore controls", async () => {
+    const ws = fakeWsClient();
+    const transport = new WsTransport(ws, {});
+    const create = {
+      scanId: "backup-scan",
+      candidateIds: ["chat-1"],
+      flags: { "chat-1": { archived: true, favourite: false } },
+      encrypted: true,
+      password: "password",
+      destination: "C:\\backup.picot-backup",
+    };
+
+    await transport.scanBackupSessions();
+    await transport.pickBackupSavePath();
+    await transport.pickBackupOpenPath();
+    await transport.createChatBackup(create);
+    await transport.probeChatBackup("C:\\backup.picot-backup");
+    await transport.inspectChatBackup("C:\\backup.picot-backup", "password");
+    await transport.restoreChatBackup("restore-1", ["chat-1"], { group: "C:\\work" });
+
+    expect(ws.sendControl).toHaveBeenCalledWith("chat_backup_create", create, { timeoutMs: 0 });
+    expect(ws.sendControl).toHaveBeenCalledWith(
+      "chat_backup_restore",
+      {
+        restoreId: "restore-1",
+        candidateIds: ["chat-1"],
+        workspaceBindings: { group: "C:\\work" },
+      },
+      { timeoutMs: 0 },
+    );
+  });
+
   test("capabilities reflect the underlying ws client", () => {
     const transport = new WsTransport(fakeWsClient({ native: false }), {});
     expect(transport.capabilities.native).toBe(false);

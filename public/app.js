@@ -21,6 +21,7 @@ import {
 } from "./session/routing.js";
 import { anchorHistoryToBottom } from "./session/scroll-anchor.js";
 import { setupAccountSettings } from "./settings/accounts.js";
+import { setupChatBackup } from "./settings/chat-backup.js";
 import { setupChatMigration } from "./settings/chat-migration.js";
 import { setupCustomProviderSettings } from "./settings/custom-providers.js";
 import { setupSettingsEditors } from "./settings/editors.js";
@@ -4476,6 +4477,14 @@ setupChatMigration({
     sidebar.archiveImportedSessions(
       (result.chats || []).filter((chat) => chat.archived).map((chat) => chat.sessionFile),
     );
+    await sidebar.loadSessions({ quiet: true });
+  },
+});
+
+setupChatBackup({
+  transport,
+  onRestored: async (result) => {
+    sidebar.applyRestoredOrganization(result.chats || []);
     await sidebar.loadSessions({ quiet: true });
   },
 });
