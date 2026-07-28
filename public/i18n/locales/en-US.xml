@@ -217,5 +217,13 @@
     <message id="customProviders.saving">Saving provider...</message>
     <message id="customProviders.saved">Provider saved. Its models are now available in chat.</message>
     <message id="customProviders.failed">The provider could not be saved.</message>
+    <message id="chat.accountContinueRequired">This chat used another {provider} account. Type 继续 to bind it to the active account and continue.</message>
+    <message id="chat.accountBindingFailed">Could not verify the chat account: {error}</message>
+    <message id="accounts.deactivate">Deactivate</message>
+    <message id="accounts.activating">Activating account...</message>
+    <message id="accounts.deactivating">Deactivating account...</message>
+    <message id="accounts.activated">Account activated.</message>
+    <message id="accounts.deactivated">Account deactivated.</message>
+    <message id="accounts.changeFailed">Could not change the active account.</message>
   </messages>
 </languagePack>

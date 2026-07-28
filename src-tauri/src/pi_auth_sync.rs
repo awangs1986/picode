@@ -81,6 +81,12 @@ impl PiAuthSynchronizer {
                     .to_string(),
             );
         }
+        if matches!(provider_id, "openai-codex" | "anthropic" | "cursor") {
+            return Err(
+                "Choose a unique Provider ID so this custom API does not replace a managed agent account"
+                    .to_string(),
+            );
+        }
         let display_name = display_name.trim();
         if display_name.is_empty() || display_name.len() > 100 {
             return Err("Provider name must be between 1 and 100 characters".to_string());
@@ -139,6 +145,16 @@ impl PiAuthSynchronizer {
             metadata: serde_json::json!({}),
         };
         self.activate(&account, &[])
+    }
+
+    pub fn deactivate(&self, pi_provider: &str) -> Result<(), String> {
+        let pi_provider = pi_provider.trim();
+        if pi_provider.is_empty() {
+            return Err("Pi provider is required".to_string());
+        }
+        let mut auth = read_object(&self.auth_path, "Pi auth")?;
+        auth.remove(pi_provider);
+        atomic_write_json(&self.auth_path, &Value::Object(auth))
     }
 
     fn merge_endpoint_value(&self, provider_id: &str, endpoint: &Value) -> Result<Value, String> {
@@ -463,6 +479,25 @@ mod tests {
             models["providers"]["claude-proxy"]["api"],
             "anthropic-messages"
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn deactivating_an_account_keeps_unrelated_provider_credentials() {
+        let (root, sync) = setup();
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("auth.json"),
+            r#"{"openai-codex":{"type":"oauth","access":"old","refresh":"r","expires":1},"anthropic":{"type":"api_key","key":"keep"}}"#,
+        )
+        .unwrap();
+
+        sync.deactivate("openai-codex").unwrap();
+
+        let auth: Value =
+            serde_json::from_slice(&fs::read(root.join("auth.json")).unwrap()).unwrap();
+        assert!(auth.get("openai-codex").is_none());
+        assert_eq!(auth["anthropic"]["key"], "keep");
         fs::remove_dir_all(root).unwrap();
     }
 }

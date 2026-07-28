@@ -52,6 +52,27 @@ pub struct ImportApplyResult {
     pub previous_active_account_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountActivationResult {
+    pub provider: String,
+    pub active_account_id: String,
+    pub active_pi_provider: String,
+    pub deactivated_pi_providers: Vec<String>,
+    pub accounts: Vec<AccountSummary>,
+    #[serde(skip_serializing)]
+    pub previous_active_account_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountDeactivationResult {
+    pub provider: String,
+    pub deactivated_account_id: String,
+    pub deactivated_pi_provider: String,
+    pub accounts: Vec<AccountSummary>,
+}
+
 #[derive(Clone)]
 struct ParsedCandidate {
     summary: ImportCandidateSummary,
@@ -85,6 +106,25 @@ impl AccountImportService {
         Ok(self.vault.load()?.active_account(provider).cloned())
     }
 
+    pub fn active_account_for_pi_provider(
+        &self,
+        pi_provider: &str,
+    ) -> Result<Option<StoredAccount>, String> {
+        let document = self.vault.load()?;
+        Ok(document
+            .active_by_provider
+            .iter()
+            .filter_map(|(provider, account_id)| {
+                document.accounts.iter().find(|account| {
+                    &account.provider == provider
+                        && &account.id == account_id
+                        && account.pi_provider == pi_provider
+                })
+            })
+            .next()
+            .cloned())
+    }
+
     pub fn restore_active_account(
         &self,
         provider: &str,
@@ -106,6 +146,58 @@ impl AccountImportService {
                 document.active_by_provider.remove(provider);
             }
             Ok(())
+        })
+    }
+
+    pub fn activate_stored(&self, account_id: &str) -> Result<AccountActivationResult, String> {
+        let current = self.vault.load()?;
+        let account = current
+            .accounts
+            .iter()
+            .find(|account| account.id == account_id)
+            .cloned()
+            .ok_or_else(|| "The selected stored account was not found".to_string())?;
+        if !account.chat_compatible {
+            return Err("This stored account cannot be activated for Pi chat".to_string());
+        }
+        let previous = current.active_account(&account.provider).cloned();
+        let previous_active_account_id = previous.as_ref().map(|item| item.id.clone());
+        let deactivated_pi_providers = previous
+            .filter(|item| item.pi_provider != account.pi_provider)
+            .map(|item| vec![item.pi_provider])
+            .unwrap_or_default();
+        let accounts = self.vault.update(|document| {
+            document
+                .active_by_provider
+                .insert(account.provider.clone(), account.id.clone());
+            Ok(document.summaries())
+        })?;
+        Ok(AccountActivationResult {
+            provider: account.provider,
+            active_account_id: account.id,
+            active_pi_provider: account.pi_provider,
+            deactivated_pi_providers,
+            accounts,
+            previous_active_account_id,
+        })
+    }
+
+    pub fn deactivate_provider(&self, provider: &str) -> Result<AccountDeactivationResult, String> {
+        let provider = normalize_provider(provider)?;
+        let current = self.vault.load()?;
+        let account = current
+            .active_account(&provider)
+            .cloned()
+            .ok_or_else(|| format!("No active {provider} account was found"))?;
+        let accounts = self.vault.update(|document| {
+            document.active_by_provider.remove(&provider);
+            Ok(document.summaries())
+        })?;
+        Ok(AccountDeactivationResult {
+            provider,
+            deactivated_account_id: account.id,
+            deactivated_pi_provider: account.pi_provider,
+            accounts,
         })
     }
 
@@ -1262,6 +1354,16 @@ mod tests {
             })
             .unwrap();
         let service = AccountImportService::new(vault.clone());
+
+        let activation = service.activate_stored("codex-one").unwrap();
+        assert_eq!(
+            activation.previous_active_account_id.as_deref(),
+            Some("codex-two")
+        );
+        assert_eq!(activation.active_account_id, "codex-one");
+        let deactivation = service.deactivate_provider("codex").unwrap();
+        assert_eq!(deactivation.deactivated_account_id, "codex-one");
+        assert!(vault.load().unwrap().active_account("codex").is_none());
 
         service
             .restore_active_account("codex", Some("codex-one"))

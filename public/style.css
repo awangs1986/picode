@@ -6765,6 +6765,13 @@ body.super-agent-active .file-sidebar {
   min-width: 0;
 }
 
+.account-vault-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-2);
+}
+
 .account-vault-detail {
   display: flex;
   flex-wrap: wrap;

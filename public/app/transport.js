@@ -148,12 +148,24 @@ export class WsTransport {
 
   // ── Native-only ops (need an OS host; reject when capabilities.native=false) ─
 
+  activateAccount(accountId) {
+    return this._control("account_activate", { accountId });
+  }
+
+  deactivateAccount(provider) {
+    return this._control("account_deactivate", { provider });
+  }
+
   discoverCustomProviderModels(baseUrl, api, apiKey) {
     return this._control(
       "custom_provider_discover",
       { baseUrl, api, apiKey },
       { timeoutMs: 30_000 },
     );
+  }
+
+  prepareChatPrompt(sessionId, piProvider, message) {
+    return this._control("chat_prepare_prompt", { sessionId, piProvider, message });
   }
 
   saveCustomProvider({ providerId, displayName, baseUrl, api, apiKey, modelIds }) {

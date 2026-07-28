@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod account_binding;
 mod account_import;
 mod account_vault;
 mod broker_ws;
@@ -15,6 +16,7 @@ mod remote_auth;
 mod runtime_coordinator;
 mod settings_store;
 
+use account_binding::AccountBindingStore;
 use account_import::AccountImportService;
 use account_vault::AccountVault;
 use broker_ws::BrokerWs;
@@ -1063,6 +1065,57 @@ async fn discover_provider_models(
     Err(last_error)
 }
 
+fn suspend_bound_account_tasks(
+    bindings: &AccountBindingStore,
+    manager: &PiManager,
+    broker: &BrokerWs,
+    logical_provider: &str,
+    account_id: &str,
+) {
+    match bindings.suspend_account(logical_provider, account_id) {
+        Ok(suspended_sessions) => {
+            for session_id in suspended_sessions {
+                if let Some(port) = broker.port_for_session(&session_id) {
+                    if let Err(error) =
+                        manager.send_rpc(port, serde_json::json!({ "type": "abort" }))
+                    {
+                        log::warn!(
+                            "[accounts] failed to stop old-account task on port {}: {}",
+                            port,
+                            error
+                        );
+                    }
+                }
+            }
+        }
+        Err(error) => {
+            // Fail closed: if persistent binding state is unavailable, stop
+            // every in-flight Pi task so none can continue under another key.
+            log::error!(
+                "[accounts] cannot suspend old-account chats; stopping all tasks: {}",
+                error
+            );
+            for port in manager.ports() {
+                let _ = manager.send_rpc(port, serde_json::json!({ "type": "abort" }));
+            }
+        }
+    }
+}
+
+fn notify_pi_account_reload(manager: &PiManager, broker: &BrokerWs) {
+    for port in manager.ports() {
+        if let Err(error) = broker
+            .send_command_to_port(port, serde_json::json!({ "type": "picot_reload_accounts" }))
+        {
+            log::warn!(
+                "[accounts] failed to notify Pi process on port {}: {}",
+                port,
+                error
+            );
+        }
+    }
+}
+
 /// Build + install the async handler the broker uses to execute `broker_control`
 /// requests from ANY client (desktop WebView, remote, mobile). It maps command
 /// names to the same cores the rest of the app uses, so behavior is identical
@@ -1073,6 +1126,7 @@ fn install_control_handler(
     broker: &Arc<BrokerWs>,
     manager: Arc<PiManager>,
     accounts: Arc<AccountImportService>,
+    bindings: Arc<AccountBindingStore>,
     auth_sync: Arc<PiAuthSynchronizer>,
     app: AppHandle,
 ) {
@@ -1085,6 +1139,7 @@ fn install_control_handler(
             let manager = manager.clone();
             let broker = broker_for_handler.clone();
             let accounts = accounts.clone();
+            let bindings = bindings.clone();
             let auth_sync = auth_sync.clone();
             let app = app.clone();
             Box::pin(async move {
@@ -1102,12 +1157,15 @@ fn install_control_handler(
                     | "account_preview_local"
                     | "account_preview_json"
                     | "account_apply_import"
+                    | "account_activate"
+                    | "account_deactivate"
                     | "custom_provider_discover"
                     | "custom_provider_save"
+                    | "chat_prepare_prompt"
                         if !local_client =>
                     {
                         Err(
-                            "Account management is available only from the local desktop app"
+                            "This account control is available only from the local desktop app"
                                 .to_string(),
                         )
                     }
@@ -1163,22 +1221,107 @@ fn install_control_handler(
                                 }
                                 return Err(error);
                             }
-                            for port in manager.ports() {
-                                if let Err(error) = broker.send_command_to_port(
-                                    port,
-                                    serde_json::json!({ "type": "picot_reload_accounts" }),
-                                ) {
-                                    log::warn!(
-                                        "[accounts] failed to notify Pi process on port {}: {}",
-                                        port,
-                                        error
-                                    );
-                                }
+                            if let Some(previous_account_id) = result
+                                .previous_active_account_id
+                                .as_deref()
+                                .filter(|previous| {
+                                    Some(*previous) != result.active_account_id.as_deref()
+                                })
+                            {
+                                suspend_bound_account_tasks(
+                                    &bindings,
+                                    &manager,
+                                    &broker,
+                                    &result.provider,
+                                    previous_account_id,
+                                );
                             }
+                            notify_pi_account_reload(&manager, &broker);
                         }
                         serde_json::to_value(result).map_err(|error| {
                             format!("Cannot encode account import result: {error}")
                         })
+                    }
+                    "account_activate" => {
+                        let account_id = arg_str("accountId").ok_or("accountId is required")?;
+                        let result = accounts.activate_stored(&account_id)?;
+                        let active = accounts
+                            .active_account(&result.provider)?
+                            .ok_or("The activated account was not found in the vault")?;
+                        if let Err(error) =
+                            auth_sync.activate(&active, &result.deactivated_pi_providers)
+                        {
+                            if let Err(rollback_error) = accounts.restore_active_account(
+                                &result.provider,
+                                result.previous_active_account_id.as_deref(),
+                            ) {
+                                log::error!(
+                                    "[accounts] failed to restore the previous active account: {}",
+                                    rollback_error
+                                );
+                            }
+                            return Err(error);
+                        }
+                        if let Some(previous_account_id) = result
+                            .previous_active_account_id
+                            .as_deref()
+                            .filter(|previous| *previous != result.active_account_id.as_str())
+                        {
+                            suspend_bound_account_tasks(
+                                &bindings,
+                                &manager,
+                                &broker,
+                                &result.provider,
+                                previous_account_id,
+                            );
+                        }
+                        notify_pi_account_reload(&manager, &broker);
+                        serde_json::to_value(result)
+                            .map_err(|error| format!("Cannot encode account activation: {error}"))
+                    }
+                    "account_deactivate" => {
+                        let provider = arg_str("provider").ok_or("provider is required")?;
+                        let result = accounts.deactivate_provider(&provider)?;
+                        if let Err(error) = auth_sync.deactivate(&result.deactivated_pi_provider) {
+                            if let Err(rollback_error) = accounts.restore_active_account(
+                                &result.provider,
+                                Some(&result.deactivated_account_id),
+                            ) {
+                                log::error!(
+                                    "[accounts] failed to restore the deactivated account: {}",
+                                    rollback_error
+                                );
+                            }
+                            return Err(error);
+                        }
+                        suspend_bound_account_tasks(
+                            &bindings,
+                            &manager,
+                            &broker,
+                            &result.provider,
+                            &result.deactivated_account_id,
+                        );
+                        notify_pi_account_reload(&manager, &broker);
+                        serde_json::to_value(result)
+                            .map_err(|error| format!("Cannot encode account deactivation: {error}"))
+                    }
+                    "chat_prepare_prompt" => {
+                        let session_id = arg_str("sessionId").ok_or("sessionId is required")?;
+                        let pi_provider = arg_str("piProvider").ok_or("piProvider is required")?;
+                        let message = arg_str("message").unwrap_or_default();
+                        let active = accounts.active_account_for_pi_provider(&pi_provider)?;
+                        let active_ref = active
+                            .as_ref()
+                            .map(|account| (account.provider.as_str(), account.id.as_str()));
+                        let confirmed = message.trim() == "继续"
+                            || message.trim().eq_ignore_ascii_case("continue");
+                        serde_json::to_value(bindings.prepare_prompt(
+                            &session_id,
+                            &pi_provider,
+                            active_ref,
+                            confirmed,
+                        )?)
+                        .map_err(|error| format!("Cannot encode chat account binding: {error}"))
                     }
                     "custom_provider_discover" => {
                         let base_url = arg_str("baseUrl").ok_or("baseUrl is required")?;
@@ -1214,18 +1357,7 @@ fn install_control_handler(
                             &api_key,
                             &model_ids,
                         )?;
-                        for port in manager.ports() {
-                            if let Err(error) = broker.send_command_to_port(
-                                port,
-                                serde_json::json!({ "type": "picot_reload_accounts" }),
-                            ) {
-                                log::warn!(
-                                    "[custom-provider] failed to notify Pi process on port {}: {}",
-                                    port,
-                                    error
-                                );
-                            }
-                        }
+                        notify_pi_account_reload(&manager, &broker);
                         Ok(serde_json::json!({
                             "providerId": provider_id,
                             "modelIds": model_ids,
@@ -1389,6 +1521,10 @@ fn main() {
                 .map_err(std::io::Error::other)?;
             let account_vault = Arc::new(AccountVault::new(app_data_dir.join("accounts.vault")));
             let accounts = Arc::new(AccountImportService::new(account_vault));
+            let bindings = Arc::new(
+                AccountBindingStore::open(&app_data_dir.join("account-bindings.sqlite3"))
+                    .map_err(std::io::Error::other)?,
+            );
             let auth_sync = Arc::new(
                 PiAuthSynchronizer::for_current_user().map_err(std::io::Error::other)?,
             );
@@ -1397,6 +1533,7 @@ fn main() {
                 &broker,
                 manager.clone(),
                 accounts.clone(),
+                bindings,
                 auth_sync,
                 app.handle().clone(),
             );

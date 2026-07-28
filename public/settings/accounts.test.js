@@ -93,4 +93,38 @@ describe("account settings", () => {
       expect(transport.applyAccountImport).toHaveBeenCalledWith("preview-1", ["candidate-1"], null),
     );
   });
+
+  test("activates and deactivates an already stored account without reimporting it", async () => {
+    const stored = {
+      id: "account-1",
+      provider: "codex",
+      piProvider: "openai-codex",
+      label: "me@example.com",
+      authKind: "oauth",
+      chatCompatible: true,
+      active: false,
+      metadata: {},
+    };
+    const transport = {
+      capabilities: { native: true },
+      listAccounts: vi.fn().mockResolvedValue([stored]),
+      activateAccount: vi.fn().mockResolvedValue({
+        accounts: [{ ...stored, active: true }],
+      }),
+      deactivateAccount: vi.fn().mockResolvedValue({
+        accounts: [{ ...stored, active: false }],
+      }),
+    };
+    const onAccountsChanged = vi.fn();
+    const { loadAccounts } = setupAccountSettings({ transport, onAccountsChanged });
+    await loadAccounts();
+
+    document.querySelector(".account-vault-actions button").click();
+    await vi.waitFor(() => expect(transport.activateAccount).toHaveBeenCalledWith("account-1"));
+    expect(document.querySelector(".account-vault-row").classList.contains("is-active")).toBe(true);
+
+    document.querySelector(".account-vault-actions button").click();
+    await vi.waitFor(() => expect(transport.deactivateAccount).toHaveBeenCalledWith("codex"));
+    expect(onAccountsChanged).toHaveBeenCalledTimes(2);
+  });
 });

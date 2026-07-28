@@ -51,6 +51,35 @@ export function setupAccountSettings({ transport, onAccountsChanged = async () =
     candidateList.replaceChildren();
   }
 
+  async function changeAccount(account, activate) {
+    for (const button of list.querySelectorAll("button")) button.disabled = true;
+    showStatus(
+      activate
+        ? t("accounts.activating", {}, "Activating account...")
+        : t("accounts.deactivating", {}, "Deactivating account..."),
+    );
+    try {
+      const result = activate
+        ? await transport.activateAccount(account.id)
+        : await transport.deactivateAccount(account.provider);
+      accounts = result.accounts || [];
+      renderAccounts();
+      showStatus(
+        activate
+          ? t("accounts.activated", {}, "Account activated.")
+          : t("accounts.deactivated", {}, "Account deactivated."),
+        "success",
+      );
+      await onAccountsChanged(result);
+    } catch (error) {
+      renderAccounts();
+      showStatus(
+        error?.message || t("accounts.changeFailed", {}, "Could not change the active account."),
+        "error",
+      );
+    }
+  }
+
   function renderAccounts() {
     list.replaceChildren();
     if (!accounts.length) {
@@ -95,7 +124,21 @@ export function setupAccountSettings({ transport, onAccountsChanged = async () =
           ? "active"
           : "inactive"
         : "stored-only";
-      row.append(main, badge);
+      const actions = element("div", "account-vault-actions");
+      actions.appendChild(badge);
+      if (account.chatCompatible) {
+        const button = element(
+          "button",
+          account.active ? "config-editor-cancel" : "ui-button ui-button--secondary",
+          account.active
+            ? t("accounts.deactivate", {}, "Deactivate")
+            : t("accounts.activate", {}, "Activate"),
+        );
+        button.type = "button";
+        button.addEventListener("click", () => void changeAccount(account, !account.active));
+        actions.appendChild(button);
+      }
+      row.append(main, actions);
       list.appendChild(row);
     }
   }

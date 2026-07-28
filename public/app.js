@@ -1911,11 +1911,43 @@ function refreshSidebarAfterUserPrompt() {
   setTimeout(refresh, 1500);
 }
 
-function sendMessage() {
+let isPreparingPrompt = false;
+
+async function sendMessage() {
   if (!currentOnboardingState().canQuery) return;
+  if (isPreparingPrompt) return;
 
   const message = messageInput.value.trim();
   if (!message) return;
+
+  const sessionId = wsClient.sessionId;
+  if (sessionId && currentModelProvider && transport.available) {
+    isPreparingPrompt = true;
+    try {
+      const decision = await transport.prepareChatPrompt(sessionId, currentModelProvider, message);
+      if (decision?.allowed === false) {
+        messageRenderer.renderError(
+          t(
+            "chat.accountContinueRequired",
+            { provider: decision.logicalProvider || currentModelProvider },
+            `This chat used another ${decision.logicalProvider || currentModelProvider} account. Type 继续 to bind it to the active account and continue.`,
+          ),
+        );
+        return;
+      }
+    } catch (error) {
+      messageRenderer.renderError(
+        t(
+          "chat.accountBindingFailed",
+          { error: error?.message || "unknown error" },
+          `Could not verify the chat account: ${error?.message || "unknown error"}`,
+        ),
+      );
+      return;
+    } finally {
+      isPreparingPrompt = false;
+    }
+  }
 
   messageInput.value = "";
   messageInput.style.height = "auto";
@@ -2179,6 +2211,7 @@ function localizedThinkingLevel(level) {
   return t(`settings.thinking${suffix}`, {}, normalized);
 }
 let currentModelId = "";
+let currentModelProvider = "";
 let availableModels = [];
 let hasLoadedAvailableModels = false;
 let didAutoOpenEmptyModelsDropdown = false;
@@ -2234,8 +2267,12 @@ async function fetchModelInfo() {
     }
     if (stateData.success && stateData.data?.model) {
       currentModelId = stateData.data.model.id || "";
+      currentModelProvider = stateData.data.model.provider || "";
 
-      const model = availableModels.find((m) => m.id === currentModelId);
+      const model = availableModels.find(
+        (m) =>
+          m.id === currentModelId && (!currentModelProvider || m.provider === currentModelProvider),
+      );
       if (!model && availableModels.length > 0) {
         const fallbackModel = availableModels[0];
         const resp = await rpcCommand({
@@ -2245,6 +2282,7 @@ async function fetchModelInfo() {
         });
         if (resp?.success) {
           currentModelId = fallbackModel.id;
+          currentModelProvider = fallbackModel.provider || "";
           if (fallbackModel.contextWindow) {
             contextWindowSize = fallbackModel.contextWindow;
             updateTokenUsage();
@@ -2346,7 +2384,7 @@ function openModelDropdown() {
         return;
 
       const el = document.createElement("div");
-      el.className = `model-dropdown-item${m.id === currentModelId ? " active" : ""}`;
+      el.className = `model-dropdown-item${m.id === currentModelId && m.provider === currentModelProvider ? " active" : ""}`;
       const ctxK = m.contextWindow ? `${(m.contextWindow / 1000).toFixed(0)}k` : "";
       const providerLabel =
         m.provider && m.provider !== "anthropic"
@@ -2379,6 +2417,7 @@ function openModelDropdown() {
           refreshModelInfo: fetchModelInfo,
           applySelectedModel: (selectedModel) => {
             currentModelId = selectedModel.id;
+            currentModelProvider = selectedModel.provider || "";
             updateModelLabel();
             if (selectedModel.contextWindow) {
               contextWindowSize = selectedModel.contextWindow;
@@ -3168,6 +3207,7 @@ function handleMirrorSync(data) {
   // Update model display
   if (data.model) {
     currentModelId = data.model.id || "";
+    currentModelProvider = data.model.provider || "";
     updateModelLabel();
     if (data.model.contextWindow) {
       contextWindowSize = data.model.contextWindow;

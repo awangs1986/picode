@@ -91,6 +91,15 @@ impl BrokerWs {
         *self.inner.active_port.lock().unwrap()
     }
 
+    pub fn port_for_session(&self, session_id: &str) -> Option<u16> {
+        self.inner
+            .routes
+            .lock()
+            .unwrap()
+            .get(session_id.trim())
+            .copied()
+    }
+
     /// Number of pi upstream connections the broker is currently maintaining.
     /// Used to detect when a global `active_port` fallback would be ambiguous:
     /// with more than one live pi process (multi-window / multi-workspace) the

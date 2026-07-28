@@ -217,5 +217,13 @@
     <message id="customProviders.saving">正在保存服务商……</message>
     <message id="customProviders.saved">服务商已保存，模型现在可以在聊天中选择。</message>
     <message id="customProviders.failed">无法保存服务商。</message>
+    <message id="chat.accountContinueRequired">此聊天原来使用另一个 {provider} 账号。请输入“继续”，确认绑定到当前账号后再继续。</message>
+    <message id="chat.accountBindingFailed">无法确认聊天账号：{error}</message>
+    <message id="accounts.deactivate">停用</message>
+    <message id="accounts.activating">正在启用账号……</message>
+    <message id="accounts.deactivating">正在停用账号……</message>
+    <message id="accounts.activated">账号已启用。</message>
+    <message id="accounts.deactivated">账号已停用。</message>
+    <message id="accounts.changeFailed">无法更改当前账号。</message>
   </messages>
 </languagePack>

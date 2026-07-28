@@ -75,6 +75,8 @@ describe("WsTransport", () => {
     await transport.previewLocalAccountImport("codex");
     await transport.previewJsonAccountImport("claude", "{}", "claude.json");
     await transport.applyAccountImport("preview-1", ["candidate-1"], "candidate-1");
+    await transport.activateAccount("account-2");
+    await transport.deactivateAccount("codex");
 
     expect(ws.sendControl).toHaveBeenCalledWith("account_preview_local", { provider: "codex" }, {});
     expect(ws.sendControl).toHaveBeenCalledWith(
@@ -91,6 +93,8 @@ describe("WsTransport", () => {
       },
       {},
     );
+    expect(ws.sendControl).toHaveBeenCalledWith("account_activate", { accountId: "account-2" }, {});
+    expect(ws.sendControl).toHaveBeenCalledWith("account_deactivate", { provider: "codex" }, {});
   });
 
   test("custom API discovery and saving use local broker controls", async () => {
@@ -130,6 +134,19 @@ describe("WsTransport", () => {
         apiKey: "secret",
         modelIds: ["deepseek-chat"],
       },
+      {},
+    );
+  });
+
+  test("checks persistent account binding before a chat prompt", async () => {
+    const ws = fakeWsClient();
+    const transport = new WsTransport(ws, {});
+
+    await transport.prepareChatPrompt("session-a", "openai-codex", "继续");
+
+    expect(ws.sendControl).toHaveBeenCalledWith(
+      "chat_prepare_prompt",
+      { sessionId: "session-a", piProvider: "openai-codex", message: "继续" },
       {},
     );
   });
