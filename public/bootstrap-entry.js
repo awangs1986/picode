@@ -1,5 +1,9 @@
+import { initLocalization } from "./i18n/index.js";
+
+await initLocalization();
+
 if (window.location.pathname.startsWith("/app/")) {
-  import("./native/app.js");
+  await import("./native/app.js");
 } else {
-  import("./app.js");
+  await import("./app.js");
 }

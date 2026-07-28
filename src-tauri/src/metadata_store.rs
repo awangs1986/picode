@@ -2,13 +2,16 @@
 
 use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(unix)]
+use std::path::PathBuf;
 use uuid::Uuid;
 
 const SCHEMA_VERSION: i64 = 1;
 
 pub struct MetadataStore {
     connection: Connection,
+    #[cfg(unix)]
     path: PathBuf,
 }
 
@@ -30,6 +33,7 @@ impl MetadataStore {
         })?;
         let mut store = Self {
             connection,
+            #[cfg(unix)]
             path: path.to_path_buf(),
         };
         store.migrate()?;

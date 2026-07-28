@@ -47,8 +47,7 @@ a,
 }
 
 body {
-  font-family:
-    -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", sans-serif;
+  font-family: var(--font-ui);
   background: var(--bg-solid);
   color: var(--text-primary);
   line-height: 1.5;
@@ -56,6 +55,25 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   font-size: var(--font-size-md);
+}
+
+button,
+input,
+select,
+textarea {
+  font-family: inherit;
+}
+
+code,
+pre,
+kbd,
+samp {
+  font-family: var(--font-mono);
+}
+
+.settings-language-select {
+  width: min(180px, 44%);
+  flex: 0 0 auto;
 }
 
 /* ═══════════════════════════════════════════════════════

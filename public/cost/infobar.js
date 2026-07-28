@@ -1,3 +1,8 @@
+import {
+  formatDate as formatLocaleDate,
+  formatNumber as formatLocaleNumber,
+} from "../i18n/index.js";
+
 function escapeHtml(value) {
   return String(value ?? "")
     .replace(/&/g, "&amp;")
@@ -12,14 +17,14 @@ function formatUsd(value) {
 }
 
 function formatInt(value) {
-  return Number(value || 0).toLocaleString();
+  return formatLocaleNumber(value);
 }
 
 function formatCompact(value) {
-  return new Intl.NumberFormat(undefined, {
+  return formatLocaleNumber(value, {
     notation: "compact",
     maximumFractionDigits: 1,
-  }).format(Number(value || 0));
+  });
 }
 
 function formatHourLabel(hour) {
@@ -226,7 +231,7 @@ function formatSessionDate(timeStr) {
   if (!timeStr) return "";
   const d = new Date(timeStr);
   if (!Number.isFinite(d.getTime())) return "";
-  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  return formatLocaleDate(d, { month: "short", day: "numeric" });
 }
 
 function renderSessionsPanel(target, sessions = []) {
@@ -455,7 +460,7 @@ function buildActivityMonthLabels(days, leadingEmptyDays) {
     seen.add(monthKey);
     labels.push({
       column: Math.floor((leadingEmptyDays + index) / 7) + 1,
-      name: date.toLocaleDateString(undefined, { month: "short" }),
+      name: formatLocaleDate(date, { month: "short" }),
     });
   }
   return labels;
@@ -692,7 +697,7 @@ function formatChartDateLabel(label) {
   if (label === "Total") return label;
   const date = new Date(`${label}T00:00:00`);
   if (!Number.isFinite(date.getTime())) return label;
-  return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  return formatLocaleDate(date, { month: "short", day: "numeric" });
 }
 
 function getToolChartPalette() {

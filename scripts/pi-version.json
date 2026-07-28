@@ -1,4 +1,7 @@
 {
   "version": "0.80.10",
-  "_comment": "Locked pi-mono release version that pi-studio bundles. Bump this, run `bun run fetch:pi`, smoke-test, then commit. Optionally pin sha256 per-asset under `sha256` to enable strict checksum verification."
+  "sha256": {
+    "pi-windows-x64.zip": "125be42fd277e20e1bb5f366aa88fc32dec924338d610c52b51c5b42b15b66e2"
+  },
+  "_comment": "Locked pi-mono release version that Picot bundles. Bump this, run `bun run fetch:pi`, smoke-test, then commit. Every release target must be pinned before publishing."
 }

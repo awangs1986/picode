@@ -43,7 +43,7 @@
             } catch (_e) {}
         </script>
     </head>
-    <body class="">
+    <body class="" data-i18n-static>
         <div
             class="instance-swap-overlay"
             id="instance-swap-overlay"
@@ -788,6 +788,29 @@
                         <div class="settings-section">
                             <div class="settings-section-title">Appearance</div>
                             <div class="theme-grid" id="theme-grid"></div>
+                            <div class="settings-row">
+                                <span class="settings-label settings-label-stack">
+                                    <span
+                                        class="settings-label-main"
+                                        data-i18n="language.label"
+                                        >Language</span
+                                    >
+                                    <span
+                                        class="settings-label-sub"
+                                        data-i18n="language.help"
+                                        >Changes apply immediately. No restart is required.</span
+                                    >
+                                </span>
+                                <select
+                                    class="ui-select settings-language-select"
+                                    id="settings-language-select"
+                                    data-language-select
+                                    aria-label="Language"
+                                >
+                                    <option value="en-US">English</option>
+                                    <option value="zh-CN">简体中文</option>
+                                </select>
+                            </div>
                         </div>
                         <div class="settings-section">
                             <div class="settings-section-title">Agent</div>
