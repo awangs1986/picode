@@ -698,6 +698,10 @@ impl PiManager {
             .map_err(|e| e.to_string())
     }
 
+    pub fn ports(&self) -> Vec<u16> {
+        self.processes.lock().unwrap().keys().copied().collect()
+    }
+
     /// Returns `Some(exit_status_string)` if the process has already exited, `None` if still running.
     pub fn check_exited(&self, port: u16) -> Option<String> {
         let mut lock = self.processes.lock().unwrap();

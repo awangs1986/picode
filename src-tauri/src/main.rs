@@ -1,21 +1,27 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod account_import;
+mod account_vault;
 mod broker_ws;
 mod host_data;
 mod host_router;
 mod host_server;
 mod metadata_store;
 mod native_pi_manager;
+mod pi_auth_sync;
 mod pi_manager;
 mod pi_rpc_bridge;
 mod remote_auth;
 mod runtime_coordinator;
 mod settings_store;
 
+use account_import::AccountImportService;
+use account_vault::AccountVault;
 use broker_ws::BrokerWs;
 use host_server::HostServer;
 use metadata_store::MetadataStore;
 use native_pi_manager::NativePiManager;
+use pi_auth_sync::PiAuthSynchronizer;
 use pi_manager::{
     locked_pi_version, wait_for_endpoint, wait_for_health as wait_for_pi_health, PiManager,
 };
@@ -921,12 +927,23 @@ fn resolve_control_port(port: Option<u16>, broker: &BrokerWs) -> Result<u16, Str
 /// regardless of transport. Native ops (folder picker, devtools, updater,
 /// open-in-app/external) require an OS host and are only meaningful when this
 /// handler is installed — which is exactly what `capabilities.native` advertises.
-fn install_control_handler(broker: &Arc<BrokerWs>, manager: Arc<PiManager>, app: AppHandle) {
+fn install_control_handler(
+    broker: &Arc<BrokerWs>,
+    manager: Arc<PiManager>,
+    accounts: Arc<AccountImportService>,
+    auth_sync: Arc<PiAuthSynchronizer>,
+    app: AppHandle,
+) {
     let broker_for_handler = broker.clone();
     let handler: broker_ws::ControlHandler = Arc::new(
-        move |command: String, args: Value, progress: broker_ws::ProgressSink| {
+        move |command: String,
+              args: Value,
+              progress: broker_ws::ProgressSink,
+              local_client: bool| {
             let manager = manager.clone();
             let broker = broker_for_handler.clone();
+            let accounts = accounts.clone();
+            let auth_sync = auth_sync.clone();
             let app = app.clone();
             Box::pin(async move {
                 let arg = |key: &str| args.get(key).cloned().unwrap_or(Value::Null);
@@ -939,6 +956,86 @@ fn install_control_handler(broker: &Arc<BrokerWs>, manager: Arc<PiManager>, app:
                 let arg_bool = |key: &str| args.get(key).and_then(Value::as_bool);
 
                 match command.as_str() {
+                    "account_list"
+                    | "account_preview_local"
+                    | "account_preview_json"
+                    | "account_apply_import"
+                        if !local_client =>
+                    {
+                        Err(
+                            "Account management is available only from the local desktop app"
+                                .to_string(),
+                        )
+                    }
+                    "account_list" => serde_json::to_value(accounts.list_accounts()?)
+                        .map_err(|error| format!("Cannot encode account list: {error}")),
+                    "account_preview_local" => {
+                        let provider = arg_str("provider").ok_or("provider is required")?;
+                        serde_json::to_value(accounts.preview_local(&provider)?)
+                            .map_err(|error| format!("Cannot encode account preview: {error}"))
+                    }
+                    "account_preview_json" => {
+                        let provider = arg_str("provider").ok_or("provider is required")?;
+                        let content = arg_str("content").ok_or("content is required")?;
+                        let source_name = arg_str("sourceName");
+                        serde_json::to_value(accounts.preview_json(
+                            &provider,
+                            &content,
+                            source_name.as_deref(),
+                        )?)
+                        .map_err(|error| format!("Cannot encode account preview: {error}"))
+                    }
+                    "account_apply_import" => {
+                        let preview_id = arg_str("previewId").ok_or("previewId is required")?;
+                        let candidate_ids: Vec<String> = args
+                            .get("candidateIds")
+                            .and_then(Value::as_array)
+                            .ok_or("candidateIds must be an array")?
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_string)
+                            .collect();
+                        let activate_candidate_id = arg_str("activateCandidateId");
+                        let result = accounts.apply(
+                            &preview_id,
+                            &candidate_ids,
+                            activate_candidate_id.as_deref(),
+                        )?;
+                        if result.active_account_id.is_some() {
+                            let active = accounts
+                                .active_account(&result.provider)?
+                                .ok_or("The activated account was not found in the vault")?;
+                            if let Err(error) =
+                                auth_sync.activate(&active, &result.deactivated_pi_providers)
+                            {
+                                if let Err(rollback_error) = accounts.restore_active_account(
+                                    &result.provider,
+                                    result.previous_active_account_id.as_deref(),
+                                ) {
+                                    log::error!(
+                                        "[accounts] failed to restore the previous active account: {}",
+                                        rollback_error
+                                    );
+                                }
+                                return Err(error);
+                            }
+                            for port in manager.ports() {
+                                if let Err(error) = broker.send_command_to_port(
+                                    port,
+                                    serde_json::json!({ "type": "picot_reload_accounts" }),
+                                ) {
+                                    log::warn!(
+                                        "[accounts] failed to notify Pi process on port {}: {}",
+                                        port,
+                                        error
+                                    );
+                                }
+                            }
+                        }
+                        serde_json::to_value(result).map_err(|error| {
+                            format!("Cannot encode account import result: {error}")
+                        })
+                    }
                     "open_workspace" => {
                         let cwd = arg_str("cwd").ok_or("cwd is required")?;
                         let session_path = arg_str("sessionPath");
@@ -1091,8 +1188,23 @@ fn main() {
             }
             let manager = Arc::new(PiManager::new(static_dir));
             let broker = Arc::new(BrokerWs::start().expect("failed to start broker websocket"));
+            let app_data_dir = app
+                .path()
+                .app_data_dir()
+                .map_err(std::io::Error::other)?;
+            let account_vault = Arc::new(AccountVault::new(app_data_dir.join("accounts.vault")));
+            let accounts = Arc::new(AccountImportService::new(account_vault));
+            let auth_sync = Arc::new(
+                PiAuthSynchronizer::for_current_user().map_err(std::io::Error::other)?,
+            );
             std::env::set_var("PI_STUDIO_BROKER_PORT", broker.port().to_string());
-            install_control_handler(&broker, manager.clone(), app.handle().clone());
+            install_control_handler(
+                &broker,
+                manager.clone(),
+                accounts.clone(),
+                auth_sync,
+                app.handle().clone(),
+            );
 
             let home_cwd = dirs::home_dir()
                 .unwrap_or_default()
@@ -1157,6 +1269,7 @@ fn main() {
 
             app.manage(manager.clone());
             app.manage(broker.clone());
+            app.manage(accounts);
 
             if startup_ok {
                 broker.register_session(initial_port, session_path.as_deref().unwrap_or(""));

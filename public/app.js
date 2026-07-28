@@ -20,6 +20,7 @@ import {
   shouldSpawnForCrossWorkspaceSelection,
 } from "./session/routing.js";
 import { anchorHistoryToBottom } from "./session/scroll-anchor.js";
+import { setupAccountSettings } from "./settings/accounts.js";
 import { setupSettingsEditors } from "./settings/editors.js";
 import {
   clearSettingsSaveMessage,
@@ -3652,6 +3653,7 @@ let piVersionInflight = null;
 let loadInlineConfigEditor = async () => {};
 let loadInlineModelsEditor = async () => {};
 let loadApiKeysPanel = async () => {};
+let loadAccounts = async () => {};
 
 async function handleSuperAgentEnabledChanged(enabled) {
   if (!enabled) {
@@ -3672,6 +3674,7 @@ function selectSettingsTab(tabKey = "general") {
     tab.classList.toggle("active", tab.dataset.settingsPanel === targetTabKey);
   });
   if (targetTabKey === "configuration") {
+    loadAccounts();
     loadApiKeysPanel();
     loadInlineConfigEditor();
     loadInlineModelsEditor();
@@ -4393,6 +4396,14 @@ setupSettingsToggles({
   updateThinkingBtn,
   onSuperAgentEnabledChanged: handleSuperAgentEnabledChanged,
 });
+
+({ loadAccounts } = setupAccountSettings({
+  transport,
+  onAccountsChanged: async () => {
+    await fetchModelInfo();
+    updateUI();
+  },
+}));
 
 ({ loadApiKeysPanel, loadInlineConfigEditor, loadInlineModelsEditor } = setupSettingsEditors({
   rpcCommand,

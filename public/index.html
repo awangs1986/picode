@@ -1092,6 +1092,120 @@
 
                 <div class="settings-tab" data-settings-panel="configuration">
                     <div class="settings-body">
+                        <div class="settings-section" id="settings-accounts-section">
+                            <div class="settings-section-title" data-i18n="accounts.title">
+                                Agent accounts
+                            </div>
+                            <p class="settings-help" data-i18n="accounts.help">
+                                Import is always manual. Picot previews accounts before saving them in the encrypted system vault.
+                            </p>
+                            <div class="account-import-providers">
+                                <div class="account-import-provider" data-provider="codex">
+                                    <div class="account-import-provider-name" data-i18n-ignore>Codex</div>
+                                    <div class="account-import-actions">
+                                        <button
+                                            type="button"
+                                            class="settings-value-btn"
+                                            data-account-local="codex"
+                                            data-i18n="accounts.importComputer"
+                                        >
+                                            Import this computer
+                                        </button>
+                                        <button
+                                            type="button"
+                                            class="settings-value-btn"
+                                            data-account-json="codex"
+                                            data-i18n="accounts.importJson"
+                                        >
+                                            Import JSON
+                                        </button>
+                                    </div>
+                                </div>
+                                <div class="account-import-provider" data-provider="cursor">
+                                    <div class="account-import-provider-name" data-i18n-ignore>Cursor</div>
+                                    <div class="account-import-actions">
+                                        <button
+                                            type="button"
+                                            class="settings-value-btn"
+                                            data-account-local="cursor"
+                                            data-i18n="accounts.importComputer"
+                                        >
+                                            Import this computer
+                                        </button>
+                                        <button
+                                            type="button"
+                                            class="settings-value-btn"
+                                            data-account-json="cursor"
+                                            data-i18n="accounts.importJson"
+                                        >
+                                            Import JSON
+                                        </button>
+                                    </div>
+                                </div>
+                                <div class="account-import-provider" data-provider="claude">
+                                    <div class="account-import-provider-name" data-i18n-ignore>Claude</div>
+                                    <div class="account-import-actions">
+                                        <button
+                                            type="button"
+                                            class="settings-value-btn"
+                                            data-account-local="claude"
+                                            data-i18n="accounts.importComputer"
+                                        >
+                                            Import this computer
+                                        </button>
+                                        <button
+                                            type="button"
+                                            class="settings-value-btn"
+                                            data-account-json="claude"
+                                            data-i18n="accounts.importJson"
+                                        >
+                                            Import JSON
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                            <input
+                                id="account-json-file-input"
+                                type="file"
+                                accept="application/json,.json"
+                                multiple
+                                hidden
+                            />
+                            <div id="account-import-status" class="account-import-status" hidden></div>
+                            <div id="account-import-preview" class="account-import-preview" hidden>
+                                <div
+                                    class="account-import-preview-title"
+                                    data-i18n="accounts.previewTitle"
+                                >
+                                    Confirm import
+                                </div>
+                                <div id="account-import-warnings"></div>
+                                <div id="account-import-candidates"></div>
+                                <div class="account-import-preview-actions">
+                                    <button
+                                        type="button"
+                                        class="config-editor-cancel"
+                                        id="account-import-cancel"
+                                        data-i18n="common.cancel"
+                                    >
+                                        Cancel
+                                    </button>
+                                    <button
+                                        type="button"
+                                        class="btn-primary"
+                                        id="account-import-confirm"
+                                        data-i18n="accounts.confirmImport"
+                                    >
+                                        Import selected
+                                    </button>
+                                </div>
+                            </div>
+                            <div id="account-vault-list" class="account-vault-list">
+                                <div class="settings-api-keys-loading" data-i18n="accounts.loading">
+                                    Loading accounts…
+                                </div>
+                            </div>
+                        </div>
                         <div class="settings-section">
                             <div class="settings-section-title">
                                 Authentication

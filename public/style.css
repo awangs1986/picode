@@ -6648,6 +6648,169 @@ body.super-agent-active .file-sidebar {
   margin-top: 10px;
 }
 
+/* ─── Manual account import / encrypted vault ─────────────────────────────── */
+
+.account-import-providers {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-2);
+  margin: var(--space-3) 0;
+}
+
+.account-import-provider,
+.account-import-candidate,
+.account-vault-row {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-glass);
+}
+
+.account-import-provider {
+  padding: var(--card-padding);
+}
+
+.account-import-provider-name,
+.account-import-preview-title,
+.account-import-candidate-name,
+.account-vault-name {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.account-import-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1-5);
+  margin-top: var(--space-2);
+}
+
+.account-import-status {
+  margin: var(--space-2) 0;
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  background: var(--bg-glass);
+}
+
+.account-import-status[data-kind="error"],
+.account-import-warning {
+  color: var(--error);
+}
+
+.account-import-status[data-kind="success"] {
+  color: var(--success);
+}
+
+.account-import-preview {
+  margin: var(--space-3) 0;
+  padding: var(--card-padding);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated, var(--bg-glass));
+}
+
+.account-import-candidate {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  padding: var(--card-padding);
+}
+
+.account-import-candidate-meta,
+.account-vault-detail {
+  color: var(--text-dim);
+  font-size: var(--font-size-sm);
+}
+
+.account-import-warning {
+  margin-top: var(--space-1);
+  font-size: var(--font-size-sm);
+  line-height: 1.4;
+}
+
+.account-import-activate {
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+  white-space: nowrap;
+}
+
+.account-import-preview-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.account-vault-list {
+  display: grid;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.account-vault-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--card-padding);
+}
+
+.account-vault-row.is-active {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border-subtle));
+}
+
+.account-vault-main {
+  min-width: 0;
+}
+
+.account-vault-detail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
+  margin-top: var(--space-1);
+}
+
+.account-vault-endpoint {
+  overflow: hidden;
+  max-width: 360px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-vault-status {
+  flex: none;
+  padding: var(--space-0-5) var(--space-2);
+  border-radius: var(--radius-pill);
+  color: var(--text-dim);
+  background: var(--bg-glass-strong);
+  font-size: var(--font-size-sm);
+}
+
+.account-vault-status[data-state="active"] {
+  color: var(--success);
+}
+
+.account-vault-status[data-state="stored-only"] {
+  color: var(--warning);
+}
+
+@media (max-width: 760px) {
+  .account-import-providers {
+    grid-template-columns: 1fr;
+  }
+
+  .account-import-candidate {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .account-import-activate {
+    grid-column: 2;
+    white-space: normal;
+  }
+}
+
 /* ═══════════════════════════════════════════════════════
    Reduced Motion — disable/simplify all animations for
    users who have requested reduced motion (WCAG 2.3.3)

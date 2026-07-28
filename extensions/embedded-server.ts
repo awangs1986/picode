@@ -611,6 +611,16 @@ interface RpcCommand {
   [key: string]: unknown;
 }
 
+type ReloadableCredentialStore = { reload?: () => void };
+type ReloadableRegistryInternals = {
+  authStorage?: ReloadableCredentialStore;
+  runtime?: {
+    credentials?: {
+      store?: ReloadableCredentialStore;
+    };
+  };
+};
+
 type SlashCommandLike = {
   name?: string;
   description?: string;
@@ -1367,6 +1377,27 @@ export default function (pi: ExtensionAPI) {
 
     try {
       switch (command.type) {
+        case "picot_reload_accounts": {
+          const registry = ctx?.modelRegistry ?? globalState.modelRegistry;
+          if (!registry) {
+            sendTo(ws, error("picot_reload_accounts", "Model registry is not ready"));
+            break;
+          }
+          const internals = registry as unknown as ReloadableRegistryInternals;
+          const credentialStore = internals.runtime?.credentials?.store ?? internals.authStorage;
+          if (typeof credentialStore?.reload !== "function") {
+            sendTo(
+              ws,
+              error("picot_reload_accounts", "This Pi runtime cannot reload account credentials"),
+            );
+            break;
+          }
+          credentialStore.reload();
+          await registry.refresh();
+          sendTo(ws, success("picot_reload_accounts"));
+          break;
+        }
+
         case "list_skills": {
           const a = requireApi("list_skills");
           if (!a) break;

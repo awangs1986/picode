@@ -68,6 +68,31 @@ describe("WsTransport", () => {
     );
   });
 
+  test("account imports use an explicit preview then apply flow", async () => {
+    const ws = fakeWsClient();
+    const transport = new WsTransport(ws, {});
+
+    await transport.previewLocalAccountImport("codex");
+    await transport.previewJsonAccountImport("claude", "{}", "claude.json");
+    await transport.applyAccountImport("preview-1", ["candidate-1"], "candidate-1");
+
+    expect(ws.sendControl).toHaveBeenCalledWith("account_preview_local", { provider: "codex" }, {});
+    expect(ws.sendControl).toHaveBeenCalledWith(
+      "account_preview_json",
+      { provider: "claude", content: "{}", sourceName: "claude.json" },
+      {},
+    );
+    expect(ws.sendControl).toHaveBeenCalledWith(
+      "account_apply_import",
+      {
+        previewId: "preview-1",
+        candidateIds: ["candidate-1"],
+        activateCandidateId: "candidate-1",
+      },
+      {},
+    );
+  });
+
   test("capabilities reflect the underlying ws client", () => {
     const transport = new WsTransport(fakeWsClient({ native: false }), {});
     expect(transport.capabilities.native).toBe(false);

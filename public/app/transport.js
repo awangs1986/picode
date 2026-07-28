@@ -124,6 +124,28 @@ export class WsTransport {
     return this._control("remove_pi_package", { source }, { timeoutMs: PACKAGE_TIMEOUT_MS });
   }
 
+  // ── Local account vault / manual imports ──────────────────────────────────
+
+  listAccounts() {
+    return this._control("account_list", {});
+  }
+
+  previewLocalAccountImport(provider) {
+    return this._control("account_preview_local", { provider });
+  }
+
+  previewJsonAccountImport(provider, content, sourceName = null) {
+    return this._control("account_preview_json", { provider, content, sourceName });
+  }
+
+  applyAccountImport(previewId, candidateIds, activateCandidateId = null) {
+    return this._control("account_apply_import", {
+      previewId,
+      candidateIds,
+      activateCandidateId,
+    });
+  }
+
   // ── Native-only ops (need an OS host; reject when capabilities.native=false) ─
 
   pickFolder() {
