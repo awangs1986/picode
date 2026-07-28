@@ -1295,6 +1295,108 @@
                                 for the full schema. Changes are picked up
                                 immediately — no restart needed.
                             </p>
+                            <div class="custom-provider-toolbar">
+                                <button
+                                    type="button"
+                                    class="ui-button ui-button--primary"
+                                    id="custom-provider-add"
+                                    data-i18n="customProviders.add"
+                                >
+                                    Add API provider
+                                </button>
+                            </div>
+                            <div id="custom-provider-form" class="custom-provider-form hidden">
+                                <div class="custom-provider-grid">
+                                    <label class="custom-provider-field">
+                                        <span data-i18n="customProviders.name">Provider name</span>
+                                        <input
+                                            id="custom-provider-name"
+                                            type="text"
+                                            class="ui-input"
+                                            autocomplete="off"
+                                            placeholder="DeepSeek"
+                                            data-i18n-placeholder="customProviders.namePlaceholder"
+                                        />
+                                    </label>
+                                    <label class="custom-provider-field">
+                                        <span data-i18n="customProviders.id">Provider ID</span>
+                                        <input
+                                            id="custom-provider-id"
+                                            type="text"
+                                            class="ui-input"
+                                            autocomplete="off"
+                                            placeholder="deepseek"
+                                            data-i18n-placeholder="customProviders.idPlaceholder"
+                                        />
+                                    </label>
+                                    <label class="custom-provider-field">
+                                        <span data-i18n="customProviders.format">API format</span>
+                                        <select id="custom-provider-api" class="ui-select">
+                                            <option value="openai-completions" data-i18n="customProviders.openaiChat">
+                                                OpenAI compatible (Chat Completions)
+                                            </option>
+                                            <option value="openai-responses" data-i18n="customProviders.openaiResponses">
+                                                OpenAI compatible (Responses)
+                                            </option>
+                                            <option value="anthropic-messages" data-i18n="customProviders.anthropic">
+                                                Anthropic compatible (Messages)
+                                            </option>
+                                        </select>
+                                    </label>
+                                    <label class="custom-provider-field custom-provider-field--wide">
+                                        <span data-i18n="customProviders.baseUrl">Base URL</span>
+                                        <input
+                                            id="custom-provider-base-url"
+                                            type="url"
+                                            class="ui-input"
+                                            autocomplete="off"
+                                            spellcheck="false"
+                                            placeholder="https://api.deepseek.com/v1"
+                                            data-i18n-placeholder="customProviders.baseUrlPlaceholder"
+                                        />
+                                    </label>
+                                    <label class="custom-provider-field custom-provider-field--wide">
+                                        <span data-i18n="customProviders.apiKey">API Key</span>
+                                        <input
+                                            id="custom-provider-api-key"
+                                            type="password"
+                                            class="ui-input"
+                                            autocomplete="off"
+                                            spellcheck="false"
+                                            placeholder="sk-..."
+                                            data-i18n-placeholder="customProviders.apiKeyPlaceholder"
+                                        />
+                                    </label>
+                                    <label class="custom-provider-field custom-provider-field--full">
+                                        <span data-i18n="customProviders.models">Models</span>
+                                        <textarea
+                                            id="custom-provider-models"
+                                            class="ui-textarea custom-provider-models"
+                                            rows="4"
+                                            spellcheck="false"
+                                            placeholder="One model ID per line"
+                                            data-i18n-placeholder="customProviders.modelsPlaceholder"
+                                        ></textarea>
+                                    </label>
+                                </div>
+                                <div
+                                    id="custom-provider-status"
+                                    class="custom-provider-status hidden"
+                                    role="status"
+                                    aria-live="polite"
+                                ></div>
+                                <div class="custom-provider-actions">
+                                    <button type="button" class="config-editor-cancel" id="custom-provider-cancel" data-i18n="common.cancel">
+                                        Cancel
+                                    </button>
+                                    <button type="button" class="ui-button ui-button--secondary" id="custom-provider-discover" data-i18n="customProviders.discover">
+                                        Load model list
+                                    </button>
+                                    <button type="button" class="ui-button ui-button--primary" id="custom-provider-save" data-i18n="customProviders.save">
+                                        Save provider
+                                    </button>
+                                </div>
+                            </div>
                             <div class="settings-config-meta">
                                 <span class="settings-label"
                                     >Providers file</span

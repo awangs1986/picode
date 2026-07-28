@@ -1,5 +1,6 @@
 use crate::account_vault::StoredAccount;
 use serde_json::{Map, Value};
+use std::collections::HashSet;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -59,6 +60,87 @@ impl PiAuthSynchronizer {
         atomic_write_json(&self.auth_path, &Value::Object(auth))
     }
 
+    pub fn save_custom_provider(
+        &self,
+        provider_id: &str,
+        display_name: &str,
+        api: &str,
+        base_url: &str,
+        api_key: &str,
+        model_ids: &[String],
+    ) -> Result<(), String> {
+        let provider_id = provider_id.trim();
+        if provider_id.is_empty()
+            || provider_id.len() > 64
+            || !provider_id
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || "-_.".contains(character))
+        {
+            return Err(
+                "Provider ID must contain only letters, numbers, hyphens, underscores, or dots"
+                    .to_string(),
+            );
+        }
+        let display_name = display_name.trim();
+        if display_name.is_empty() || display_name.len() > 100 {
+            return Err("Provider name must be between 1 and 100 characters".to_string());
+        }
+        if !matches!(
+            api,
+            "openai-completions" | "openai-responses" | "anthropic-messages"
+        ) {
+            return Err("Unsupported custom provider API format".to_string());
+        }
+        let base_url = base_url.trim().trim_end_matches('/');
+        let parsed_url = reqwest::Url::parse(base_url)
+            .map_err(|_| "Base URL must be a valid HTTP or HTTPS URL".to_string())?;
+        if !matches!(parsed_url.scheme(), "http" | "https")
+            || parsed_url.host_str().is_none()
+            || !parsed_url.username().is_empty()
+            || parsed_url.password().is_some()
+        {
+            return Err(
+                "Base URL must be a valid HTTP or HTTPS URL without credentials".to_string(),
+            );
+        }
+        let api_key = api_key.trim();
+        if api_key.is_empty() {
+            return Err("API key is required".to_string());
+        }
+        let mut seen = HashSet::new();
+        let models: Vec<String> = model_ids
+            .iter()
+            .map(|model| model.trim())
+            .filter(|model| !model.is_empty())
+            .filter(|model| seen.insert((*model).to_string()))
+            .map(str::to_string)
+            .collect();
+        if models.is_empty() || models.len() > 500 || models.iter().any(|model| model.len() > 256) {
+            return Err("Provide between 1 and 500 valid model IDs".to_string());
+        }
+        let account = StoredAccount {
+            id: format!("custom-{provider_id}"),
+            provider: format!("custom:{provider_id}"),
+            pi_provider: provider_id.to_string(),
+            label: display_name.to_string(),
+            email: None,
+            auth_kind: "api_key".to_string(),
+            chat_compatible: true,
+            imported_at: 0,
+            source: serde_json::json!({ "kind": "custom_provider_form" }),
+            endpoint: Some(serde_json::json!({
+                "baseUrl": base_url,
+                "providerId": provider_id,
+                "providerName": display_name,
+                "api": api,
+                "models": models,
+            })),
+            credentials: serde_json::json!({ "type": "api_key", "key": api_key }),
+            metadata: serde_json::json!({}),
+        };
+        self.activate(&account, &[])
+    }
+
     fn merge_endpoint_value(&self, provider_id: &str, endpoint: &Value) -> Result<Value, String> {
         let base_url = endpoint
             .get("baseUrl")
@@ -114,6 +196,23 @@ impl PiAuthSynchronizer {
                 .any(|model| model.get("id").and_then(Value::as_str) == Some(model_id));
             if !exists {
                 models.push(serde_json::json!({ "id": model_id }));
+            }
+        }
+        if let Some(model_ids) = endpoint.get("models").and_then(Value::as_array) {
+            let models = provider
+                .entry("models".to_string())
+                .or_insert_with(|| Value::Array(Vec::new()))
+                .as_array_mut()
+                .ok_or_else(|| {
+                    format!("Pi model provider '{provider_id}' models must be an array")
+                })?;
+            for model_id in model_ids.iter().filter_map(Value::as_str) {
+                if !models
+                    .iter()
+                    .any(|model| model.get("id").and_then(Value::as_str) == Some(model_id))
+                {
+                    models.push(serde_json::json!({ "id": model_id }));
+                }
             }
         }
         Ok(Value::Object(root))
@@ -325,6 +424,45 @@ mod tests {
             serde_json::from_slice(&fs::read(root.join("auth.json")).unwrap()).unwrap();
         assert_eq!(auth["anthropic"]["key"], "keep");
         assert!(auth.get("my-cpa").is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn saves_multiple_custom_api_providers_without_replacing_existing_ones() {
+        let (root, sync) = setup();
+        sync.save_custom_provider(
+            "deepseek",
+            "DeepSeek",
+            "openai-completions",
+            "https://api.deepseek.example/v1",
+            "deepseek-secret",
+            &["deepseek-chat".to_string(), "deepseek-reasoner".to_string()],
+        )
+        .unwrap();
+        sync.save_custom_provider(
+            "claude-proxy",
+            "Claude proxy",
+            "anthropic-messages",
+            "https://claude.example/v1",
+            "claude-secret",
+            &["claude-custom".to_string()],
+        )
+        .unwrap();
+
+        let auth: Value =
+            serde_json::from_slice(&fs::read(root.join("auth.json")).unwrap()).unwrap();
+        assert_eq!(auth["deepseek"]["key"], "deepseek-secret");
+        assert_eq!(auth["claude-proxy"]["key"], "claude-secret");
+        let models: Value =
+            serde_json::from_slice(&fs::read(root.join("models.json")).unwrap()).unwrap();
+        assert_eq!(
+            models["providers"]["deepseek"]["models"][1]["id"],
+            "deepseek-reasoner"
+        );
+        assert_eq!(
+            models["providers"]["claude-proxy"]["api"],
+            "anthropic-messages"
+        );
         fs::remove_dir_all(root).unwrap();
     }
 }

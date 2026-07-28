@@ -21,6 +21,7 @@ import {
 } from "./session/routing.js";
 import { anchorHistoryToBottom } from "./session/scroll-anchor.js";
 import { setupAccountSettings } from "./settings/accounts.js";
+import { setupCustomProviderSettings } from "./settings/custom-providers.js";
 import { setupSettingsEditors } from "./settings/editors.js";
 import {
   clearSettingsSaveMessage,
@@ -4417,6 +4418,16 @@ setupSettingsToggles({
   showSettingsSaveError,
   showSettingsSaveSuccess,
 }));
+
+setupCustomProviderSettings({
+  transport,
+  onChanged: async () => {
+    await fetchModelInfo();
+    await loadApiKeysPanel({ preserveUi: true });
+    await loadInlineModelsEditor();
+    updateUI();
+  },
+});
 
 // Restore saved theme
 const savedTheme = getCurrentTheme();

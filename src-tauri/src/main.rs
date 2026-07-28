@@ -32,7 +32,7 @@ use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tauri::image::Image;
 #[cfg(target_os = "macos")]
 use tauri::TitleBarStyle;
@@ -654,7 +654,7 @@ fn list_session_files(root: &PathBuf) -> Vec<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_static_dir;
+    use super::{provider_model_urls, resolve_static_dir};
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -688,6 +688,26 @@ mod tests {
         assert_eq!(resolved, fs::canonicalize(&workspace_public).unwrap());
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn builds_compatible_openai_and_anthropic_model_discovery_urls() {
+        let openai =
+            provider_model_urls("https://api.deepseek.example/v1", "openai-completions").unwrap();
+        assert_eq!(openai[0].as_str(), "https://api.deepseek.example/v1/models");
+
+        let anthropic =
+            provider_model_urls("https://claude.example", "anthropic-messages").unwrap();
+        assert_eq!(anthropic[0].as_str(), "https://claude.example/v1/models");
+        assert_eq!(anthropic[1].as_str(), "https://claude.example/models");
+    }
+
+    #[test]
+    fn rejects_model_discovery_urls_that_embed_credentials() {
+        assert!(
+            provider_model_urls("https://user:secret@api.example/v1", "openai-completions")
+                .is_err()
+        );
     }
 }
 
@@ -921,6 +941,128 @@ fn resolve_control_port(port: Option<u16>, broker: &BrokerWs) -> Result<u16, Str
         .ok_or_else(|| "No active pi instance".to_string())
 }
 
+fn provider_model_urls(base_url: &str, api: &str) -> Result<Vec<reqwest::Url>, String> {
+    let mut base = reqwest::Url::parse(base_url.trim())
+        .map_err(|_| "Base URL must be a valid HTTP or HTTPS URL".to_string())?;
+    if !matches!(base.scheme(), "http" | "https")
+        || base.host_str().is_none()
+        || !base.username().is_empty()
+        || base.password().is_some()
+    {
+        return Err("Base URL must be a valid HTTP or HTTPS URL without credentials".to_string());
+    }
+    base.set_query(None);
+    base.set_fragment(None);
+    let path = base.path().trim_end_matches('/');
+    if path.ends_with("/models") || path == "models" {
+        return Ok(vec![base]);
+    }
+
+    let make_url = |suffix: &str| {
+        let mut url = base.clone();
+        let prefix = base.path().trim_end_matches('/');
+        url.set_path(&format!("{prefix}/{suffix}"));
+        url
+    };
+    let direct = make_url("models");
+    if path.ends_with("/v1") || path.ends_with("/v1beta") {
+        return Ok(vec![direct]);
+    }
+    let versioned = make_url("v1/models");
+    if api == "anthropic-messages" {
+        Ok(vec![versioned, direct])
+    } else {
+        Ok(vec![direct, versioned])
+    }
+}
+
+async fn discover_provider_models(
+    base_url: &str,
+    api: &str,
+    api_key: &str,
+) -> Result<Vec<String>, String> {
+    if !matches!(
+        api,
+        "openai-completions" | "openai-responses" | "anthropic-messages"
+    ) {
+        return Err("Unsupported custom provider API format".to_string());
+    }
+    let api_key = api_key.trim();
+    if api_key.is_empty() {
+        return Err("API key is required to load the model list".to_string());
+    }
+    let urls = provider_model_urls(base_url, api)?;
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(8))
+        .timeout(Duration::from_secs(20))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|error| format!("Cannot prepare model discovery: {error}"))?;
+    let mut last_error = "The provider did not expose a compatible model list".to_string();
+    for (index, url) in urls.iter().enumerate() {
+        let request = if api == "anthropic-messages" {
+            client
+                .get(url.clone())
+                .header("x-api-key", api_key)
+                .header("anthropic-version", "2023-06-01")
+        } else {
+            client.get(url.clone()).bearer_auth(api_key)
+        };
+        let response = request
+            .send()
+            .await
+            .map_err(|error| format!("Cannot connect to the provider: {error}"))?;
+        let status = response.status();
+        if !status.is_success() {
+            last_error = format!("The provider returned HTTP {status} while loading models");
+            if status == reqwest::StatusCode::NOT_FOUND && index + 1 < urls.len() {
+                continue;
+            }
+            break;
+        }
+        if response
+            .content_length()
+            .is_some_and(|length| length > 2 * 1024 * 1024)
+        {
+            return Err("The provider model list is unexpectedly large".to_string());
+        }
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|error| format!("Cannot read the provider model list: {error}"))?;
+        if bytes.len() > 2 * 1024 * 1024 {
+            return Err("The provider model list is unexpectedly large".to_string());
+        }
+        let value: Value = serde_json::from_slice(&bytes)
+            .map_err(|_| "The provider returned an invalid JSON model list".to_string())?;
+        let entries = value
+            .get("data")
+            .and_then(Value::as_array)
+            .or_else(|| value.get("models").and_then(Value::as_array))
+            .ok_or_else(|| "The provider response does not contain a model array".to_string())?;
+        let mut seen = std::collections::HashSet::new();
+        let models: Vec<String> = entries
+            .iter()
+            .filter_map(|entry| {
+                entry
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .or_else(|| entry.as_str())
+            })
+            .map(str::trim)
+            .filter(|id| !id.is_empty() && id.len() <= 256)
+            .filter(|id| seen.insert((*id).to_string()))
+            .take(500)
+            .map(str::to_string)
+            .collect();
+        if models.is_empty() {
+            return Err("The provider returned an empty model list".to_string());
+        }
+        return Ok(models);
+    }
+    Err(last_error)
+}
+
 /// Build + install the async handler the broker uses to execute `broker_control`
 /// requests from ANY client (desktop WebView, remote, mobile). It maps command
 /// names to the same cores the rest of the app uses, so behavior is identical
@@ -960,6 +1102,8 @@ fn install_control_handler(
                     | "account_preview_local"
                     | "account_preview_json"
                     | "account_apply_import"
+                    | "custom_provider_discover"
+                    | "custom_provider_save"
                         if !local_client =>
                     {
                         Err(
@@ -1035,6 +1179,57 @@ fn install_control_handler(
                         serde_json::to_value(result).map_err(|error| {
                             format!("Cannot encode account import result: {error}")
                         })
+                    }
+                    "custom_provider_discover" => {
+                        let base_url = arg_str("baseUrl").ok_or("baseUrl is required")?;
+                        let api = arg_str("api").ok_or("api is required")?;
+                        let api_key = arg_str("apiKey").ok_or("apiKey is required")?;
+                        let models = discover_provider_models(&base_url, &api, &api_key).await?;
+                        Ok(serde_json::json!({ "models": models }))
+                    }
+                    "custom_provider_save" => {
+                        let provider_id = arg_str("providerId").ok_or("providerId is required")?;
+                        let display_name =
+                            arg_str("displayName").ok_or("displayName is required")?;
+                        let base_url = arg_str("baseUrl").ok_or("baseUrl is required")?;
+                        let api = arg_str("api").ok_or("api is required")?;
+                        let api_key = arg_str("apiKey").ok_or("apiKey is required")?;
+                        let model_values = args
+                            .get("modelIds")
+                            .and_then(Value::as_array)
+                            .ok_or("modelIds must be an array")?;
+                        if model_values.iter().any(|model| !model.is_string()) {
+                            return Err("Every model ID must be a string".to_string());
+                        }
+                        let model_ids: Vec<String> = model_values
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_string)
+                            .collect();
+                        auth_sync.save_custom_provider(
+                            &provider_id,
+                            &display_name,
+                            &api,
+                            &base_url,
+                            &api_key,
+                            &model_ids,
+                        )?;
+                        for port in manager.ports() {
+                            if let Err(error) = broker.send_command_to_port(
+                                port,
+                                serde_json::json!({ "type": "picot_reload_accounts" }),
+                            ) {
+                                log::warn!(
+                                    "[custom-provider] failed to notify Pi process on port {}: {}",
+                                    port,
+                                    error
+                                );
+                            }
+                        }
+                        Ok(serde_json::json!({
+                            "providerId": provider_id,
+                            "modelIds": model_ids,
+                        }))
                     }
                     "open_workspace" => {
                         let cwd = arg_str("cwd").ok_or("cwd is required")?;

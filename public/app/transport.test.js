@@ -93,6 +93,47 @@ describe("WsTransport", () => {
     );
   });
 
+  test("custom API discovery and saving use local broker controls", async () => {
+    const ws = fakeWsClient();
+    const transport = new WsTransport(ws, {});
+
+    await transport.discoverCustomProviderModels(
+      "https://api.example/v1",
+      "openai-completions",
+      "secret",
+    );
+    await transport.saveCustomProvider({
+      providerId: "deepseek",
+      displayName: "DeepSeek",
+      baseUrl: "https://api.example/v1",
+      api: "openai-completions",
+      apiKey: "secret",
+      modelIds: ["deepseek-chat"],
+    });
+
+    expect(ws.sendControl).toHaveBeenCalledWith(
+      "custom_provider_discover",
+      {
+        baseUrl: "https://api.example/v1",
+        api: "openai-completions",
+        apiKey: "secret",
+      },
+      { timeoutMs: 30_000 },
+    );
+    expect(ws.sendControl).toHaveBeenCalledWith(
+      "custom_provider_save",
+      {
+        providerId: "deepseek",
+        displayName: "DeepSeek",
+        baseUrl: "https://api.example/v1",
+        api: "openai-completions",
+        apiKey: "secret",
+        modelIds: ["deepseek-chat"],
+      },
+      {},
+    );
+  });
+
   test("capabilities reflect the underlying ws client", () => {
     const transport = new WsTransport(fakeWsClient({ native: false }), {});
     expect(transport.capabilities.native).toBe(false);

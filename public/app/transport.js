@@ -148,6 +148,25 @@ export class WsTransport {
 
   // ── Native-only ops (need an OS host; reject when capabilities.native=false) ─
 
+  discoverCustomProviderModels(baseUrl, api, apiKey) {
+    return this._control(
+      "custom_provider_discover",
+      { baseUrl, api, apiKey },
+      { timeoutMs: 30_000 },
+    );
+  }
+
+  saveCustomProvider({ providerId, displayName, baseUrl, api, apiKey, modelIds }) {
+    return this._control("custom_provider_save", {
+      providerId,
+      displayName,
+      baseUrl,
+      api,
+      apiKey,
+      modelIds,
+    });
+  }
+
   pickFolder() {
     return this._control("pick_folder", {}, { timeoutMs: NO_TIMEOUT });
   }

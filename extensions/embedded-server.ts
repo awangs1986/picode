@@ -611,7 +611,17 @@ interface RpcCommand {
   [key: string]: unknown;
 }
 
-type ReloadableCredentialStore = { reload?: () => void };
+type StoredCredential = { type: "api_key"; key: string } | Record<string, unknown>;
+type ReloadableCredentialStore = {
+  reload?: () => void;
+  set?: (provider: string, credential: StoredCredential) => void;
+  remove?: (provider: string) => void;
+  modify?: (
+    provider: string,
+    update: (current: unknown) => Promise<StoredCredential | undefined>,
+  ) => Promise<unknown>;
+  delete?: (provider: string) => Promise<void>;
+};
 type ReloadableRegistryInternals = {
   authStorage?: ReloadableCredentialStore;
   runtime?: {
@@ -620,6 +630,42 @@ type ReloadableRegistryInternals = {
     };
   };
 };
+
+function credentialStoreForRegistry(registry: unknown): ReloadableCredentialStore | undefined {
+  const internals = registry as ReloadableRegistryInternals;
+  return internals.runtime?.credentials?.store ?? internals.authStorage;
+}
+
+export async function setRegistryApiKey(
+  registry: unknown,
+  provider: string,
+  apiKey: string,
+): Promise<void> {
+  const store = credentialStoreForRegistry(registry);
+  const credential = { type: "api_key" as const, key: apiKey };
+  if (typeof store?.modify === "function") {
+    await store.modify(provider, async () => credential);
+    return;
+  }
+  if (typeof store?.set === "function") {
+    store.set(provider, credential);
+    return;
+  }
+  throw new Error("This Pi runtime cannot store API keys");
+}
+
+export async function removeRegistryApiKey(registry: unknown, provider: string): Promise<void> {
+  const store = credentialStoreForRegistry(registry);
+  if (typeof store?.delete === "function") {
+    await store.delete(provider);
+    return;
+  }
+  if (typeof store?.remove === "function") {
+    store.remove(provider);
+    return;
+  }
+  throw new Error("This Pi runtime cannot remove API keys");
+}
 
 type SlashCommandLike = {
   name?: string;
@@ -1383,8 +1429,7 @@ export default function (pi: ExtensionAPI) {
             sendTo(ws, error("picot_reload_accounts", "Model registry is not ready"));
             break;
           }
-          const internals = registry as unknown as ReloadableRegistryInternals;
-          const credentialStore = internals.runtime?.credentials?.store ?? internals.authStorage;
+          const credentialStore = credentialStoreForRegistry(registry);
           if (typeof credentialStore?.reload !== "function") {
             sendTo(
               ws,
@@ -1767,12 +1812,9 @@ export default function (pi: ExtensionAPI) {
             break;
           }
           try {
-            registry.authStorage.set(provider, {
-              type: "api_key",
-              key: apiKey,
-            });
+            await setRegistryApiKey(registry, provider, apiKey);
             // Refresh so getAvailable() picks up the new key without restart.
-            registry.refresh();
+            await registry.refresh();
             sendTo(ws, success("set_api_key", { provider }));
           } catch (e: unknown) {
             sendTo(ws, error("set_api_key", errMessage(e)));
@@ -1795,8 +1837,8 @@ export default function (pi: ExtensionAPI) {
             break;
           }
           try {
-            registry.authStorage.remove(provider);
-            registry.refresh();
+            await removeRegistryApiKey(registry, provider);
+            await registry.refresh();
             sendTo(ws, success("remove_api_key", { provider }));
           } catch (e: unknown) {
             sendTo(ws, error("remove_api_key", errMessage(e)));

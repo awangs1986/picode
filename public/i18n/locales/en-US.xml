@@ -193,5 +193,29 @@
     <message id="usage.cacheRead">Cache Read</message>
     <message id="usage.cacheWrite">Cache Write</message>
     <message id="usage.toolCalls">Tool Calls</message>
+    <message id="customProviders.add">Add API provider</message>
+    <message id="customProviders.name">Provider name</message>
+    <message id="customProviders.namePlaceholder">DeepSeek</message>
+    <message id="customProviders.id">Provider ID</message>
+    <message id="customProviders.idPlaceholder">deepseek</message>
+    <message id="customProviders.format">API format</message>
+    <message id="customProviders.openaiChat">OpenAI compatible (Chat Completions)</message>
+    <message id="customProviders.openaiResponses">OpenAI compatible (Responses)</message>
+    <message id="customProviders.anthropic">Anthropic compatible (Messages)</message>
+    <message id="customProviders.baseUrl">Base URL</message>
+    <message id="customProviders.baseUrlPlaceholder">https://api.deepseek.com/v1</message>
+    <message id="customProviders.apiKey">API Key</message>
+    <message id="customProviders.apiKeyPlaceholder">sk-...</message>
+    <message id="customProviders.models">Models</message>
+    <message id="customProviders.modelsPlaceholder">One model ID per line</message>
+    <message id="customProviders.discover">Load model list</message>
+    <message id="customProviders.save">Save provider</message>
+    <message id="customProviders.required">Complete the provider name, ID, Base URL, and API Key first.</message>
+    <message id="customProviders.loading">Loading models from the provider...</message>
+    <message id="customProviders.loaded">Loaded {count} models. Remove any you do not want to show.</message>
+    <message id="customProviders.modelsRequired">Load or enter at least one model ID.</message>
+    <message id="customProviders.saving">Saving provider...</message>
+    <message id="customProviders.saved">Provider saved. Its models are now available in chat.</message>
+    <message id="customProviders.failed">The provider could not be saved.</message>
   </messages>
 </languagePack>
