@@ -778,6 +778,13 @@
                 <button class="settings-nav-item" data-settings-tab="chat">
                     Agent Inbox
                 </button>
+                <button
+                    class="settings-nav-item"
+                    data-settings-tab="data"
+                    data-i18n="chatMigration.nav"
+                >
+                    Data
+                </button>
                 <button class="settings-nav-back" id="settings-close">
                     <span class="settings-nav-back-icon">‹</span> Back to chat
                 </button>
@@ -1446,6 +1453,99 @@
                     class="settings-tab"
                     data-settings-panel="chat"
                 ></chat-settings-panel>
+
+                <div class="settings-tab" data-settings-panel="data">
+                    <div class="settings-body">
+                        <div
+                            class="settings-section"
+                            id="settings-chat-migration-section"
+                        >
+                            <div
+                                class="settings-section-title"
+                                data-i18n="chatMigration.title"
+                            >
+                                Import local chat history
+                            </div>
+                            <p
+                                class="settings-help"
+                                data-i18n="chatMigration.help"
+                            >
+                                Scan this computer for Codex, Cursor, and Claude chats. Nothing is imported until you select individual chats and bind each original workspace to an existing local folder.
+                            </p>
+                            <div class="chat-migration-toolbar">
+                                <div
+                                    class="chat-migration-sources"
+                                    id="chat-migration-sources"
+                                    data-i18n-ignore
+                                >
+                                    <label class="chat-migration-source">
+                                        <input
+                                            type="checkbox"
+                                            value="codex"
+                                            checked
+                                        />
+                                        Codex
+                                    </label>
+                                    <label class="chat-migration-source">
+                                        <input
+                                            type="checkbox"
+                                            value="cursor"
+                                            checked
+                                        />
+                                        Cursor
+                                    </label>
+                                    <label class="chat-migration-source">
+                                        <input
+                                            type="checkbox"
+                                            value="claude"
+                                            checked
+                                        />
+                                        Claude
+                                    </label>
+                                </div>
+                                <button
+                                    type="button"
+                                    class="ui-button ui-button--secondary"
+                                    id="chat-migration-scan"
+                                    data-i18n="chatMigration.scan"
+                                >
+                                    Scan local chats
+                                </button>
+                            </div>
+                            <div
+                                class="chat-migration-status"
+                                id="chat-migration-status"
+                                role="status"
+                                aria-live="polite"
+                                hidden
+                            ></div>
+                            <div
+                                class="chat-migration-results"
+                                id="chat-migration-results"
+                                hidden
+                            ></div>
+                            <div
+                                class="chat-migration-actions"
+                                id="chat-migration-actions"
+                                hidden
+                            >
+                                <span
+                                    class="chat-migration-selection"
+                                    id="chat-migration-selection"
+                                ></span>
+                                <button
+                                    type="button"
+                                    class="ui-button ui-button--primary"
+                                    id="chat-migration-import"
+                                    data-i18n="chatMigration.importSelected"
+                                    disabled
+                                >
+                                    Import selected chats
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </section>
         </div>
 

@@ -4,6 +4,7 @@ mod account_binding;
 mod account_import;
 mod account_vault;
 mod broker_ws;
+mod chat_migration;
 mod host_data;
 mod host_router;
 mod host_server;
@@ -20,6 +21,7 @@ use account_binding::AccountBindingStore;
 use account_import::AccountImportService;
 use account_vault::AccountVault;
 use broker_ws::BrokerWs;
+use chat_migration::ChatMigrationService;
 use host_server::HostServer;
 use metadata_store::MetadataStore;
 use native_pi_manager::NativePiManager;
@@ -30,6 +32,7 @@ use pi_manager::{
 use remote_auth::RemoteAuth;
 use runtime_coordinator::RuntimeTarget;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
@@ -1127,6 +1130,7 @@ fn install_control_handler(
     manager: Arc<PiManager>,
     accounts: Arc<AccountImportService>,
     bindings: Arc<AccountBindingStore>,
+    chat_migration: Arc<ChatMigrationService>,
     auth_sync: Arc<PiAuthSynchronizer>,
     app: AppHandle,
 ) {
@@ -1140,6 +1144,7 @@ fn install_control_handler(
             let broker = broker_for_handler.clone();
             let accounts = accounts.clone();
             let bindings = bindings.clone();
+            let chat_migration = chat_migration.clone();
             let auth_sync = auth_sync.clone();
             let app = app.clone();
             Box::pin(async move {
@@ -1162,6 +1167,8 @@ fn install_control_handler(
                     | "custom_provider_discover"
                     | "custom_provider_save"
                     | "chat_prepare_prompt"
+                    | "chat_migration_scan"
+                    | "chat_migration_import"
                         if !local_client =>
                     {
                         Err(
@@ -1322,6 +1329,44 @@ fn install_control_handler(
                             confirmed,
                         )?)
                         .map_err(|error| format!("Cannot encode chat account binding: {error}"))
+                    }
+                    "chat_migration_scan" => {
+                        let sources: Vec<String> = args
+                            .get("sources")
+                            .and_then(Value::as_array)
+                            .ok_or("sources must be an array")?
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_string)
+                            .collect();
+                        serde_json::to_value(chat_migration.scan_local(&sources)?)
+                            .map_err(|error| format!("Cannot encode local chat scan: {error}"))
+                    }
+                    "chat_migration_import" => {
+                        let scan_id = arg_str("scanId").ok_or("scanId is required")?;
+                        let selected_ids: Vec<String> = args
+                            .get("candidateIds")
+                            .and_then(Value::as_array)
+                            .ok_or("candidateIds must be an array")?
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_string)
+                            .collect();
+                        let workspace_bindings: HashMap<String, String> = args
+                            .get("workspaceBindings")
+                            .and_then(Value::as_object)
+                            .ok_or("workspaceBindings must be an object")?
+                            .iter()
+                            .filter_map(|(key, value)| {
+                                value.as_str().map(|value| (key.clone(), value.to_string()))
+                            })
+                            .collect();
+                        serde_json::to_value(chat_migration.import_selected(
+                            &scan_id,
+                            &selected_ids,
+                            &workspace_bindings,
+                        )?)
+                        .map_err(|error| format!("Cannot encode chat import result: {error}"))
                     }
                     "custom_provider_discover" => {
                         let base_url = arg_str("baseUrl").ok_or("baseUrl is required")?;
@@ -1525,6 +1570,10 @@ fn main() {
                 AccountBindingStore::open(&app_data_dir.join("account-bindings.sqlite3"))
                     .map_err(std::io::Error::other)?,
             );
+            let chat_migration = Arc::new(
+                ChatMigrationService::for_current_user(&app_data_dir)
+                    .map_err(std::io::Error::other)?,
+            );
             let auth_sync = Arc::new(
                 PiAuthSynchronizer::for_current_user().map_err(std::io::Error::other)?,
             );
@@ -1534,6 +1583,7 @@ fn main() {
                 manager.clone(),
                 accounts.clone(),
                 bindings,
+                chat_migration,
                 auth_sync,
                 app.handle().clone(),
             );

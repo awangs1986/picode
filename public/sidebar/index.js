@@ -149,6 +149,20 @@ export class SessionSidebar {
     this.render();
   }
 
+  archiveImportedSessions(filePaths) {
+    const known = new Set(this.archived);
+    const additions = [];
+    for (const filePath of filePaths || []) {
+      if (!filePath || known.has(filePath)) continue;
+      known.add(filePath);
+      additions.push(filePath);
+    }
+    if (additions.length === 0) return;
+    this.archived.push(...additions);
+    this.saveArchived();
+    this.render();
+  }
+
   async deleteAllArchived() {
     const paths = [...this.archived];
     if (paths.length === 0) return;

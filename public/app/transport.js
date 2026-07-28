@@ -168,6 +168,18 @@ export class WsTransport {
     return this._control("chat_prepare_prompt", { sessionId, piProvider, message });
   }
 
+  scanLocalChats(sources) {
+    return this._control("chat_migration_scan", { sources }, { timeoutMs: PACKAGE_TIMEOUT_MS });
+  }
+
+  importLocalChats(scanId, candidateIds, workspaceBindings) {
+    return this._control(
+      "chat_migration_import",
+      { scanId, candidateIds, workspaceBindings },
+      { timeoutMs: NO_TIMEOUT },
+    );
+  }
+
   saveCustomProvider({ providerId, displayName, baseUrl, api, apiKey, modelIds }) {
     return this._control("custom_provider_save", {
       providerId,

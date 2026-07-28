@@ -21,6 +21,7 @@ import {
 } from "./session/routing.js";
 import { anchorHistoryToBottom } from "./session/scroll-anchor.js";
 import { setupAccountSettings } from "./settings/accounts.js";
+import { setupChatMigration } from "./settings/chat-migration.js";
 import { setupCustomProviderSettings } from "./settings/custom-providers.js";
 import { setupSettingsEditors } from "./settings/editors.js";
 import {
@@ -4466,6 +4467,16 @@ setupCustomProviderSettings({
     await loadApiKeysPanel({ preserveUi: true });
     await loadInlineModelsEditor();
     updateUI();
+  },
+});
+
+setupChatMigration({
+  transport,
+  onImported: async (result) => {
+    sidebar.archiveImportedSessions(
+      (result.chats || []).filter((chat) => chat.archived).map((chat) => chat.sessionFile),
+    );
+    await sidebar.loadSessions({ quiet: true });
   },
 });
 

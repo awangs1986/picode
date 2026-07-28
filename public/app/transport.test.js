@@ -151,6 +151,29 @@ describe("WsTransport", () => {
     );
   });
 
+  test("local chat migration scans first and imports only explicit selections", async () => {
+    const ws = fakeWsClient();
+    const transport = new WsTransport(ws, {});
+
+    await transport.scanLocalChats(["codex", "cursor"]);
+    await transport.importLocalChats("scan-1", ["chat-2"], { "workspace-1": "C:\\work" });
+
+    expect(ws.sendControl).toHaveBeenCalledWith(
+      "chat_migration_scan",
+      { sources: ["codex", "cursor"] },
+      { timeoutMs: 120_000 },
+    );
+    expect(ws.sendControl).toHaveBeenCalledWith(
+      "chat_migration_import",
+      {
+        scanId: "scan-1",
+        candidateIds: ["chat-2"],
+        workspaceBindings: { "workspace-1": "C:\\work" },
+      },
+      { timeoutMs: 0 },
+    );
+  });
+
   test("capabilities reflect the underlying ws client", () => {
     const transport = new WsTransport(fakeWsClient({ native: false }), {});
     expect(transport.capabilities.native).toBe(false);
