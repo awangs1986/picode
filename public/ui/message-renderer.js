@@ -2,6 +2,7 @@
  * Message Renderer - Renders chat messages with markdown support
  */
 
+import { t } from "../i18n/index.js";
 import {
   initCodeCopyDelegation,
   renderMarkdown,
@@ -129,17 +130,17 @@ export class MessageRenderer {
 
   renderWelcome({ workspacePath } = {}) {
     const workspaceHtml = workspacePath
-      ? `<p class="hint welcome-workspace">Current workspace: <code>${this.escapeHtml(workspacePath)}</code></p>`
+      ? `<p class="hint welcome-workspace">${this.escapeHtml(t("workspace.currentWorkspace", {}, "Current workspace:"))} <code>${this.escapeHtml(workspacePath)}</code></p>`
       : "";
     this.container.innerHTML = `
       <div class="welcome">
         <div class="welcome-icon"><img src="icons/logo-dark.svg" alt="Picot logo" class="tau-icon-welcome"></div>
-        <p>Welcome to Picot</p>
-        <p class="hint">Type a message below to start chatting with Pi, or select a session from the sidebar.</p>
+        <p>${this.escapeHtml(t("chat.welcome", {}, "Welcome to Picot"))}</p>
+        <p class="hint">${this.escapeHtml(t("chat.welcomeHelp", {}, "Type a message below to start chatting with Pi, or select a session from the sidebar."))}</p>
         ${workspaceHtml}
         <div class="shortcuts-hint">
-          <span>/ Focus input</span>
-          <span>Esc Abort</span>
+          <span>${this.escapeHtml(t("chat.focusInput", {}, "/ Focus input"))}</span>
+          <span>${this.escapeHtml(t("chat.abortShortcut", {}, "Esc Abort"))}</span>
         </div>
       </div>
     `;
@@ -171,11 +172,11 @@ export class MessageRenderer {
     const displayContent = cleanChatTranscript(message.content) ?? message.content;
     if (entryId) div.dataset.entryId = entryId;
     const forkBtnHtml = entryId
-      ? `<button class="message-fork-btn" aria-label="Fork session from here" title="Fork session from here"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg></button>`
+      ? `<button class="message-fork-btn" aria-label="${this.escapeHtml(t("chat.forkHere", {}, "Fork session from here"))}" title="${this.escapeHtml(t("chat.forkHere", {}, "Fork session from here"))}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg></button>`
       : "";
     div.innerHTML = `
       <div class="message-content">${imagesHtml}${renderUserMarkdown(displayContent)}</div>
-      <div class="message-footer"><button class="message-copy-btn" aria-label="Copy message"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>${forkBtnHtml}</div>
+      <div class="message-footer"><button class="message-copy-btn" aria-label="${this.escapeHtml(t("chat.copyMessage", {}, "Copy message"))}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>${forkBtnHtml}</div>
     `;
     this._setupCopyBtn(div);
     if (entryId) this._setupForkBtn(div);
@@ -231,7 +232,7 @@ export class MessageRenderer {
 
     div.innerHTML = `
       <div class="message-content${streamingClass}">${contentHtml}</div>
-      ${!isStreaming ? `<div class="message-footer"><button class="message-copy-btn" aria-label="Copy message"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>${usageHtml}</div>` : ""}
+      ${!isStreaming ? `<div class="message-footer"><button class="message-copy-btn" aria-label="${this.escapeHtml(t("chat.copyMessage", {}, "Copy message"))}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>${usageHtml}</div>` : ""}
     `;
 
     if (!isStreaming) this._setupCopyBtn(div);
@@ -246,7 +247,7 @@ export class MessageRenderer {
     // Click handling is wired via event delegation in initThinkingToggleDelegation.
     const chevronSvg = `<svg width="8" height="8" viewBox="0 0 8 8" fill="currentColor" aria-hidden="true"><path d="M2 1l4 3-4 3z"/></svg>`;
     const brainSvg = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-1px" aria-hidden="true"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M12 5v13"/><path d="M6.5 9h11"/><path d="M7 13h10"/></svg>`;
-    return `<div class="thinking-block"><div class="thinking-toggle" data-thinking-toggle><span class="chevron">${chevronSvg}</span><span class="thinking-label">${brainSvg} Thinking</span></div><div class="thinking-content">${this.escapeHtml(thinking)}</div></div>`;
+    return `<div class="thinking-block"><div class="thinking-toggle" data-thinking-toggle><span class="chevron">${chevronSvg}</span><span class="thinking-label">${brainSvg} ${this.escapeHtml(t("chat.thinking", {}, "Thinking"))}</span></div><div class="thinking-content">${this.escapeHtml(thinking)}</div></div>`;
   }
 
   updateStreamingThinking(messageElement, thinking) {
@@ -259,7 +260,7 @@ export class MessageRenderer {
       thinkingDiv.innerHTML = `
         <div class="thinking-toggle expanded" data-thinking-toggle>
           <span class="chevron"><svg width="8" height="8" viewBox="0 0 8 8" fill="currentColor"><path d="M2 1l4 3-4 3z"/></svg></span>
-          <span class="thinking-label"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-1px"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M12 5v13"/><path d="M6.5 9h11"/><path d="M7 13h10"/></svg> Thinking</span>
+          <span class="thinking-label"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-1px"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M12 5v13"/><path d="M6.5 9h11"/><path d="M7 13h10"/></svg> ${this.escapeHtml(t("chat.thinking", {}, "Thinking"))}</span>
         </div>
         <div class="thinking-content expanded"></div>`;
       contentDiv.prepend(thinkingDiv);
@@ -332,7 +333,7 @@ export class MessageRenderer {
       if (copyableText) {
         const btn = document.createElement("button");
         btn.className = "message-copy-btn";
-        btn.setAttribute("aria-label", "Copy message");
+        btn.setAttribute("aria-label", t("chat.copyMessage", {}, "Copy message"));
         btn.innerHTML =
           '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
         footer.appendChild(btn);

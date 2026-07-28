@@ -132,9 +132,10 @@ function shouldSkipTextNode(node) {
 
 function translateAttribute(element, attribute) {
   let saved = translatedAttributes.get(element);
-  const original = saved?.get(attribute) || element.getAttribute(attribute);
-  const message = saved?.has(attribute)
-    ? { id: saved.get(attribute).id, value: t(saved.get(attribute).id, {}, original) }
+  const record = saved?.get(attribute);
+  const original = record?.source || element.getAttribute(attribute);
+  const message = record
+    ? { id: record.id, value: t(record.id, {}, original) }
     : messageForSource(original);
   if (!message) return;
   if (!saved) {
