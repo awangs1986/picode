@@ -168,7 +168,7 @@ export function setupChatBackup({ transport, onRestored = async () => {} }) {
         element(
           "div",
           "settings-api-keys-empty",
-          t("chatBackup.none", {}, "No Picot chats found."),
+          t("chatBackup.none", {}, "No Picode chats found."),
         ),
       );
       backupResults.hidden = false;
@@ -205,7 +205,7 @@ export function setupChatBackup({ transport, onRestored = async () => {} }) {
 
   async function scan() {
     setBackupBusy(true);
-    showStatus(backupStatus, t("chatBackup.scanning", {}, "Loading Picot chats..."));
+    showStatus(backupStatus, t("chatBackup.scanning", {}, "Loading Picode chats..."));
     try {
       backupScan = await transport.scanBackupSessions();
       renderBackupScan();
@@ -222,7 +222,7 @@ export function setupChatBackup({ transport, onRestored = async () => {} }) {
     } catch (error) {
       showStatus(
         backupStatus,
-        error?.message || t("chatBackup.scanFailed", {}, "Could not load Picot chats."),
+        error?.message || t("chatBackup.scanFailed", {}, "Could not load Picode chats."),
         "error",
       );
       return null;

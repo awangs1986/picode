@@ -98,7 +98,7 @@ export function markTaskEdited(task, updates = {}, { now } = {}) {
         at: timestamp,
         type: "edited",
         status: normalized.status,
-        message: "Task draft edited in Picot Runtime panel.",
+        message: "Task draft edited in Picode Runtime panel.",
       },
     ],
   };

@@ -82,7 +82,7 @@ export function setupContextCompression({
         element(
           "div",
           "settings-api-keys-empty",
-          t("contextCompression.none", {}, "No Picot chats found."),
+          t("contextCompression.none", {}, "No Picode chats found."),
         ),
       );
       results.hidden = false;
@@ -145,7 +145,7 @@ export function setupContextCompression({
 
   async function scan() {
     setBusy(true);
-    showStatus(t("contextCompression.scanning", {}, "Loading Picot chats..."));
+    showStatus(t("contextCompression.scanning", {}, "Loading Picode chats..."));
     try {
       scanResult = await transport.scanBackupSessions();
       renderScan();
@@ -160,7 +160,7 @@ export function setupContextCompression({
       return scanResult;
     } catch (error) {
       showStatus(
-        error?.message || t("contextCompression.scanFailed", {}, "Could not load Picot chats."),
+        error?.message || t("contextCompression.scanFailed", {}, "Could not load Picode chats."),
         "error",
       );
       return null;

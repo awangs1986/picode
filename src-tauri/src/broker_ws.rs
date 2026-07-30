@@ -12,6 +12,7 @@ use tokio_tungstenite::tungstenite::Message;
 const PROTOCOL_VERSION: u8 = 1;
 
 type Tx = mpsc::UnboundedSender<String>;
+pub type UpstreamEventObserver = Arc<dyn Fn(u16, Value) + Send + Sync>;
 
 /// Emits an intermediate progress frame for an in-flight `broker_control`
 /// request (e.g. updater download chunks). The broker wires this to the
@@ -38,6 +39,7 @@ struct BrokerInner {
     active_port: Mutex<Option<u16>>,
     next_client_id: AtomicU64,
     control_handler: Mutex<Option<ControlHandler>>,
+    upstream_event_observer: Mutex<Option<UpstreamEventObserver>>,
 }
 
 #[derive(Clone)]
@@ -141,6 +143,10 @@ impl BrokerWs {
     /// once from main.rs after PiManager + BrokerWs exist.
     pub fn set_control_handler(&self, handler: ControlHandler) {
         *self.inner.control_handler.lock().unwrap() = Some(handler);
+    }
+
+    pub fn set_upstream_event_observer(&self, observer: UpstreamEventObserver) {
+        *self.inner.upstream_event_observer.lock().unwrap() = Some(observer);
     }
 
     pub fn register_session(&self, port: u16, session_id: &str) {
@@ -570,6 +576,9 @@ impl BrokerWs {
             // learn path (`new_session_core` does not call register_session) —
             // evicts the previous session's now-defunct route on this port.
             self.set_route(port, session_id);
+        }
+        if let Some(observer) = self.inner.upstream_event_observer.lock().unwrap().clone() {
+            observer(port, payload.clone());
         }
         let workspace_id = payload.get("workspaceId").cloned().unwrap_or(Value::Null);
         let session_id = payload.get("sessionId").cloned().unwrap_or(Value::Null);

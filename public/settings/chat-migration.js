@@ -18,26 +18,55 @@ function displayWorkspace(group) {
   );
 }
 
+function formatBytes(value) {
+  const bytes = Number(value) || 0;
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KB", "MB", "GB"];
+  let amount = bytes / 1024;
+  let unit = units[0];
+  for (let index = 1; index < units.length && amount >= 1024; index += 1) {
+    amount /= 1024;
+    unit = units[index];
+  }
+  const formatted = new Intl.NumberFormat(undefined, {
+    maximumFractionDigits: amount < 10 ? 1 : 0,
+  }).format(amount);
+  return `${formatted} ${unit}`;
+}
+
+function candidateTime(candidate) {
+  const value = Date.parse(candidate.updatedAt || candidate.createdAt || "");
+  return Number.isFinite(value) ? value : 0;
+}
+
 export function setupChatMigration({ transport, onImported = async () => {} }) {
   const section = document.getElementById("settings-chat-migration-section");
   const sources = document.getElementById("chat-migration-sources");
   const scanButton = document.getElementById("chat-migration-scan");
   const status = document.getElementById("chat-migration-status");
+  const reviewControls = document.getElementById("chat-migration-review-controls");
+  const sortControl = document.getElementById("chat-migration-sort");
+  const sourceFilter = document.getElementById("chat-migration-source-filter");
+  const archiveFilter = document.getElementById("chat-migration-archive-filter");
   const results = document.getElementById("chat-migration-results");
   const actions = document.getElementById("chat-migration-actions");
   const selection = document.getElementById("chat-migration-selection");
   const importButton = document.getElementById("chat-migration-import");
+  const includeReasoning = document.getElementById("chat-migration-include-reasoning");
   if (!section || !sources || !scanButton || !status || !results || !actions || !importButton) {
     return { scan: async () => null };
   }
 
   let currentScan = null;
   let busy = false;
+  const selectedCandidates = new Set();
+  if (archiveFilter) archiveFilter.value = "active";
 
   function selectedIds() {
-    return Array.from(results.querySelectorAll("[data-chat-candidate]:checked"), (input) =>
-      input.getAttribute("data-chat-candidate"),
-    );
+    if (!currentScan) return [];
+    return currentScan.candidates
+      .filter((candidate) => selectedCandidates.has(candidate.id))
+      .map((candidate) => candidate.id);
   }
 
   function showStatus(message, kind = "info") {
@@ -49,7 +78,7 @@ export function setupChatMigration({ transport, onImported = async () => {} }) {
   function setBusy(value) {
     busy = value;
     scanButton.disabled = value;
-    for (const input of section.querySelectorAll("input, button")) {
+    for (const input of section.querySelectorAll("input, button, select")) {
       if (input !== scanButton) input.disabled = value;
     }
     if (!value) updateSelection();
@@ -62,35 +91,114 @@ export function setupChatMigration({ transport, onImported = async () => {} }) {
   }
 
   function candidateRow(candidate) {
-    const label = element("label", "chat-migration-candidate");
+    const row = element("div", "chat-migration-candidate");
     const input = document.createElement("input");
     input.type = "checkbox";
     input.setAttribute("data-chat-candidate", candidate.id);
     input.setAttribute("aria-label", candidate.title);
+    input.checked = selectedCandidates.has(candidate.id);
 
     const info = element("span", "chat-migration-candidate-info");
-    info.appendChild(element("span", "chat-migration-candidate-title", candidate.title));
-    const metaParts = [sourceName(candidate.source)];
-    if (candidate.updatedAt) {
-      metaParts.push(formatDate(candidate.updatedAt, { dateStyle: "medium", timeStyle: "short" }));
-    }
-    info.appendChild(element("span", "chat-migration-candidate-meta", metaParts.join(" · ")));
+    const heading = element("span", "chat-migration-candidate-heading");
+    heading.appendChild(element("span", "chat-migration-candidate-title", candidate.title));
     if (candidate.archived) {
-      info.appendChild(
+      heading.appendChild(
         element("span", "chat-migration-archive-badge", t("common.archived", {}, "Archived")),
       );
     }
-    label.append(input, info);
-    return label;
+    const snippet = element(
+      "span",
+      "chat-migration-candidate-snippet",
+      candidate.lastMessageSnippet ||
+        t("chatMigration.previewUnavailable", {}, "No readable message preview."),
+    );
+    const metaParts = [sourceName(candidate.source)];
+    if (candidate.updatedAt) {
+      const formatted = formatDate(candidate.updatedAt, {
+        dateStyle: "medium",
+        timeStyle: "short",
+      });
+      metaParts.push(t("chatMigration.updatedAt", { time: formatted }, `Updated ${formatted}`));
+    }
+    const size = formatBytes(candidate.fileSizeBytes);
+    const meta = element("span", "chat-migration-candidate-meta", metaParts.join(" · "));
+    meta.append(
+      document.createTextNode(" · "),
+      element(
+        "span",
+        "chat-migration-candidate-size",
+        t("chatMigration.size", { size }, `Data ${size}`),
+      ),
+    );
+    info.append(heading, snippet, meta);
+    const viewButton = element(
+      "button",
+      "chat-migration-context-button",
+      t("chatMigration.viewContext", {}, "View context"),
+    );
+    viewButton.type = "button";
+    viewButton.setAttribute("data-chat-context", candidate.id);
+    viewButton.setAttribute(
+      "aria-label",
+      t(
+        "chatMigration.viewContextFor",
+        { title: candidate.title },
+        `View full context for ${candidate.title}`,
+      ),
+    );
+    viewButton.addEventListener("click", async () => {
+      if (!currentScan || busy) return;
+      viewButton.disabled = true;
+      try {
+        await transport.openChatMigrationContext(currentScan.scanId, candidate.id);
+      } catch (error) {
+        showStatus(
+          error?.message ||
+            t("chatMigration.contextOpenFailed", {}, "Could not open the chat context."),
+          "error",
+        );
+      } finally {
+        viewButton.disabled = false;
+      }
+    });
+    row.append(input, info, viewButton);
+    return row;
+  }
+
+  function compareCandidates(left, right) {
+    const mode = sortControl?.value || "updated-desc";
+    const ascending = mode.endsWith("-asc");
+    const leftValue = mode.startsWith("size")
+      ? Number(left.fileSizeBytes) || 0
+      : candidateTime(left);
+    const rightValue = mode.startsWith("size")
+      ? Number(right.fileSizeBytes) || 0
+      : candidateTime(right);
+    if (leftValue !== rightValue) {
+      return ascending ? leftValue - rightValue : rightValue - leftValue;
+    }
+    return left.title.localeCompare(right.title);
+  }
+
+  function candidateVisible(candidate) {
+    const source = sourceFilter?.value || "all";
+    if (source !== "all" && candidate.source !== source) return false;
+    const filter = archiveFilter?.value || "active";
+    if (filter === "archived") return Boolean(candidate.archived);
+    if (filter === "active") return !candidate.archived;
+    return true;
   }
 
   function renderScan() {
     results.replaceChildren();
     if (!currentScan) {
+      delete results.dataset.chatScanId;
       results.hidden = true;
       actions.hidden = true;
+      if (reviewControls) reviewControls.hidden = true;
       return;
     }
+    results.dataset.chatScanId = currentScan.scanId;
 
     for (const warning of currentScan.warnings || []) {
       results.appendChild(element("div", "chat-migration-warning", warning));
@@ -101,19 +209,40 @@ export function setupChatMigration({ transport, onImported = async () => {} }) {
       );
       results.hidden = false;
       actions.hidden = true;
+      if (reviewControls) reviewControls.hidden = true;
       return;
     }
+    if (reviewControls) reviewControls.hidden = false;
 
     const candidatesByGroup = new Map();
-    for (const candidate of currentScan.candidates) {
+    for (const candidate of currentScan.candidates.filter(candidateVisible)) {
       const grouped = candidatesByGroup.get(candidate.workspaceGroupId) || [];
       grouped.push(candidate);
       candidatesByGroup.set(candidate.workspaceGroupId, grouped);
     }
 
-    for (const group of currentScan.workspaceGroups || []) {
-      const candidates = candidatesByGroup.get(group.id) || [];
-      if (candidates.length === 0) continue;
+    const visibleGroups = (currentScan.workspaceGroups || [])
+      .map((group) => ({
+        group,
+        candidates: (candidatesByGroup.get(group.id) || []).sort(compareCandidates),
+      }))
+      .filter(({ candidates }) => candidates.length > 0)
+      .sort(
+        (left, right) =>
+          compareCandidates(left.candidates[0], right.candidates[0]) ||
+          displayWorkspace(left.group).localeCompare(displayWorkspace(right.group)),
+      );
+    if (visibleGroups.length === 0) {
+      results.appendChild(
+        element(
+          "div",
+          "settings-api-keys-empty",
+          t("chatMigration.noFilterResults", {}, "No chats match this filter."),
+        ),
+      );
+    }
+
+    for (const { group, candidates } of visibleGroups) {
       const card = element("section", "chat-migration-workspace");
       const heading = element("div", "chat-migration-workspace-heading");
       const title = element("div", "chat-migration-workspace-title", displayWorkspace(group));
@@ -156,6 +285,7 @@ export function setupChatMigration({ transport, onImported = async () => {} }) {
     }
     setBusy(true);
     currentScan = null;
+    selectedCandidates.clear();
     renderScan();
     showStatus(t("chatMigration.scanning", {}, "Scanning local chat history..."));
     try {
@@ -217,7 +347,9 @@ export function setupChatMigration({ transport, onImported = async () => {} }) {
         return null;
       }
       showStatus(t("chatMigration.importing", {}, "Importing selected chats..."));
-      const result = await transport.importLocalChats(currentScan.scanId, candidateIds, bindings);
+      const result = await transport.importLocalChats(currentScan.scanId, candidateIds, bindings, {
+        includeReasoning: Boolean(includeReasoning?.checked),
+      });
       await onImported(result);
       showStatus(
         t(
@@ -230,6 +362,7 @@ export function setupChatMigration({ transport, onImported = async () => {} }) {
       for (const input of results.querySelectorAll("[data-chat-candidate]:checked")) {
         input.checked = false;
       }
+      selectedCandidates.clear();
       return result;
     } catch (error) {
       showStatus(
@@ -244,7 +377,18 @@ export function setupChatMigration({ transport, onImported = async () => {} }) {
 
   scanButton.addEventListener("click", () => void scan());
   importButton.addEventListener("click", () => void importSelected());
-  results.addEventListener("change", updateSelection);
+  results.addEventListener("change", (event) => {
+    const input = event.target.closest?.("[data-chat-candidate]");
+    if (input) {
+      const id = input.getAttribute("data-chat-candidate");
+      if (input.checked) selectedCandidates.add(id);
+      else selectedCandidates.delete(id);
+    }
+    updateSelection();
+  });
+  sortControl?.addEventListener("change", renderScan);
+  sourceFilter?.addEventListener("change", renderScan);
+  archiveFilter?.addEventListener("change", renderScan);
   window.addEventListener("picot:locale-changed", () => renderScan());
   updateSelection();
   return { scan, importSelected };

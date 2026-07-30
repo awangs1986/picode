@@ -6,7 +6,7 @@
             name="viewport"
             content="width=device-width, initial-scale=1.0, viewport-fit=cover"
         />
-        <title>Picot</title>
+        <title>Picode</title>
         <link rel="icon" type="image/svg+xml" href="icons/logo-dark.svg" />
         <meta name="theme-color" content="#f5f3ef" />
         <link rel="stylesheet" href="style-theme.css" />
@@ -77,6 +77,24 @@
             }
         </script>
         <div class="app-layout">
+            <nav class="picode-global-rail" aria-label="Picode">
+                <div class="picode-rail-logo" aria-label="Picode">P</div>
+                <div class="picode-rail-primary">
+                    <button class="picode-rail-button is-active" type="button" title="Chat" aria-label="Chat">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z"/></svg>
+                    </button>
+                    <button class="picode-rail-button" id="picode-new-task-btn" type="button" title="New task" aria-label="New task">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 5v14M5 12h14"/></svg>
+                    </button>
+                    <button class="picode-rail-button" id="picode-runtime-btn" type="button" title="Runtime Monitor" aria-label="Runtime Monitor">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12h4l2.2-6 4.2 12 2.2-6H21"/></svg>
+                        <i class="picode-rail-live-dot" aria-hidden="true"></i>
+                    </button>
+                </div>
+                <button class="picode-rail-button picode-rail-settings" id="picode-rail-settings-btn" type="button" title="Settings" aria-label="Settings">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34A1.7 1.7 0 0 0 14 20.92V21h-4v-.08a1.7 1.7 0 0 0-1.03-1.56 1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15 1.7 1.7 0 0 0 3.08 14H3v-4h.08A1.7 1.7 0 0 0 4.64 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.64 1.7 1.7 0 0 0 10 3.08V3h4v.08A1.7 1.7 0 0 0 15 4.64a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.36 9 1.7 1.7 0 0 0 20.92 10H21v4h-.08A1.7 1.7 0 0 0 19.4 15Z"/></svg>
+                </button>
+            </nav>
             <!-- Left Sidebar -->
             <div class="sidebar" id="sidebar">
                 <div class="sidebar-header">
@@ -84,7 +102,7 @@
                         <span class="mode-link active" title="Chat"
                             ><img
                                 src="icons/logo-dark.svg"
-                                alt="Picot logo"
+                                alt="Picode logo"
                                 class="tau-icon"
                         /></span>
                     </div>
@@ -376,11 +394,11 @@
                         <div class="welcome-icon">
                             <img
                                 src="icons/logo-dark.svg"
-                                alt="Picot logo"
+                                alt="Picode logo"
                                 class="tau-icon-welcome"
                             />
                         </div>
-                        <p>Welcome to Picot</p>
+                                <p>Welcome to Picode</p>
                         <p class="hint">
                             Type a message below to start chatting with Pi, or select a session from the sidebar.
                         </p>
@@ -939,7 +957,7 @@
                             </div>
                             <div class="settings-row">
                                 <span class="settings-label"
-                                    >Picot version</span
+                                    >Picode version</span
                                 >
                                 <span
                                     class="settings-static-value"
@@ -992,6 +1010,12 @@
 
                 <div class="settings-tab" data-settings-panel="extensions">
                     <div class="settings-body">
+                        <div class="settings-section">
+                            <picode-subagent-policy></picode-subagent-policy>
+                        </div>
+                        <div class="settings-section">
+                            <picode-professional-extensions></picode-professional-extensions>
+                        </div>
                         <div class="settings-section">
                             <div class="settings-section-title">
                                 Browse Community Packages
@@ -1104,7 +1128,7 @@
                                 Agent accounts
                             </div>
                             <p class="settings-help" data-i18n="accounts.help">
-                                Import is always manual. Picot previews accounts before saving them in the encrypted system vault.
+                                Import is always manual. Picode previews accounts before saving them in the encrypted system vault.
                             </p>
                             <div class="account-import-providers">
                                 <div class="account-import-provider" data-provider="codex">
@@ -1220,7 +1244,7 @@
                             <p class="settings-help">
                                 Keys are stored locally in
                                 <code>~/.pi/agent/auth.json</code> (chmod 600).
-                                Picot launched from Finder does not read shell
+                                Picode launched from Finder does not read shell
                                 environment variables, so set keys here for them
                                 to stick across launches.
                             </p>
@@ -1520,6 +1544,94 @@
                                 hidden
                             ></div>
                             <div
+                                class="chat-migration-review-controls"
+                                id="chat-migration-review-controls"
+                                hidden
+                            >
+                                <label class="chat-migration-review-field">
+                                    <span data-i18n="chatMigration.sortLabel"
+                                        >Sort</span
+                                    >
+                                    <select
+                                        class="ui-select"
+                                        id="chat-migration-sort"
+                                    >
+                                        <option
+                                            value="updated-desc"
+                                            data-i18n="chatMigration.sortNewest"
+                                        >
+                                            Time: newest first
+                                        </option>
+                                        <option
+                                            value="updated-asc"
+                                            data-i18n="chatMigration.sortOldest"
+                                        >
+                                            Time: oldest first
+                                        </option>
+                                        <option
+                                            value="size-desc"
+                                            data-i18n="chatMigration.sortLargest"
+                                        >
+                                            Size: largest first
+                                        </option>
+                                        <option
+                                            value="size-asc"
+                                            data-i18n="chatMigration.sortSmallest"
+                                        >
+                                            Size: smallest first
+                                        </option>
+                                    </select>
+                                </label>
+                                <label class="chat-migration-review-field">
+                                    <span data-i18n="chatMigration.agentFilterLabel"
+                                        >Agent</span
+                                    >
+                                    <select
+                                        class="ui-select"
+                                        id="chat-migration-source-filter"
+                                    >
+                                        <option
+                                            value="all"
+                                            data-i18n="chatMigration.agentAll"
+                                        >
+                                            All agents
+                                        </option>
+                                        <option value="codex" data-i18n="chatMigration.agentCodex">Codex</option>
+                                        <option value="cursor" data-i18n="chatMigration.agentCursor">Cursor</option>
+                                        <option value="claude" data-i18n="chatMigration.agentClaude">Claude</option>
+                                    </select>
+                                </label>
+                                <label class="chat-migration-review-field">
+                                    <span data-i18n="chatMigration.archiveFilterLabel"
+                                        >Archive status</span
+                                    >
+                                    <select
+                                        class="ui-select"
+                                        id="chat-migration-archive-filter"
+                                    >
+                                        <option
+                                            value="all"
+                                            data-i18n="chatMigration.archiveAll"
+                                        >
+                                            All chats
+                                        </option>
+                                        <option
+                                            value="active"
+                                            data-i18n="chatMigration.archiveActive"
+                                            selected
+                                        >
+                                            Not archived
+                                        </option>
+                                        <option
+                                            value="archived"
+                                            data-i18n="chatMigration.archiveOnly"
+                                        >
+                                            Archived only
+                                        </option>
+                                    </select>
+                                </label>
+                            </div>
+                            <div
                                 class="chat-migration-results"
                                 id="chat-migration-results"
                                 hidden
@@ -1529,10 +1641,28 @@
                                 id="chat-migration-actions"
                                 hidden
                             >
-                                <span
-                                    class="chat-migration-selection"
-                                    id="chat-migration-selection"
-                                ></span>
+                                <div class="chat-migration-import-settings">
+                                    <label class="chat-migration-reasoning-option">
+                                        <input
+                                            id="chat-migration-include-reasoning"
+                                            type="checkbox"
+                                        />
+                                        <span>
+                                            <strong
+                                                data-i18n="chatMigration.includeReasoning"
+                                                >Import reasoning (full mode)</strong
+                                            >
+                                            <small
+                                                data-i18n="chatMigration.includeReasoningHint"
+                                                >Off by default. Tool logs, system events, and compacted summaries are never added to the conversation.</small
+                                            >
+                                        </span>
+                                    </label>
+                                    <span
+                                        class="chat-migration-selection"
+                                        id="chat-migration-selection"
+                                    ></span>
+                                </div>
                                 <button
                                     type="button"
                                     class="ui-button ui-button--primary"
@@ -1558,7 +1688,7 @@
                                 class="settings-help"
                                 data-i18n="chatBackup.help"
                             >
-                                Back up selected Picot chats and their organization metadata. Project files and account credentials are never included.
+                                Back up selected Picode chats and their organization metadata. Project files and account credentials are never included.
                             </p>
                             <button
                                 type="button"
@@ -1790,7 +1920,7 @@
                                 class="settings-help"
                                 data-i18n="chatRestore.help"
                             >
-                                Picot verifies and decrypts the complete backup before writing anything. Restored workspace groups must be bound to existing folders on this computer.
+                                Picode verifies and decrypts the complete backup before writing anything. Restored workspace groups must be bound to existing folders on this computer.
                             </p>
                             <button
                                 type="button"
@@ -1980,7 +2110,7 @@
                         alt="QR code for mobile access"
                     />
                     <div class="lan-qr-hint">
-                        Scan with your phone to open Picot on the same network
+                        Scan with your phone to open Picode on the same network
                     </div>
                     <button
                         class="lan-qr-open-link hidden"
@@ -2009,12 +2139,21 @@
             </div>
         </div>
 
+        <picode-task-dialog id="picode-task-dialog"></picode-task-dialog>
+        <picode-runtime-monitor id="picode-runtime-monitor"></picode-runtime-monitor>
+        <picode-harness-review id="picode-harness-review"></picode-harness-review>
+
         <!-- Scripts -->
         <script type="module" src="bootstrap-entry.js"></script>
         <script type="module" src="components/super-agent-entry.js"></script>
         <script type="module" src="components/super-agent-runtime.js"></script>
         <script type="module" src="components/sa-chat-header.js"></script>
         <script type="module" src="components/chat-settings-panel.js"></script>
+        <script type="module" src="components/subagent-policy.js"></script>
+        <script type="module" src="components/professional-extensions.js"></script>
+        <script type="module" src="components/new-task-flow.js"></script>
+        <script type="module" src="components/runtime-monitor.js"></script>
+        <script type="module" src="components/harness-review.js"></script>
         <script type="module" src="super-agent/panel.js"></script>
     </body>
 </html>

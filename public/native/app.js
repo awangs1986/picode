@@ -13,7 +13,7 @@ import { createSessionStore, reduceSessionState } from "./session-store.js";
 import { buildCommandCatalog, resolveComposerInput } from "./slash-commands.js";
 
 const route = parseAppRoute(window.location.pathname);
-if (route.name !== "session") throw new Error("Native Picot requires a session route");
+if (route.name !== "session") throw new Error("Native Picode requires a session route");
 
 applyTheme(getCurrentTheme());
 document.body.dataset.runtime = "native";
@@ -32,7 +32,7 @@ let commandCatalog = buildCommandCatalog({
   builtIns: [
     { name: "settings", description: "Open settings", action: "open_settings" },
     { name: "tree", description: "Open session tree", action: "open_tree" },
-    { name: "help", description: "Show Picot help", action: "show_help" },
+    { name: "help", description: "Show Picode help", action: "show_help" },
   ],
 });
 let streamingElement = null;
@@ -100,7 +100,7 @@ async function loadBootstrapTarget(currentRoute) {
     sessionId: currentRoute.sessionId,
   });
   const response = await fetch(`/v2/bootstrap?${query}`);
-  if (!response.ok) throw new Error("This Picot runtime is stopped or unavailable");
+  if (!response.ok) throw new Error("This Picode runtime is stopped or unavailable");
   return response.json();
 }
 

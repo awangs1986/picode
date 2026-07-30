@@ -2964,7 +2964,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "picot"
+name = "picode"
 version = "0.3.0"
 dependencies = [
  "aes-gcm",
@@ -2996,6 +2996,7 @@ dependencies = [
  "toml 0.8.2",
  "tower-http",
  "uuid",
+ "windows-sys 0.61.2",
  "zeroize",
 ]
 

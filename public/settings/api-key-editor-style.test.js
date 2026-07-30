@@ -13,12 +13,13 @@ describe("settings API key editor style", () => {
     expect(rule).not.toContain("#fff");
   });
 
-  test("animates collapsed provider model lists despite their flex layout", () => {
-    const rule = css.match(/\.api-model-list\.collapsed\s*\{(?<body>[^}]+)\}/)?.groups?.body;
+  test("never clips long expanded provider model lists", () => {
+    const expanded = css.match(/\.api-model-list\s*\{(?<body>[^}]+)\}/)?.groups?.body;
+    const collapsed = css.match(/\.api-model-list\.collapsed\s*\{(?<body>[^}]+)\}/)?.groups?.body;
 
-    expect(rule).toBeTruthy();
-    expect(rule).toContain("max-height: 0");
-    expect(rule).toContain("opacity: 0");
+    expect(expanded).toContain("max-height: none");
+    expect(expanded).toContain("overflow: visible");
+    expect(collapsed).toContain("display: none");
   });
 
   test("animates collapsed project session lists", () => {

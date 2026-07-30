@@ -865,7 +865,7 @@ fn verify_payload(
         }
         validate_pi_session(&content)?;
         if !item.attachments.is_empty() {
-            return Err("This Picot version cannot restore detached backup attachments".into());
+            return Err("This Picode version cannot restore detached backup attachments".into());
         }
     }
     Ok(by_id)
@@ -879,7 +879,9 @@ fn validate_container_header(container: &BackupContainer) -> Result<(), String> 
         ));
     }
     if container.manifest.schema_version > BACKUP_VERSION {
-        return Err("This backup was created by a newer Picot; upgrade Picot to restore it".into());
+        return Err(
+            "This backup was created by a newer Picode; upgrade Picode to restore it".into(),
+        );
     }
     if container.manifest.schema_version != BACKUP_VERSION || container.manifest.mode != "full" {
         return Err("Unsupported chat-backup version or mode".to_string());

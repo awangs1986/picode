@@ -148,7 +148,7 @@ impl AccountVault {
         })?;
         match entry.get_secret() {
             Ok(secret) => secret.try_into().map_err(|_| {
-                "The Picot account-vault key has an invalid length; recovery is required".to_string()
+                "The Picode account-vault key has an invalid length; recovery is required".to_string()
             }),
             Err(keyring::Error::NoEntry) => {
                 let mut key = [0_u8; 32];

@@ -134,8 +134,8 @@ export class MessageRenderer {
       : "";
     this.container.innerHTML = `
       <div class="welcome">
-        <div class="welcome-icon"><img src="icons/logo-dark.svg" alt="Picot logo" class="tau-icon-welcome"></div>
-        <p>${this.escapeHtml(t("chat.welcome", {}, "Welcome to Picot"))}</p>
+        <div class="welcome-icon"><img src="icons/logo-dark.svg" alt="Picode logo" class="tau-icon-welcome"></div>
+        <p>${this.escapeHtml(t("chat.welcome", {}, "Welcome to Picode"))}</p>
         <p class="hint">${this.escapeHtml(t("chat.welcomeHelp", {}, "Type a message below to start chatting with Pi, or select a session from the sidebar."))}</p>
         ${workspaceHtml}
         <div class="shortcuts-hint">

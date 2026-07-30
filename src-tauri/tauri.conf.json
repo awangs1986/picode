@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Picot",
+  "productName": "Picode",
   "identifier": "works.earendil.picot",
   "version": "0.3.0",
   "build": {
@@ -20,7 +20,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "createUpdaterArtifacts": true,
+    "createUpdaterArtifacts": false,
     "macOS": {
       "signingIdentity": "-",
       "entitlements": "./entitlements.plist",
@@ -42,7 +42,6 @@
   "plugins": {
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEU5OUQ4Q0Y5MTA1MTFDRTEKUldUaEhGRVErWXlkNlNSa01lY0g5S1ltM3BjMHJhdUYxdXdsc25USndZdDBFeGZyeGpUa2JVZWEK",
-      "endpoints": ["https://github.com/shixin-guo/picot/releases/latest/download/latest.json"],
       "windows": {
         "installMode": "passive"
       }

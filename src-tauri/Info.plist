@@ -3,8 +3,8 @@
 <plist version="1.0">
 <dict>
   <key>NSMicrophoneUsageDescription</key>
-  <string>Picot needs microphone access for voice input.</string>
+  <string>Picode needs microphone access for voice input.</string>
   <key>NSSpeechRecognitionUsageDescription</key>
-  <string>Picot uses speech recognition to convert your voice to text.</string>
+  <string>Picode uses speech recognition to convert your voice to text.</string>
 </dict>
 </plist>

@@ -66,7 +66,13 @@ export function setupAccountSettings({ transport, onAccountsChanged = async () =
       renderAccounts();
       showStatus(
         activate
-          ? t("accounts.activated", {}, "Account activated.")
+          ? result.restartRequired
+            ? t(
+                "accounts.cursorRestart",
+                {},
+                "Account activated. Restart Picode before starting a Cursor chat.",
+              )
+            : t("accounts.activated", {}, "Account activated.")
           : t("accounts.deactivated", {}, "Account deactivated."),
         "success",
       );
@@ -291,11 +297,17 @@ export function setupAccountSettings({ transport, onAccountsChanged = async () =
       hidePreview();
       renderAccounts();
       showStatus(
-        t(
-          "accounts.saved",
-          { count: result.importedIds?.length || selectedIds.length },
-          `${selectedIds.length} account(s) imported.`,
-        ),
+        result.restartRequired
+          ? t(
+              "accounts.cursorRestart",
+              {},
+              `Imported ${result.importedIds?.length || selectedIds.length} account(s). Restart Picode before starting a Cursor chat.`,
+            )
+          : t(
+              "accounts.saved",
+              { count: result.importedIds?.length || selectedIds.length },
+              `${selectedIds.length} account(s) imported.`,
+            ),
         "success",
       );
       await onAccountsChanged(result);

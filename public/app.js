@@ -10,6 +10,12 @@ import { createAppUpdater } from "./app/updater.js";
 import { setupVoiceInput } from "./app/voice-input.js";
 import { resolveWebSocketUrl, WebSocketClient } from "./app/websocket-client.js";
 import { formatNumber, t } from "./i18n/index.js";
+import {
+  filterModelsByProvider,
+  modelOptionLabel,
+  modelProviderLabel,
+  summarizeModelProviders,
+} from "./models/provider-view.js";
 import { selectModel } from "./models/selection.js";
 import { renderPackageInstallFailure } from "./packages/install-status.js";
 import { getOnboardingState } from "./session/onboarding.js";
@@ -50,6 +56,12 @@ import {
   markTaskFinished,
   normalizeSuperAgentTasks,
 } from "./super-agent/task-state.js";
+import {
+  activePromptContext,
+  clearActiveTask,
+  loadActiveTask,
+  rememberActiveTask,
+} from "./tasks/active-task.js";
 import { applyTheme, getCurrentTheme, themes } from "./themes.js";
 import { DialogHandler } from "./ui/dialogs.js";
 import { setupMessagesInsets } from "./ui/layout-insets.js";
@@ -222,6 +234,37 @@ document.addEventListener("sa-dispatch", (e) => dispatchSuperAgentTask(e.detail)
 document.addEventListener("sa-ask", (e) => notifySuperAgentClarification(e.detail));
 document.addEventListener("sa-prompt-task", (e) => insertTaskPrompt(e.detail));
 document.addEventListener("sa-view-session", (e) => viewSuperAgentChildSession(e.detail));
+
+const picodeTaskDialog = document.getElementById("picode-task-dialog");
+const picodeRuntimeMonitor = document.getElementById("picode-runtime-monitor");
+const picodeHarnessReview = document.getElementById("picode-harness-review");
+let activePicodeTask = loadActiveTask(window.sessionStorage);
+document.getElementById("picode-new-task-btn")?.addEventListener("click", () => {
+  picodeTaskDialog?.open({
+    chatId: sidebar.activeSessionFile || `chat-${crypto.randomUUID()}`,
+  });
+});
+document.getElementById("picode-runtime-btn")?.addEventListener("click", () => {
+  picodeRuntimeMonitor?.open();
+});
+document.getElementById("picode-rail-settings-btn")?.addEventListener("click", () => {
+  document.getElementById("settings-btn")?.click();
+});
+document.addEventListener("picode-task-created", (event) => {
+  activePicodeTask = rememberActiveTask(window.sessionStorage, event.detail);
+  document.body.dataset.taskKind = activePicodeTask.kind;
+  newSession().catch((error) => messageRenderer.renderError(String(error)));
+  if (activePicodeTask.kind === "harness") {
+    picodeHarnessReview?.open(activePicodeTask);
+  }
+});
+document.addEventListener("picode-open-chat", (event) => {
+  const target = sidebar.projects
+    .flatMap((project) => (project.sessions || []).map((session) => ({ project, session })))
+    .find(({ session }) => session.filePath === event.detail?.chatId);
+  if (target) handleSessionSelect(target.session, target.project);
+  picodeRuntimeMonitor?.close();
+});
 
 // <sa-chat-header> service buttons open Settings > Chat tab
 window.__saOpenSettings = () => {
@@ -432,7 +475,7 @@ let lastUsage = null; // Full usage object for context visualiser
 let mirrorActiveSessionFile = null; // The live session file path from the TUI
 let viewingActiveSession = true; // Whether we're viewing the live session or a historical one
 let isMirrorMode = false; // Set when mirror_sync received
-let liveInstances = []; // All running Picot instances [{port, sessionFile, cwd}]
+let liveInstances = []; // All running Picode instances [{port, sessionFile, cwd}]
 let workspaceLaunchInProgress = false;
 // When true, the next foreground message lifecycle events should reload the
 // sidebar until the newly persisted session file appears in the list.
@@ -1458,6 +1501,16 @@ function handleAgentStart(event = null) {
   lastTurnErrored = false;
   updateUI();
   const live = getCurrentLiveSessionFile(event);
+  if (
+    live &&
+    activePicodeTask &&
+    (!event?.__broker?.sourcePort || event.__broker.sourcePort === foregroundPort)
+  ) {
+    activePicodeTask = rememberActiveTask(window.sessionStorage, {
+      ...activePicodeTask,
+      chatId: live,
+    });
+  }
   if (live) sidebar.setStreaming(live, true);
 }
 
@@ -1823,7 +1876,7 @@ async function addImageFiles(files) {
       const img = await processImageFile(file);
       pendingImages.push(img);
     } catch (e) {
-      console.error("[Picot] Image processing failed:", e);
+      console.error("[Picode] Image processing failed:", e);
     }
   }
   renderImagePreviews();
@@ -1923,11 +1976,16 @@ async function sendMessage() {
   const message = messageInput.value.trim();
   if (!message) return;
 
-  const sessionId = wsClient.sessionId;
+  const sessionId = wsClient.sessionId || activePicodeTask?.chatId || "";
   if (sessionId && currentModelProvider && transport.available) {
     isPreparingPrompt = true;
     try {
-      const decision = await transport.prepareChatPrompt(sessionId, currentModelProvider, message);
+      const decision = await transport.prepareChatPrompt(
+        sessionId,
+        currentModelProvider,
+        message,
+        activePromptContext(activePicodeTask, foregroundPort, currentModelId),
+      );
       if (decision?.allowed === false) {
         messageRenderer.renderError(
           t(
@@ -1962,7 +2020,7 @@ async function sendMessage() {
 
   if (pendingImages.length > 0) {
     cmd.images = pendingImages.map((img) => {
-      console.log(`[Picot] Sending image: mimeType=${img.mimeType}, dataLen=${img.data?.length}`);
+      console.log(`[Picode] Sending image: mimeType=${img.mimeType}, dataLen=${img.data?.length}`);
       return {
         type: "image",
         data: img.data,
@@ -2326,8 +2384,9 @@ function maybeAutoOpenEmptyModelsDropdown() {
 }
 
 function updateModelLabel() {
-  const shortName = currentModelId.replace(/^claude-/, "").replace(/-\d{8}$/, "");
-  modelDropdownLabel.textContent = shortName || t("common.model", {}, "model");
+  modelDropdownLabel.textContent = currentModelId
+    ? modelOptionLabel({ id: currentModelId, provider: currentModelProvider })
+    : t("common.model", {}, "model");
 }
 
 function toggleModelDropdown() {
@@ -2341,6 +2400,7 @@ function toggleModelDropdown() {
 
 function openModelDropdown() {
   modelDropdownMenu.innerHTML = "";
+  let selectedProvider = "";
 
   // Search input
   const search = document.createElement("input");
@@ -2349,10 +2409,56 @@ function openModelDropdown() {
   search.type = "text";
   modelDropdownMenu.appendChild(search);
 
+  const providerFilters = document.createElement("div");
+  providerFilters.className = "model-dropdown-provider-filters";
+  providerFilters.setAttribute("aria-label", t("models.providerFilter", {}, "Model provider"));
+  modelDropdownMenu.appendChild(providerFilters);
+
   // Items container
   const itemsContainer = document.createElement("div");
   itemsContainer.className = "model-dropdown-items";
   modelDropdownMenu.appendChild(itemsContainer);
+
+  const moreModelsButton = document.createElement("button");
+  moreModelsButton.type = "button";
+  moreModelsButton.className = "model-dropdown-more";
+  moreModelsButton.innerHTML = `
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+      <circle cx="12" cy="12" r="3"></circle>
+      <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21H9.6v-.09A1.7 1.7 0 0 0 8.5 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.1-.4H3V9.6h.09A1.7 1.7 0 0 0 4.6 8.5a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.1V3h4v.09A1.7 1.7 0 0 0 15.5 4.6a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9c.16.38.37.72.6 1 .3.35.68.55 1.1.6H21v4h-.09A1.7 1.7 0 0 0 19.4 15Z"></path>
+    </svg>
+    <span>${escapeHtml(t("models.moreSettings", {}, "More model settings"))}</span>`;
+  moreModelsButton.addEventListener("click", () => {
+    closeModelDropdown();
+    openConfigurationSettings().catch(() => {});
+  });
+  modelDropdownMenu.appendChild(moreModelsButton);
+
+  function renderProviderFilters() {
+    providerFilters.replaceChildren();
+    const options = [
+      {
+        provider: "",
+        label: t("models.providerAll", {}, "All"),
+        count: availableModels.length,
+      },
+      ...summarizeModelProviders(availableModels),
+    ];
+    for (const option of options) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `model-dropdown-provider-filter${selectedProvider === option.provider ? " active" : ""}`;
+      button.dataset.provider = option.provider;
+      button.setAttribute("aria-pressed", String(selectedProvider === option.provider));
+      button.textContent = `${option.label} ${option.count}`;
+      button.addEventListener("click", () => {
+        selectedProvider = option.provider;
+        renderProviderFilters();
+        renderItems(search.value);
+      });
+      providerFilters.appendChild(button);
+    }
+  }
 
   function renderItems(filter) {
     itemsContainer.innerHTML = "";
@@ -2367,33 +2473,27 @@ function openModelDropdown() {
         <div style="padding:14px;color:var(--text-dim);font-size:12px;line-height:1.5">
           <div style="color:var(--text-primary);margin-bottom:6px">${escapeHtml(t("models.none", {}, "No models available"))}</div>
           <div>${escapeHtml(t("models.configureHelp", {}, "No API keys configured. Set a key in Settings → Configuration."))}</div>
-          <button type="button" class="btn-primary" style="margin-top:10px">${escapeHtml(t("models.openSettings", {}, "Open Settings"))}</button>
         </div>`;
-      empty.querySelector("button").addEventListener("click", () => {
-        closeModelDropdown();
-        openConfigurationSettings().catch(() => {});
-      });
       itemsContainer.appendChild(empty);
       return;
     }
-    availableModels.forEach((m) => {
+    filterModelsByProvider(availableModels, selectedProvider).forEach((m) => {
       const shortName = m.id.replace(/-\d{8}$/, "");
       const providerStr = m.provider || "";
+      const providerDisplay = modelProviderLabel(providerStr);
       if (
         query &&
         !shortName.toLowerCase().includes(query) &&
-        !providerStr.toLowerCase().includes(query)
+        !providerStr.toLowerCase().includes(query) &&
+        !providerDisplay.toLowerCase().includes(query)
       )
         return;
 
       const el = document.createElement("div");
       el.className = `model-dropdown-item${m.id === currentModelId && m.provider === currentModelProvider ? " active" : ""}`;
       const ctxK = m.contextWindow ? `${(m.contextWindow / 1000).toFixed(0)}k` : "";
-      const providerLabel =
-        m.provider && m.provider !== "anthropic"
-          ? `<span class="model-dropdown-item-provider">${m.provider}</span>`
-          : "";
-      el.innerHTML = `<span>${shortName}${providerLabel}</span><span class="model-dropdown-item-ctx">${ctxK}</span>`;
+      const providerLabel = `<span class="model-dropdown-item-provider">${escapeHtml(providerDisplay)}</span>`;
+      el.innerHTML = `<span class="model-dropdown-item-name">${shortName}${providerLabel}</span><span class="model-dropdown-item-ctx">${ctxK}</span>`;
       el.addEventListener("click", async () => {
         closeModelDropdown();
         // If the session is stuck auto-retrying the current (failing) model, or
@@ -2436,6 +2536,7 @@ function openModelDropdown() {
     });
   }
 
+  renderProviderFilters();
   renderItems("");
 
   search.addEventListener("input", () => renderItems(search.value));
@@ -2840,6 +2941,11 @@ async function handleNewProjectChat(project) {
 // Public entry point: serializes selections so overlapping clicks don't
 // interleave their awaits and corrupt shared routing state.
 function handleSessionSelect(session, project) {
+  if (activePicodeTask && activePicodeTask.chatId !== session?.filePath) {
+    clearActiveTask(window.sessionStorage);
+    activePicodeTask = null;
+    delete document.body.dataset.taskKind;
+  }
   const run = sessionSelectChain.then(() => handleSessionSelectImpl(session, project));
   // Keep the chain alive even if this selection rejects.
   sessionSelectChain = run.catch(() => {});
@@ -4539,7 +4645,7 @@ if (isMobile()) {
   });
 }
 
-// Make the Picot icon in sidebar switch back to chat
+// Make the Picode icon in sidebar switch back to chat
 document.querySelector(".mode-link:first-child")?.addEventListener("click", () => {
   closeSettings();
 });
@@ -4609,4 +4715,4 @@ if (splash) {
   });
 }
 
-console.log("🚀 Picot initialized");
+console.log("🚀 Picode initialized");

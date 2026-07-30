@@ -3,55 +3,87 @@
 mod account_binding;
 mod account_import;
 mod account_vault;
+mod authorization;
 mod broker_ws;
+mod capability;
+mod capability_service;
 mod chat_backup;
 mod chat_migration;
 mod context_compression;
+mod execution;
+mod execution_store;
+mod extension_host;
+mod extension_service;
+mod harness;
+mod harness_service;
 mod host_data;
 mod host_router;
 mod host_server;
 mod metadata_store;
 mod native_pi_manager;
+mod orchestration;
+mod orchestration_service;
 mod pi_auth_sync;
 mod pi_manager;
 mod pi_rpc_bridge;
 mod remote_auth;
+mod resource_sampler;
 mod runtime_coordinator;
+mod runtime_registry;
+mod safe_files;
+mod secrets;
 mod settings_store;
+mod task_control;
 
 use account_binding::AccountBindingStore;
 use account_import::AccountImportService;
 use account_vault::AccountVault;
 use broker_ws::BrokerWs;
+use capability_service::CapabilityService;
 use chat_backup::{BackupSelectionFlags, ChatBackupService};
 use chat_migration::ChatMigrationService;
 use context_compression::ContextCompressionService;
+use extension_service::{
+    DapLaunchConfig, DiagnosticFinding, ExtensionManifest, ExtensionScope, ExtensionService,
+    ExternalSource, ProjectAdapter, RegressionMetrics, RegressionScenario,
+};
+use harness_service::HarnessService;
 use host_server::HostServer;
 use metadata_store::MetadataStore;
 use native_pi_manager::NativePiManager;
+use orchestration::TaskGraph;
+use orchestration_service::{DelegationRequest, OrchestrationService, SubagentPolicyConfiguration};
 use pi_auth_sync::PiAuthSynchronizer;
 use pi_manager::{
     locked_pi_version, wait_for_endpoint, wait_for_health as wait_for_pi_health, PiManager,
 };
 use remote_auth::RemoteAuth;
+use resource_sampler::ProcessSampler;
 use runtime_coordinator::RuntimeTarget;
+use secrets::{SecretReference, SecretStore};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::fs::{self, File};
-use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use task_control::TaskControl;
 use tauri::image::Image;
 #[cfg(target_os = "macos")]
 use tauri::TitleBarStyle;
 use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_dialog::MessageDialogKind;
+use zeroize::Zeroize;
 
 type PiManagerState = Arc<PiManager>;
 type BrokerWsState = Arc<BrokerWs>;
 type NativePiManagerState = NativePiManager;
+type TaskControlState = Arc<Mutex<TaskControl>>;
+type CapabilityServiceState = Arc<Mutex<CapabilityService>>;
+type OrchestrationServiceState = Arc<OrchestrationService>;
+type ExtensionServiceState = Arc<ExtensionService>;
+type SecretStoreState = Arc<Mutex<SecretStore>>;
 
 #[derive(Clone)]
 struct ChatDataServices {
@@ -257,7 +289,7 @@ async fn pick_backup_save_core(app: &AppHandle) -> Option<String> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.dialog()
         .file()
-        .add_filter("Picot Chat Backup", &["picot-backup"])
+        .add_filter("Picode Chat Backup", &["picot-backup"])
         .set_file_name("picot-chat-backup.picot-backup")
         .save_file(move |path| {
             let result = path.map(|path| match path {
@@ -273,7 +305,7 @@ async fn pick_backup_open_core(app: &AppHandle) -> Option<String> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.dialog()
         .file()
-        .add_filter("Picot Chat Backup", &["picot-backup"])
+        .add_filter("Picode Chat Backup", &["picot-backup"])
         .pick_file(move |path| {
             let result = path.map(|path| match path {
                 tauri_plugin_fs::FilePath::Path(path) => path.to_string_lossy().into_owned(),
@@ -288,7 +320,7 @@ async fn pick_context_save_core(app: &AppHandle) -> Option<String> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.dialog()
         .file()
-        .add_filter("Picot Compressed Context", &["picot-context"])
+        .add_filter("Picode Compressed Context", &["picot-context"])
         .set_file_name("picot-compressed-context.picot-context")
         .save_file(move |path| {
             let result = path.map(|path| match path {
@@ -347,7 +379,7 @@ fn macos_installed_app_names() -> std::collections::HashSet<String> {
     names
 }
 
-/// List the external apps Picot can open a project in. On macOS this is
+/// List the external apps Picode can open a project in. On macOS this is
 /// filtered down to the apps actually installed; on other platforms it falls
 /// back to a fixed list of CLI launchers (resolved against PATH at open time).
 fn list_installed_apps_core() -> Vec<AppTarget> {
@@ -554,7 +586,7 @@ fn open_workspace_window(app: &AppHandle, port: u16, broker_ws_url: &str) -> Res
 
     let builder =
         WebviewWindowBuilder::new(app, &label, WebviewUrl::External(url.parse().unwrap()))
-            .title("Picot")
+            .title("Picode")
             .inner_size(1300.0, 860.0)
             .min_inner_size(800.0, 600.0)
             .icon(icon)
@@ -573,6 +605,70 @@ fn open_workspace_window(app: &AppHandle, port: u16, broker_ws_url: &str) -> Res
 
     builder.build().map_err(|e| e.to_string())?;
 
+    Ok(())
+}
+
+fn open_chat_context_window(
+    app: &AppHandle,
+    port: u16,
+    broker_ws_url: &str,
+    scan_id: &str,
+    candidate_id: &str,
+    title: &str,
+) -> Result<(), String> {
+    let scan_label = scan_id
+        .chars()
+        .filter(|char| char.is_ascii_alphanumeric())
+        .take(8);
+    let candidate_label = candidate_id
+        .chars()
+        .filter(|char| char.is_ascii_alphanumeric())
+        .take(12);
+    let label = format!(
+        "chat-context-{}-{}",
+        scan_label.collect::<String>(),
+        candidate_label.collect::<String>()
+    );
+    if let Some(window) = app.get_webview_window(&label) {
+        window.show().map_err(|error| error.to_string())?;
+        window.set_focus().map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+    let url = format!(
+        "http://localhost:{port}/chat-context-viewer.html?scanId={}&candidateId={}&brokerWs={}",
+        encode_query_value(scan_id),
+        encode_query_value(candidate_id),
+        encode_query_value(broker_ws_url),
+    );
+    let icon = Image::from_bytes(include_bytes!("../icons/32x32.png"))
+        .map_err(|error| format!("Failed to load window icon: {error}"))?;
+    let window_title = if title.trim().is_empty() {
+        "Picode · Chat context".to_string()
+    } else {
+        format!("Picode · {title}")
+    };
+    let builder = WebviewWindowBuilder::new(
+        app,
+        &label,
+        WebviewUrl::External(
+            url.parse()
+                .map_err(|error| format!("Invalid chat context URL: {error}"))?,
+        ),
+    )
+    .title(window_title)
+    .inner_size(1080.0, 800.0)
+    .min_inner_size(680.0, 520.0)
+    .icon(icon)
+    .map_err(|error| error.to_string())?;
+
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .decorations(true)
+        .title_bar_style(TitleBarStyle::Overlay)
+        .hidden_title(true);
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder.decorations(true);
+    builder.build().map_err(|error| error.to_string())?;
     Ok(())
 }
 
@@ -596,7 +692,7 @@ fn open_native_workspace_window(
                 .map_err(|error| format!("Invalid native Host URL: {error}"))?,
         ),
     )
-    .title("Picot")
+    .title("Picode")
     .inner_size(1300.0, 860.0)
     .min_inner_size(800.0, 600.0)
     .icon(icon)
@@ -624,7 +720,7 @@ fn open_bootstrap_window(app: &AppHandle, startup_error: &str) -> Result<(), Str
     let url = format!("bootstrap.html?startupError={}", encoded_error);
 
     let builder = WebviewWindowBuilder::new(app, label, WebviewUrl::App(url.into()))
-        .title("Picot")
+        .title("Picode")
         .inner_size(900.0, 640.0)
         .min_inner_size(700.0, 480.0)
         .icon(icon)
@@ -691,33 +787,9 @@ fn find_static_dir(app: &tauri::App) -> PathBuf {
     )
 }
 
-fn list_session_files(root: &PathBuf) -> Vec<PathBuf> {
-    let mut files = Vec::new();
-    let Ok(entries) = fs::read_dir(root) else {
-        return files;
-    };
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            let Ok(inner_entries) = fs::read_dir(path) else {
-                continue;
-            };
-            for inner in inner_entries.flatten() {
-                let session_path = inner.path();
-                if session_path.extension().and_then(|ext| ext.to_str()) == Some("jsonl") {
-                    files.push(session_path);
-                }
-            }
-        }
-    }
-
-    files
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{provider_model_urls, resolve_static_dir};
+    use super::{extract_subagent_candidate, provider_model_urls, resolve_static_dir};
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -772,65 +844,34 @@ mod tests {
                 .is_err()
         );
     }
-}
 
-fn extract_session_cwd(session_path: &PathBuf) -> Option<String> {
-    let file = File::open(session_path).ok()?;
-    let reader = BufReader::new(file);
-
-    for line in reader.lines().take(200).flatten() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let Ok(value) = serde_json::from_str::<Value>(line) else {
-            continue;
-        };
-        if value.get("type").and_then(Value::as_str) != Some("session") {
-            continue;
-        }
-        let cwd = value.get("cwd").and_then(Value::as_str)?.trim();
-        if cwd.is_empty() {
-            return None;
-        }
-        return Some(cwd.to_string());
+    #[test]
+    fn subagent_candidate_extracts_only_the_last_bounded_assistant_text() {
+        let result = extract_subagent_candidate(&serde_json::json!({
+            "event": {
+                "messages": [
+                    { "role": "user", "content": "ignore me" },
+                    { "role": "assistant", "content": [{ "type": "text", "text": "candidate" }] }
+                ]
+            }
+        }));
+        assert_eq!(result, "candidate");
     }
-
-    None
 }
 
-fn find_latest_session_boot_target() -> Option<(String, String)> {
-    let sessions_root = dirs::home_dir()?.join(".pi/agent/sessions");
-    if !sessions_root.exists() {
-        log::info!(
-            "[pi-desktop] startup resume skipped: sessions dir not found at {}",
-            sessions_root.display()
-        );
-        return None;
-    }
-
-    let session_files = list_session_files(&sessions_root);
-    let latest = session_files
-        .into_iter()
-        .filter_map(|path| {
-            let mtime = fs::metadata(&path).ok()?.modified().ok()?;
-            Some((mtime, path))
-        })
-        .max_by_key(|(mtime, _)| *mtime)?;
-
-    let session_path = latest.1;
-    let cwd = extract_session_cwd(&session_path)?;
-    Some((cwd, session_path.to_string_lossy().to_string()))
+fn prepare_managed_default_workspace(app_data_dir: &Path) -> Result<String, String> {
+    let workspace = app_data_dir.join("scratch").join("default");
+    fs::create_dir_all(&workspace).map_err(|error| {
+        format!(
+            "Cannot create Picode's managed default workspace at {}: {error}",
+            workspace.display()
+        )
+    })?;
+    Ok(workspace.to_string_lossy().into_owned())
 }
 
-fn select_fresh_startup_target(
-    home_cwd: String,
-    latest_session: Option<(String, String)>,
-) -> (String, Option<String>) {
-    let cwd = latest_session
-        .map(|(session_cwd, _session_path)| session_cwd)
-        .unwrap_or(home_cwd);
-    (cwd, None)
+fn select_fresh_startup_target(managed_default_cwd: String) -> (String, Option<String>) {
+    (managed_default_cwd, None)
 }
 
 fn native_runtime_enabled() -> bool {
@@ -839,17 +880,13 @@ fn native_runtime_enabled() -> bool {
 }
 
 fn setup_native_runtime(app: &mut tauri::App, static_dir: PathBuf) -> Result<(), String> {
-    let home_cwd = dirs::home_dir()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .into_owned();
-    let (cwd, session_path) =
-        select_fresh_startup_target(home_cwd, find_latest_session_boot_target());
-    let metadata_path = app
+    let app_data_dir = app
         .path()
         .app_data_dir()
-        .map_err(|error| format!("Cannot resolve Picot app data directory: {error}"))?
-        .join("picot.sqlite3");
+        .map_err(|error| format!("Cannot resolve Picode app data directory: {error}"))?;
+    let (cwd, session_path) =
+        select_fresh_startup_target(prepare_managed_default_workspace(&app_data_dir)?);
+    let metadata_path = app_data_dir.join("picot.sqlite3");
     let mut metadata = MetadataStore::open(&metadata_path)?;
     let workspace_id = metadata.workspace_id_for_path(std::path::Path::new(&cwd))?;
     let session_id = format!("temporary-{}", uuid::Uuid::new_v4().simple());
@@ -887,15 +924,16 @@ fn setup_native_runtime(app: &mut tauri::App, static_dir: PathBuf) -> Result<(),
 
 #[tauri::command]
 async fn cmd_retry_startup(
+    app: AppHandle,
     manager: State<'_, PiManagerState>,
     broker: State<'_, BrokerWsState>,
 ) -> Result<u16, String> {
-    let home_cwd = dirs::home_dir()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .to_string();
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Cannot resolve Picode app data directory: {error}"))?;
     let (cwd, session_path) =
-        select_fresh_startup_target(home_cwd, find_latest_session_boot_target());
+        select_fresh_startup_target(prepare_managed_default_workspace(&app_data_dir)?);
     // Mirror the main setup hook: never adopt a port we don't own. Always
     // claim a fresh one so the resulting pi is driveable via our PiManager.
     let initial_port = manager.next_port();
@@ -1126,13 +1164,35 @@ async fn discover_provider_models(
     Err(last_error)
 }
 
+// Account handoff crosses binding, runtime, task, and extension ownership by
+// design; each dependency is explicit so unrelated providers remain isolated.
+#[allow(clippy::too_many_arguments)]
 fn suspend_bound_account_tasks(
     bindings: &AccountBindingStore,
     manager: &PiManager,
     broker: &BrokerWs,
+    task_control: &TaskControlState,
+    extension_service: &ExtensionService,
     logical_provider: &str,
     account_id: &str,
+    replacement_account_id: Option<&str>,
 ) {
+    let affected_tasks: std::collections::BTreeSet<String> = task_control
+        .lock()
+        .map(|control| {
+            control
+                .snapshot()
+                .agent_runs
+                .into_iter()
+                .filter(|run| {
+                    run.provider == logical_provider
+                        && run.account_id == account_id
+                        && !run.state.is_terminal()
+                })
+                .map(|run| run.task_id)
+                .collect()
+        })
+        .unwrap_or_default();
     match bindings.suspend_account(logical_provider, account_id) {
         Ok(suspended_sessions) => {
             for session_id in suspended_sessions {
@@ -1161,6 +1221,175 @@ fn suspend_bound_account_tasks(
             }
         }
     }
+    let task_result = task_control
+        .lock()
+        .map_err(|_| "Task Control lock is poisoned".to_owned())
+        .and_then(|mut control| match replacement_account_id {
+            Some(replacement) => control.handoff_account(logical_provider, account_id, replacement),
+            None => control
+                .deactivate_account(logical_provider, account_id)
+                .map(|_| ()),
+        });
+    if let Err(error) = task_result {
+        log::debug!(
+            "[accounts] no durable Picode task required account suspension: {}",
+            error
+        );
+    }
+    for task_id in affected_tasks {
+        if let Err(error) = extension_service.cancel_task_processes(&task_id) {
+            log::warn!(
+                "[accounts] failed to stop task extensions for {}: {}",
+                task_id,
+                error
+            );
+        }
+    }
+}
+
+fn unix_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+fn install_task_runtime_observer(
+    broker: &Arc<BrokerWs>,
+    manager: Arc<PiManager>,
+    task_control: TaskControlState,
+    extension_service: ExtensionServiceState,
+) {
+    let event_manager = manager.clone();
+    let event_control = task_control.clone();
+    let event_broker = broker.clone();
+    let event_extensions = extension_service.clone();
+    broker.set_upstream_event_observer(Arc::new(move |source_port, payload| {
+        let Some(process_id) = event_manager.process_id(source_port) else {
+            return;
+        };
+        let session_id = payload
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .or_else(|| payload.get("sessionFile").and_then(Value::as_str));
+        let result = event_control
+            .lock()
+            .map_err(|_| "Task Control lock is poisoned".to_owned())
+            .and_then(|mut control| {
+                control.observe_pi_event(source_port, process_id, session_id, &payload)
+            });
+        match result {
+            Ok(Some(run)) if run.parent_id.is_some() && run.state.is_terminal() => {
+                let _ = event_extensions.cancel_agent_processes(&run.id);
+                let parent = event_control.lock().ok().and_then(|control| {
+                    control
+                        .snapshot()
+                        .agent_runs
+                        .into_iter()
+                        .find(|candidate| Some(candidate.id.as_str()) == run.parent_id.as_deref())
+                });
+                if let Some(parent) = parent.filter(|parent| !parent.state.is_terminal()) {
+                    let summary = extract_subagent_candidate(&payload);
+                    let advisory = event_extensions
+                        .complete_advisory_for_process(source_port, &run.id, &summary)
+                        .ok()
+                        .flatten();
+                    let message = match advisory {
+                        Some(advisory) => format!(
+                            "<picode-advisory-candidate advisoryId=\"{}\" childRunId=\"{}\">\nRole: {}\nModel: {}\n{}\n</picode-advisory-candidate>\nThis is a bounded read-only opinion, not evidence. Resolve conflicts yourself or ask the user.",
+                            advisory.id, run.id, advisory.role, advisory.model, summary
+                        ),
+                        None => format!(
+                            "<picode-subagent-candidate childRunId=\"{}\">\n{}\n</picode-subagent-candidate>\nReview this candidate against the parent task and effective Harness. Child completion is not verification.",
+                            run.id, summary
+                        ),
+                    };
+                    if let Err(error) = event_broker.send_command_to_port(
+                        parent.source_port,
+                        serde_json::json!({ "type": "follow_up", "message": message }),
+                    ) {
+                        log::warn!("[runtime] could not return Subagent candidate: {}", error);
+                    }
+                }
+                event_manager.kill(source_port);
+                event_broker.unregister_port(source_port);
+            }
+            Ok(Some(run)) if run.state.is_terminal() => {
+                let _ = event_extensions.cancel_agent_processes(&run.id);
+            }
+            Ok(_) => {}
+            Err(error) => {
+                log::warn!("[runtime] could not observe Pi event: {}", error);
+            }
+        }
+    }));
+
+    tauri::async_runtime::spawn(async move {
+        let mut sampler = ProcessSampler::default();
+        let mut interval = tokio::time::interval(Duration::from_secs(2));
+        loop {
+            interval.tick().await;
+            let runs = match task_control.lock() {
+                Ok(control) => control.snapshot().agent_runs,
+                Err(_) => continue,
+            };
+            for run in runs.into_iter().filter(|run| !run.state.is_terminal()) {
+                let at = unix_millis();
+                let owned = manager.owns_process(run.source_port, run.process_id);
+                let sample = if owned {
+                    sampler.sample(run.process_id, at).ok().map(|metric| {
+                        runtime_registry::ResourceSample {
+                            at: metric.at,
+                            cpu_percent: metric.cpu_percent,
+                            memory_bytes: metric.memory_bytes,
+                            uptime_ms: metric.uptime_ms,
+                            attribution: metric.attribution,
+                        }
+                    })
+                } else {
+                    None
+                };
+                if let Ok(mut control) = task_control.lock() {
+                    if let Err(error) = control.sample_agent(&run.id, sample, owned, at) {
+                        log::warn!("[runtime] sample rejected for {}: {}", run.id, error);
+                    }
+                }
+            }
+        }
+    });
+}
+
+fn extract_subagent_candidate(payload: &Value) -> String {
+    let event = payload.get("event").unwrap_or(payload);
+    let mut last = None;
+    if let Some(messages) = event.get("messages").and_then(Value::as_array) {
+        for message in messages {
+            if message.get("role").and_then(Value::as_str) != Some("assistant") {
+                continue;
+            }
+            let content = message.get("content");
+            let text = match content {
+                Some(Value::String(text)) => text.clone(),
+                Some(Value::Array(blocks)) => blocks
+                    .iter()
+                    .filter(|block| block.get("type").and_then(Value::as_str) == Some("text"))
+                    .filter_map(|block| block.get("text").and_then(Value::as_str))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                _ => String::new(),
+            };
+            if !text.trim().is_empty() {
+                last = Some(text);
+            }
+        }
+    }
+    let mut result =
+        last.unwrap_or_else(|| "Subagent ended without a textual candidate result.".into());
+    if result.len() > 32 * 1024 {
+        result.truncate(32 * 1024);
+        result.push_str("\n… bounded by Picode");
+    }
+    result
 }
 
 fn notify_pi_account_reload(manager: &PiManager, broker: &BrokerWs) {
@@ -1183,6 +1412,9 @@ fn notify_pi_account_reload(manager: &PiManager, broker: &BrokerWs) {
 /// regardless of transport. Native ops (folder picker, devtools, updater,
 /// open-in-app/external) require an OS host and are only meaningful when this
 /// handler is installed — which is exactly what `capabilities.native` advertises.
+// This is the application composition root for the local broker. Keeping the
+// owned services explicit makes its security boundary auditable.
+#[allow(clippy::too_many_arguments)]
 fn install_control_handler(
     broker: &Arc<BrokerWs>,
     manager: Arc<PiManager>,
@@ -1190,6 +1422,13 @@ fn install_control_handler(
     bindings: Arc<AccountBindingStore>,
     chat_data: ChatDataServices,
     auth_sync: Arc<PiAuthSynchronizer>,
+    task_control: TaskControlState,
+    harness_service: Arc<HarnessService>,
+    capability_service: CapabilityServiceState,
+    orchestration_service: OrchestrationServiceState,
+    extension_service: ExtensionServiceState,
+    secret_store: SecretStoreState,
+    scratch_root: PathBuf,
     app: AppHandle,
 ) {
     let broker_for_handler = broker.clone();
@@ -1206,6 +1445,13 @@ fn install_control_handler(
             let chat_backup = chat_data.backup.clone();
             let context_compression = chat_data.compression.clone();
             let auth_sync = auth_sync.clone();
+            let task_control = task_control.clone();
+            let harness_service = harness_service.clone();
+            let capability_service = capability_service.clone();
+            let orchestration_service = orchestration_service.clone();
+            let extension_service = extension_service.clone();
+            let secret_store = secret_store.clone();
+            let scratch_root = scratch_root.clone();
             let app = app.clone();
             Box::pin(async move {
                 let arg = |key: &str| args.get(key).cloned().unwrap_or(Value::Null);
@@ -1229,6 +1475,8 @@ fn install_control_handler(
                     | "chat_prepare_prompt"
                     | "chat_migration_scan"
                     | "chat_migration_import"
+                    | "chat_migration_context_open"
+                    | "chat_migration_context_page"
                     | "chat_backup_scan"
                     | "chat_backup_pick_save"
                     | "chat_backup_pick_open"
@@ -1239,6 +1487,55 @@ fn install_control_handler(
                     | "context_compression_review"
                     | "context_compression_pick_save"
                     | "context_compression_create"
+                    | "task_snapshot"
+                    | "task_create_simple"
+                    | "task_register_workspace"
+                    | "task_bind_workspace"
+                    | "task_create_harness"
+                    | "task_start"
+                    | "task_continue"
+                    | "agent_cancel"
+                    | "harness_review"
+                    | "harness_confirm"
+                    | "harness_run_action"
+                    | "capability_snapshot"
+                    | "capability_set_opt_in"
+                    | "capability_search"
+                    | "capability_refresh_index"
+                    | "capability_search_code"
+                    | "background_job_start"
+                    | "background_job_cancel"
+                    | "task_graph_save"
+                    | "task_checkpoint"
+                    | "subagent_spawn"
+                    | "subagent_policy_set"
+                    | "subagent_policy_get"
+                    | "git_snapshot"
+                    | "git_worktree_create"
+                    | "git_worktree_review"
+                    | "extension_install"
+                    | "extension_migrate"
+                    | "extension_set_enabled"
+                    | "extension_start"
+                    | "extension_cancel"
+                    | "external_import_preview"
+                    | "external_import_apply"
+                    | "external_import_activate"
+                    | "mcp_import_preview"
+                    | "mcp_import_apply"
+                    | "mcp_start"
+                    | "mcp_activate"
+                    | "adapter_register"
+                    | "adapter_set_enabled"
+                    | "adapter_discover"
+                    | "dap_launch"
+                    | "dap_record_event"
+                    | "extension_cancel_task"
+                    | "diagnostic_add"
+                    | "advisory_request"
+                    | "advisory_complete"
+                    | "regression_record"
+                    | "regression_compare"
                         if !local_client =>
                     {
                         Err(
@@ -1275,7 +1572,7 @@ fn install_control_handler(
                             .map(str::to_string)
                             .collect();
                         let activate_candidate_id = arg_str("activateCandidateId");
-                        let result = accounts.apply(
+                        let mut result = accounts.apply(
                             &preview_id,
                             &candidate_ids,
                             activate_candidate_id.as_deref(),
@@ -1284,6 +1581,23 @@ fn install_control_handler(
                             let active = accounts
                                 .active_account(&result.provider)?
                                 .ok_or("The activated account was not found in the vault")?;
+                            if active.provider == "cursor" {
+                                if let Err(error) =
+                                    manager.ensure_cursor_integration(&active.metadata)
+                                {
+                                    if let Err(rollback_error) = accounts.restore_active_account(
+                                        &result.provider,
+                                        result.previous_active_account_id.as_deref(),
+                                    ) {
+                                        log::error!(
+                                            "[accounts] failed to restore the previous active account after Cursor integration setup failure: {}",
+                                            rollback_error
+                                        );
+                                    }
+                                    return Err(error);
+                                }
+                                result.restart_required = true;
+                            }
                             if let Err(error) =
                                 auth_sync.activate(&active, &result.deactivated_pi_providers)
                             {
@@ -1309,8 +1623,11 @@ fn install_control_handler(
                                     &bindings,
                                     &manager,
                                     &broker,
+                                    &task_control,
+                                    &extension_service,
                                     &result.provider,
                                     previous_account_id,
+                                    result.active_account_id.as_deref(),
                                 );
                             }
                             notify_pi_account_reload(&manager, &broker);
@@ -1321,10 +1638,26 @@ fn install_control_handler(
                     }
                     "account_activate" => {
                         let account_id = arg_str("accountId").ok_or("accountId is required")?;
-                        let result = accounts.activate_stored(&account_id)?;
+                        let mut result = accounts.activate_stored(&account_id)?;
                         let active = accounts
                             .active_account(&result.provider)?
                             .ok_or("The activated account was not found in the vault")?;
+                        if active.provider == "cursor" {
+                            if let Err(error) = manager.ensure_cursor_integration(&active.metadata)
+                            {
+                                if let Err(rollback_error) = accounts.restore_active_account(
+                                    &result.provider,
+                                    result.previous_active_account_id.as_deref(),
+                                ) {
+                                    log::error!(
+                                        "[accounts] failed to restore the previous active account after Cursor integration setup failure: {}",
+                                        rollback_error
+                                    );
+                                }
+                                return Err(error);
+                            }
+                            result.restart_required = true;
+                        }
                         if let Err(error) =
                             auth_sync.activate(&active, &result.deactivated_pi_providers)
                         {
@@ -1348,8 +1681,11 @@ fn install_control_handler(
                                 &bindings,
                                 &manager,
                                 &broker,
+                                &task_control,
+                                &extension_service,
                                 &result.provider,
                                 previous_account_id,
+                                Some(&result.active_account_id),
                             );
                         }
                         notify_pi_account_reload(&manager, &broker);
@@ -1375,8 +1711,11 @@ fn install_control_handler(
                             &bindings,
                             &manager,
                             &broker,
+                            &task_control,
+                            &extension_service,
                             &result.provider,
                             &result.deactivated_account_id,
+                            None,
                         );
                         notify_pi_account_reload(&manager, &broker);
                         serde_json::to_value(result)
@@ -1392,13 +1731,63 @@ fn install_control_handler(
                             .map(|account| (account.provider.as_str(), account.id.as_str()));
                         let confirmed = message.trim() == "继续"
                             || message.trim().eq_ignore_ascii_case("continue");
-                        serde_json::to_value(bindings.prepare_prompt(
+                        let decision = bindings.prepare_prompt(
                             &session_id,
                             &pi_provider,
                             active_ref,
                             confirmed,
-                        )?)
-                        .map_err(|error| format!("Cannot encode chat account binding: {error}"))
+                        )?;
+                        if decision.allowed {
+                            if let Some(task_id) = arg_str("taskId") {
+                                let model = arg_str("model")
+                                    .ok_or("model is required for a task prompt")?;
+                                let source_port = arg_u16("sourcePort")
+                                    .ok_or("sourcePort is required for a task prompt")?;
+                                let provider =
+                                    decision.logical_provider.as_deref().unwrap_or(&pi_provider);
+                                let account_id =
+                                    decision.account_id.as_deref().unwrap_or("unmanaged");
+                                let (kind, workspace) = {
+                                    let mut control = task_control
+                                        .lock()
+                                        .map_err(|_| "Task Control lock is poisoned".to_owned())?;
+                                    let kind = control.task_kind(&task_id)?;
+                                    let workspace = control.task_workspace(&task_id).ok();
+                                    control.activate_prompt(
+                                        &task_id,
+                                        &session_id,
+                                        provider,
+                                        account_id,
+                                        &pi_provider,
+                                        &model,
+                                        source_port,
+                                        confirmed,
+                                    )?;
+                                    (kind, workspace)
+                                };
+                                let context = capability_service
+                                    .lock()
+                                    .map_err(|_| "Capability Service lock is poisoned".to_owned())?
+                                    .prepare_task(&task_id, kind, workspace.as_deref())?;
+                                broker.send_command_to_port(
+                                    source_port,
+                                    serde_json::json!({
+                                        "type": "picode_task_context",
+                                        "context": context,
+                                    }),
+                                )?;
+                            } else if let Some(source_port) = arg_u16("sourcePort") {
+                                broker.send_command_to_port(
+                                    source_port,
+                                    serde_json::json!({
+                                        "type": "picode_task_context",
+                                        "context": Value::Null,
+                                    }),
+                                )?;
+                            }
+                        }
+                        serde_json::to_value(decision)
+                            .map_err(|error| format!("Cannot encode chat account binding: {error}"))
                     }
                     "chat_migration_scan" => {
                         let sources: Vec<String> = args
@@ -1431,12 +1820,46 @@ fn install_control_handler(
                                 value.as_str().map(|value| (key.clone(), value.to_string()))
                             })
                             .collect();
+                        let include_reasoning = args
+                            .get("includeReasoning")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false);
                         serde_json::to_value(chat_migration.import_selected(
                             &scan_id,
                             &selected_ids,
                             &workspace_bindings,
+                            include_reasoning,
                         )?)
                         .map_err(|error| format!("Cannot encode chat import result: {error}"))
+                    }
+                    "chat_migration_context_open" => {
+                        let scan_id = arg_str("scanId").ok_or("scanId is required")?;
+                        let candidate_id =
+                            arg_str("candidateId").ok_or("candidateId is required")?;
+                        let port = arg_u16("port").ok_or("port is required")?;
+                        let candidate =
+                            chat_migration.candidate_summary(&scan_id, &candidate_id)?;
+                        open_chat_context_window(
+                            &app,
+                            port,
+                            &broker.url(),
+                            &scan_id,
+                            &candidate_id,
+                            &candidate.title,
+                        )?;
+                        Ok(Value::Bool(true))
+                    }
+                    "chat_migration_context_page" => {
+                        let scan_id = arg_str("scanId").ok_or("scanId is required")?;
+                        let candidate_id =
+                            arg_str("candidateId").ok_or("candidateId is required")?;
+                        let cursor = arg_str("cursor");
+                        serde_json::to_value(chat_migration.context_page(
+                            &scan_id,
+                            &candidate_id,
+                            cursor.as_deref(),
+                        )?)
+                        .map_err(|error| format!("Cannot encode chat context page: {error}"))
                     }
                     "chat_backup_scan" => serde_json::to_value(chat_backup.scan_sessions()?)
                         .map_err(|error| format!("Cannot encode chat-backup scan: {error}")),
@@ -1559,6 +1982,974 @@ fn install_control_handler(
                                 .await?,
                         )
                         .map_err(|error| format!("Cannot encode context-package result: {error}"))
+                    }
+                    "task_snapshot" => {
+                        let control = task_control
+                            .lock()
+                            .map_err(|_| "Task Control lock is poisoned".to_owned())?;
+                        let mut value =
+                            serde_json::to_value(control.snapshot()).map_err(|error| {
+                                format!("Cannot encode Task Control snapshot: {error}")
+                            })?;
+                        let orchestration = serde_json::to_value(orchestration_service.snapshot())
+                            .map_err(|error| {
+                                format!("Cannot encode Orchestration snapshot: {error}")
+                            })?;
+                        if let Some(object) = value.as_object_mut() {
+                            object.insert("orchestration".into(), orchestration);
+                            object.insert(
+                                "extensions".into(),
+                                serde_json::to_value(extension_service.snapshot()).map_err(
+                                    |error| format!("Cannot encode Extension snapshot: {error}"),
+                                )?,
+                            );
+                        }
+                        Ok(value)
+                    }
+                    "task_create_simple" => {
+                        let chat_id = arg_str("chatId").ok_or("chatId is required")?;
+                        let goal = arg_str("goal").unwrap_or_default();
+                        let mut control = task_control
+                            .lock()
+                            .map_err(|_| "Task Control lock is poisoned".to_owned())?;
+                        serde_json::to_value(control.create_simple(
+                            &chat_id,
+                            &goal,
+                            &scratch_root,
+                        )?)
+                        .map_err(|error| format!("Cannot encode Simple Task: {error}"))
+                    }
+                    "task_register_workspace" => {
+                        let source_platform =
+                            arg_str("sourcePlatform").ok_or("sourcePlatform is required")?;
+                        let source_path = arg_str("sourcePath").ok_or("sourcePath is required")?;
+                        let local_path = arg_str("localPath").map(PathBuf::from);
+                        let mut control = task_control
+                            .lock()
+                            .map_err(|_| "Task Control lock is poisoned".to_owned())?;
+                        serde_json::to_value(control.register_workspace(
+                            &source_platform,
+                            &source_path,
+                            local_path.as_deref(),
+                        )?)
+                        .map_err(|error| format!("Cannot encode Workspace Identity: {error}"))
+                    }
+                    "task_bind_workspace" => {
+                        let workspace_id =
+                            arg_str("workspaceId").ok_or("workspaceId is required")?;
+                        let local_path = arg_str("localPath").ok_or("localPath is required")?;
+                        task_control
+                            .lock()
+                            .map_err(|_| "Task Control lock is poisoned".to_owned())?
+                            .bind_workspace(&workspace_id, std::path::Path::new(&local_path))?;
+                        Ok(Value::Null)
+                    }
+                    "task_create_harness" => {
+                        let chat_id = arg_str("chatId").ok_or("chatId is required")?;
+                        let goal = arg_str("goal").unwrap_or_default();
+                        let workspace_id =
+                            arg_str("workspaceId").ok_or("workspaceId is required")?;
+                        let mut control = task_control
+                            .lock()
+                            .map_err(|_| "Task Control lock is poisoned".to_owned())?;
+                        serde_json::to_value(control.create_harness(
+                            &chat_id,
+                            &goal,
+                            &workspace_id,
+                        )?)
+                        .map_err(|error| format!("Cannot encode Harness Task: {error}"))
+                    }
+                    "task_start" => {
+                        let task_id = arg_str("taskId").ok_or("taskId is required")?;
+                        let provider = arg_str("provider").ok_or("provider is required")?;
+                        let account_id = arg_str("accountId").ok_or("accountId is required")?;
+                        let channel = arg_str("channel").ok_or("channel is required")?;
+                        let model = arg_str("model").ok_or("model is required")?;
+                        task_control
+                            .lock()
+                            .map_err(|_| "Task Control lock is poisoned".to_owned())?
+                            .start_task(&task_id, &provider, &account_id, &channel, &model)?;
+                        Ok(Value::Null)
+                    }
+                    "task_continue" => {
+                        let task_id = arg_str("taskId").ok_or("taskId is required")?;
+                        let continue_command = arg_str("command").ok_or("command is required")?;
+                        let provider = arg_str("provider").ok_or("provider is required")?;
+                        let account_id = arg_str("accountId").ok_or("accountId is required")?;
+                        let channel = arg_str("channel").ok_or("channel is required")?;
+                        let model = arg_str("model").ok_or("model is required")?;
+                        task_control
+                            .lock()
+                            .map_err(|_| "Task Control lock is poisoned".to_owned())?
+                            .continue_task(
+                                &task_id,
+                                &continue_command,
+                                &provider,
+                                &account_id,
+                                &channel,
+                                &model,
+                            )?;
+                        Ok(Value::Null)
+                    }
+                    "agent_cancel" => {
+                        let run_id = arg_str("runId").ok_or("runId is required")?;
+                        let target = task_control
+                            .lock()
+                            .map_err(|_| "Task Control lock is poisoned".to_owned())?
+                            .cancel_target(&run_id)?;
+                        if !manager.owns_process(target.source_port, target.process_id) {
+                            return Err(
+                                "the selected Agent Run no longer owns that Pi process".into()
+                            );
+                        }
+                        manager
+                            .send_rpc(target.source_port, serde_json::json!({ "type": "abort" }))?;
+                        task_control
+                            .lock()
+                            .map_err(|_| "Task Control lock is poisoned".to_owned())?
+                            .cancel_agent(&run_id, "cancelled from Runtime Monitor")?;
+                        extension_service.cancel_agent_processes(&run_id)?;
+                        Ok(Value::Null)
+                    }
+                    "harness_review" => {
+                        let task_id = arg_str("taskId").ok_or("taskId is required")?;
+                        let workspace = task_control
+                            .lock()
+                            .map_err(|_| "Task Control lock is poisoned".to_owned())?
+                            .task_workspace(&task_id)?;
+                        serde_json::to_value(harness_service.review(&task_id, &workspace)?)
+                            .map_err(|error| format!("Cannot encode Harness review: {error}"))
+                    }
+                    "harness_confirm" => {
+                        let task_id = arg_str("taskId").ok_or("taskId is required")?;
+                        let selected_ids: Vec<String> = args
+                            .get("selectedIds")
+                            .and_then(Value::as_array)
+                            .ok_or("selectedIds must be an array")?
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_owned)
+                            .collect();
+                        let workspace = task_control
+                            .lock()
+                            .map_err(|_| "Task Control lock is poisoned".to_owned())?
+                            .task_workspace(&task_id)?;
+                        serde_json::to_value(harness_service.confirm_profile(
+                            &task_id,
+                            &workspace,
+                            &selected_ids,
+                        )?)
+                        .map_err(|error| format!("Cannot encode confirmed Harness: {error}"))
+                    }
+                    "harness_run_action" => {
+                        let task_id = arg_str("taskId").ok_or("taskId is required")?;
+                        let action_id = arg_str("actionId").ok_or("actionId is required")?;
+                        let parameters: std::collections::BTreeMap<String, String> = args
+                            .get("parameters")
+                            .and_then(Value::as_object)
+                            .map(|values| {
+                                values
+                                    .iter()
+                                    .filter_map(|(key, value)| {
+                                        value.as_str().map(|value| (key.clone(), value.to_owned()))
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        let workspace = task_control
+                            .lock()
+                            .map_err(|_| "Task Control lock is poisoned".to_owned())?
+                            .task_workspace(&task_id)?;
+                        let result = harness_service
+                            .run_action(
+                                &task_id,
+                                &workspace,
+                                &action_id,
+                                &parameters,
+                                arg_bool("riskApproved").unwrap_or(false),
+                            )
+                            .await?;
+                        task_control
+                            .lock()
+                            .map_err(|_| "Task Control lock is poisoned".to_owned())?
+                            .record_evidence_ref(&task_id, &result.evidence.id)?;
+                        serde_json::to_value(result)
+                            .map_err(|error| format!("Cannot encode Harness result: {error}"))
+                    }
+                    "capability_snapshot" => serde_json::to_value(
+                        capability_service
+                            .lock()
+                            .map_err(|_| "Capability Service lock is poisoned".to_owned())?
+                            .snapshot(),
+                    )
+                    .map_err(|error| format!("Cannot encode Capability snapshot: {error}")),
+                    "capability_set_opt_in" => {
+                        let task_id = arg_str("taskId").ok_or("taskId is required")?;
+                        let enabled = arg_bool("enabled").ok_or("enabled is required")?;
+                        capability_service
+                            .lock()
+                            .map_err(|_| "Capability Service lock is poisoned".to_owned())?
+                            .set_catalog_opt_in(&task_id, enabled)?;
+                        Ok(Value::Null)
+                    }
+                    "capability_search" => {
+                        let task_id = arg_str("taskId").ok_or("taskId is required")?;
+                        let query = arg_str("query").ok_or("query is required")?;
+                        let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(8) as usize;
+                        let kind = task_control
+                            .lock()
+                            .map_err(|_| "Task Control lock is poisoned".to_owned())?
+                            .task_kind(&task_id)?;
+                        serde_json::to_value(
+                            capability_service
+                                .lock()
+                                .map_err(|_| "Capability Service lock is poisoned".to_owned())?
+                                .search(&task_id, kind, &query, limit)?,
+                        )
+                        .map_err(|error| format!("Cannot encode Capability search: {error}"))
+                    }
+                    "capability_refresh_index" => {
+                        let task_id = arg_str("taskId").ok_or("taskId is required")?;
+                        let workspace = task_control
+                            .lock()
+                            .map_err(|_| "Task Control lock is poisoned".to_owned())?
+                            .task_workspace(&task_id)?;
+                        let count = capability_service
+                            .lock()
+                            .map_err(|_| "Capability Service lock is poisoned".to_owned())?
+                            .refresh_index(&task_id, &workspace)?;
+                        Ok(serde_json::json!({ "indexedFiles": count }))
+                    }
+                    "capability_search_code" => {
+                        let task_id = arg_str("taskId").ok_or("taskId is required")?;
+                        let query = arg_str("query").ok_or("query is required")?;
+                        let limit =
+                            args.get("limit").and_then(Value::as_u64).unwrap_or(20) as usize;
+                        serde_json::to_value(
+                            capability_service
+                                .lock()
+                                .map_err(|_| "Capability Service lock is poisoned".to_owned())?
+                                .search_code(&task_id, &query, limit)?,
+                        )
+                        .map_err(|error| format!("Cannot encode code search: {error}"))
+                    }
+                    "background_job_start" => {
+                        let task_id = arg_str("taskId").ok_or("taskId is required")?;
+                        let agent_run_id = arg_str("agentRunId").ok_or("agentRunId is required")?;
+                        let executable = arg_str("executable").ok_or("executable is required")?;
+                        let arguments: Vec<String> = args
+                            .get("arguments")
+                            .and_then(Value::as_array)
+                            .ok_or("arguments must be an array")?
+                            .iter()
+                            .map(|value| {
+                                value
+                                    .as_str()
+                                    .map(str::to_owned)
+                                    .ok_or("every background job argument must be a string")
+                            })
+                            .collect::<Result<_, _>>()?;
+                        let timeout_ms = args
+                            .get("timeoutMs")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(30 * 60 * 1000);
+                        let cwd = {
+                            let control = task_control
+                                .lock()
+                                .map_err(|_| "Task Control lock is poisoned".to_owned())?;
+                            control.validate_agent_run(&agent_run_id, &task_id)?;
+                            control.task_working_dir(&task_id)?
+                        };
+                        serde_json::to_value(orchestration_service.start_job(
+                            &task_id,
+                            &agent_run_id,
+                            std::path::Path::new(&executable),
+                            &arguments,
+                            &cwd,
+                            Duration::from_millis(timeout_ms),
+                        )?)
+                        .map_err(|error| format!("Cannot encode background job: {error}"))
+                    }
+                    "background_job_cancel" => {
+                        let job_id = arg_str("jobId").ok_or("jobId is required")?;
+                        serde_json::to_value(orchestration_service.cancel_job(&job_id)?)
+                            .map_err(|error| format!("Cannot encode background job: {error}"))
+                    }
+                    "task_graph_save" => {
+                        let graph: TaskGraph = serde_json::from_value(
+                            args.get("graph").cloned().ok_or("graph is required")?,
+                        )
+                        .map_err(|error| format!("Invalid task graph: {error}"))?;
+                        orchestration_service.save_graph(&graph)?;
+                        Ok(Value::Null)
+                    }
+                    "task_checkpoint" => {
+                        let task_id = arg_str("taskId").ok_or("taskId is required")?;
+                        let goal = arg_str("goal").ok_or("goal is required")?;
+                        let constraints: Vec<String> = args
+                            .get("constraints")
+                            .and_then(Value::as_array)
+                            .ok_or("constraints must be an array")?
+                            .iter()
+                            .map(|value| {
+                                value
+                                    .as_str()
+                                    .map(str::to_owned)
+                                    .ok_or("every constraint must be a string")
+                            })
+                            .collect::<Result<_, _>>()?;
+                        let workspace_facts: std::collections::BTreeMap<String, String> =
+                            serde_json::from_value(
+                                args.get("workspaceFacts")
+                                    .cloned()
+                                    .unwrap_or_else(|| serde_json::json!({})),
+                            )
+                            .map_err(|error| format!("Invalid workspace facts: {error}"))?;
+                        let constraint_refs: Vec<&str> =
+                            constraints.iter().map(String::as_str).collect();
+                        serde_json::to_value(orchestration_service.checkpoint(
+                            &task_id,
+                            &goal,
+                            &constraint_refs,
+                            workspace_facts,
+                            &[],
+                        )?)
+                        .map_err(|error| format!("Cannot encode checkpoint: {error}"))
+                    }
+                    "subagent_policy_get" => {
+                        serde_json::to_value(orchestration_service.configured_subagent_policy())
+                            .map_err(|error| format!("Cannot encode Subagent policy: {error}"))
+                    }
+                    "subagent_policy_set" => {
+                        let policy: SubagentPolicyConfiguration = serde_json::from_value(
+                            args.get("policy").cloned().ok_or("policy is required")?,
+                        )
+                        .map_err(|error| format!("Invalid Subagent policy: {error}"))?;
+                        serde_json::to_value(orchestration_service.set_subagent_policy(policy)?)
+                            .map_err(|error| format!("Cannot encode Subagent policy: {error}"))
+                    }
+                    "subagent_spawn" => {
+                        let request: DelegationRequest = serde_json::from_value(
+                            args.get("request").cloned().ok_or("request is required")?,
+                        )
+                        .map_err(|error| format!("Invalid Subagent request: {error}"))?;
+                        let use_configured_policy =
+                            arg_bool("useConfiguredPolicy").unwrap_or(false);
+                        let decision = if use_configured_policy {
+                            orchestration_service.route_configured_subagent(
+                                &request.task_id,
+                                &request.parent_run_id,
+                                &request.work,
+                            )?
+                        } else {
+                            orchestration_service.route_subagent(&request)?
+                        };
+                        let advisory_spec = args
+                            .get("advisory")
+                            .map(|value| {
+                                let role = value
+                                    .get("role")
+                                    .and_then(Value::as_str)
+                                    .filter(|value| !value.trim().is_empty())
+                                    .ok_or("advisory.role is required")?
+                                    .to_owned();
+                                let context_bytes = value
+                                    .get("contextBytes")
+                                    .and_then(Value::as_u64)
+                                    .ok_or("advisory.contextBytes is required")?
+                                    as usize;
+                                let cost_limit_micros = value
+                                    .get("costLimitMicros")
+                                    .and_then(Value::as_u64)
+                                    .ok_or("advisory.costLimitMicros is required")?;
+                                Ok::<_, String>((role, context_bytes, cost_limit_micros))
+                            })
+                            .transpose()?;
+                        let (pi_provider, selected_model) = if use_configured_policy {
+                            decision
+                                .model_id
+                                .split_once('/')
+                                .map(|(provider, model)| (provider.to_owned(), model.to_owned()))
+                                .ok_or("configured Subagent model must be provider/model")?
+                        } else {
+                            (
+                                arg_str("piProvider").ok_or("piProvider is required")?,
+                                decision.model_id.clone(),
+                            )
+                        };
+                        let active = accounts.active_account_for_pi_provider(&pi_provider)?;
+                        let account_id = active
+                            .as_ref()
+                            .map(|account| account.id.as_str())
+                            .unwrap_or("unmanaged")
+                            .to_owned();
+                        let logical_provider = active
+                            .as_ref()
+                            .map(|account| account.provider.as_str())
+                            .unwrap_or(&pi_provider)
+                            .to_owned();
+                        let (cwd, kind) = {
+                            let control = task_control
+                                .lock()
+                                .map_err(|_| "Task Control lock is poisoned".to_owned())?;
+                            control.validate_delegation_parent(
+                                &request.parent_run_id,
+                                &request.task_id,
+                            )?;
+                            (
+                                control.task_working_dir(&request.task_id)?,
+                                control.task_kind(&request.task_id)?,
+                            )
+                        };
+                        let port = manager.next_port();
+                        manager.spawn_ephemeral(&cwd.to_string_lossy(), port)?;
+                        if let Err(error) = wait_for_pi_health(port, 15).await {
+                            manager.kill(port);
+                            return Err(error);
+                        }
+                        let advisory = (|| -> Result<_, String> {
+                            let Some((role, context_bytes, cost_limit_micros)) = advisory_spec
+                            else {
+                                return Ok(None);
+                            };
+                            let record = extension_service.request_advisory(
+                                &request.task_id,
+                                &role,
+                                &decision.model_id,
+                                context_bytes,
+                                cost_limit_micros,
+                                std::collections::BTreeSet::from(["read".into(), "search".into()]),
+                            )?;
+                            let bound =
+                                extension_service.bind_advisory_process(&record.id, port)?;
+                            Ok(Some(bound))
+                        })();
+                        let advisory = match advisory {
+                            Ok(record) => record,
+                            Err(error) => {
+                                manager.kill(port);
+                                return Err(error);
+                            }
+                        };
+                        let route_id = format!("picode-subagent:{}:{port}", request.task_id);
+                        broker.track_background_session(port, &route_id);
+                        let setup = (|| -> Result<(), String> {
+                            task_control
+                                .lock()
+                                .map_err(|_| "Task Control lock is poisoned".to_owned())?
+                                .activate_subagent_runtime(
+                                    &request.task_id,
+                                    &request.parent_run_id,
+                                    port,
+                                    &logical_provider,
+                                    &account_id,
+                                    &selected_model,
+                                )?;
+                            let context = capability_service
+                                .lock()
+                                .map_err(|_| "Capability Service lock is poisoned".to_owned())?
+                                .prepare_task(&request.task_id, kind, Some(&cwd))?;
+                            broker.send_command_to_port(
+                                port,
+                                serde_json::json!({ "type": "picode_task_context", "context": context }),
+                            )?;
+                            broker.send_command_to_port(
+                                port,
+                                serde_json::json!({
+                                    "type": "picode_subagent_context",
+                                    "parentRunId": request.parent_run_id,
+                                    "envelope": decision.envelope,
+                                }),
+                            )?;
+                            broker.send_command_to_port(
+                                port,
+                                serde_json::json!({
+                                    "type": "set_model",
+                                    "provider": pi_provider,
+                                    "modelId": selected_model,
+                                }),
+                            )?;
+                            broker.send_command_to_port(
+                                port,
+                                serde_json::json!({
+                                    "type": "prompt",
+                                    "message": decision.envelope.goal,
+                                }),
+                            )?;
+                            Ok(())
+                        })();
+                        if let Err(error) = setup {
+                            let _ = extension_service.fail_advisory_for_process(port, &error);
+                            manager.kill(port);
+                            broker.unregister_port(port);
+                            return Err(error);
+                        }
+                        Ok(
+                            serde_json::json!({ "port": port, "decision": decision, "advisory": advisory }),
+                        )
+                    }
+                    "git_snapshot" => {
+                        let task_id = arg_str("taskId").ok_or("taskId is required")?;
+                        let workspace = task_control
+                            .lock()
+                            .map_err(|_| "Task Control lock is poisoned".to_owned())?
+                            .task_workspace(&task_id)?;
+                        serde_json::to_value(orchestration_service.git_snapshot(&workspace)?)
+                            .map_err(|error| format!("Cannot encode Git snapshot: {error}"))
+                    }
+                    "git_worktree_create" => {
+                        let task_id = arg_str("taskId").ok_or("taskId is required")?;
+                        let base_ref = arg_str("baseRef").ok_or("baseRef is required")?;
+                        let branch = arg_str("branch").ok_or("branch is required")?;
+                        let target_path = arg_str("targetPath").ok_or("targetPath is required")?;
+                        let authorized = arg_bool("explicitlyAuthorized").unwrap_or(false);
+                        let workspace = task_control
+                            .lock()
+                            .map_err(|_| "Task Control lock is poisoned".to_owned())?
+                            .task_workspace(&task_id)?;
+                        serde_json::to_value(orchestration_service.create_safe_worktree(
+                            &task_id,
+                            &workspace,
+                            &base_ref,
+                            &branch,
+                            std::path::Path::new(&target_path),
+                            authorized,
+                        )?)
+                        .map_err(|error| format!("Cannot encode Safe Worktree: {error}"))
+                    }
+                    "git_worktree_review" => {
+                        let worktree_id = arg_str("worktreeId").ok_or("worktreeId is required")?;
+                        Ok(serde_json::json!({
+                            "review": orchestration_service.review_worktree(&worktree_id)?,
+                        }))
+                    }
+                    "extension_install" => {
+                        let manifest: ExtensionManifest = serde_json::from_value(
+                            args.get("manifest")
+                                .cloned()
+                                .ok_or("manifest is required")?,
+                        )
+                        .map_err(|error| format!("Invalid extension manifest: {error}"))?;
+                        extension_service.install(manifest)?;
+                        Ok(
+                            serde_json::to_value(extension_service.snapshot()).map_err(
+                                |error| format!("Cannot encode Extension snapshot: {error}"),
+                            )?,
+                        )
+                    }
+                    "extension_migrate" => {
+                        let extension_id =
+                            arg_str("extensionId").ok_or("extensionId is required")?;
+                        let manifest: ExtensionManifest = serde_json::from_value(
+                            args.get("manifest")
+                                .cloned()
+                                .ok_or("manifest is required")?,
+                        )
+                        .map_err(|error| format!("Invalid extension manifest: {error}"))?;
+                        extension_service.migrate(
+                            &extension_id,
+                            manifest,
+                            arg_bool("permissionExpansionApproved").unwrap_or(false),
+                        )?;
+                        Ok(
+                            serde_json::to_value(extension_service.snapshot()).map_err(
+                                |error| format!("Cannot encode Extension snapshot: {error}"),
+                            )?,
+                        )
+                    }
+                    "extension_set_enabled" => {
+                        let extension_id =
+                            arg_str("extensionId").ok_or("extensionId is required")?;
+                        let enabled = arg_bool("enabled").ok_or("enabled is required")?;
+                        extension_service.set_enabled(&extension_id, enabled)?;
+                        Ok(
+                            serde_json::to_value(extension_service.snapshot()).map_err(
+                                |error| format!("Cannot encode Extension snapshot: {error}"),
+                            )?,
+                        )
+                    }
+                    "extension_start" => {
+                        let extension_id =
+                            arg_str("extensionId").ok_or("extensionId is required")?;
+                        let task_id = arg_str("taskId").ok_or("taskId is required")?;
+                        let agent_run_id = arg_str("agentRunId").ok_or("agentRunId is required")?;
+                        let timeout = Duration::from_millis(
+                            args.get("timeoutMs")
+                                .and_then(Value::as_u64)
+                                .unwrap_or(30 * 60 * 1000),
+                        );
+                        let cwd = {
+                            let control = task_control
+                                .lock()
+                                .map_err(|_| "Task Control lock is poisoned".to_owned())?;
+                            control.validate_agent_run(&agent_run_id, &task_id)?;
+                            control.task_working_dir(&task_id)?
+                        };
+                        serde_json::to_value(extension_service.start_extension(
+                            &extension_id,
+                            &task_id,
+                            &agent_run_id,
+                            &cwd,
+                            timeout,
+                        )?)
+                        .map_err(|error| format!("Cannot encode Extension run: {error}"))
+                    }
+                    "extension_cancel" => {
+                        let run_id = arg_str("runId").ok_or("runId is required")?;
+                        serde_json::to_value(extension_service.cancel_run(&run_id)?)
+                            .map_err(|error| format!("Cannot encode Extension run: {error}"))
+                    }
+                    "external_import_preview" => {
+                        let source: ExternalSource = serde_json::from_value(
+                            args.get("source").cloned().ok_or("source is required")?,
+                        )
+                        .map_err(|error| format!("Invalid external import source: {error}"))?;
+                        let root = arg_str("root").ok_or("root is required")?;
+                        serde_json::to_value(
+                            extension_service
+                                .preview_external_import(source, std::path::Path::new(&root))?,
+                        )
+                        .map_err(|error| format!("Cannot encode external import preview: {error}"))
+                    }
+                    "external_import_apply" => {
+                        let preview_id = arg_str("previewId").ok_or("previewId is required")?;
+                        let candidate_ids: Vec<String> = serde_json::from_value(
+                            args.get("candidateIds")
+                                .cloned()
+                                .ok_or("candidateIds is required")?,
+                        )
+                        .map_err(|error| format!("Invalid external import selection: {error}"))?;
+                        let scope: ExtensionScope = serde_json::from_value(
+                            args.get("scope").cloned().ok_or("scope is required")?,
+                        )
+                        .map_err(|error| format!("Invalid extension scope: {error}"))?;
+                        serde_json::to_value(extension_service.apply_external_import(
+                            &preview_id,
+                            &candidate_ids,
+                            scope,
+                        )?)
+                        .map_err(|error| format!("Cannot encode imported capabilities: {error}"))
+                    }
+                    "external_import_activate" => {
+                        let imported_id = arg_str("importedId").ok_or("importedId is required")?;
+                        let task_id = arg_str("taskId").ok_or("taskId is required")?;
+                        let source_port = arg_u16("sourcePort").ok_or("sourcePort is required")?;
+                        if manager.process_id(source_port).is_none() {
+                            return Err("sourcePort is not owned by this Picode instance".into());
+                        }
+                        let imported = extension_service.imported(&imported_id)?;
+                        let override_id = {
+                            let mut control = task_control
+                                .lock()
+                                .map_err(|_| "Task Control lock is poisoned".to_owned())?;
+                            control.validate_task_port(&task_id, source_port)?;
+                            control.add_import_override(
+                                &task_id,
+                                &format!("import:{}", imported.id),
+                                &format!(
+                                    "{:?}:{}",
+                                    imported.source,
+                                    imported.source_path.display()
+                                ),
+                            )?
+                        };
+                        let activation = extension_service.activate_import(
+                            &imported_id,
+                            &task_id,
+                            override_id,
+                        )?;
+                        let content = extension_service.imported_content(&imported_id)?;
+                        broker.send_command_to_port(
+                            source_port,
+                            serde_json::json!({
+                                "type": "picode_imported_capability",
+                                "importedId": imported.id,
+                                "taskId": task_id,
+                                "kind": imported.kind,
+                                "version": imported.version,
+                                "content": content,
+                            }),
+                        )?;
+                        Ok(serde_json::json!({
+                            "activation": activation,
+                            "kind": imported.kind,
+                            "version": imported.version,
+                        }))
+                    }
+                    "mcp_import_preview" => {
+                        let content = arg_str("content").ok_or("content is required")?;
+                        serde_json::to_value(extension_service.preview_mcp_json(&content)?)
+                            .map_err(|error| format!("Cannot encode MCP import preview: {error}"))
+                    }
+                    "mcp_import_apply" => {
+                        let preview_id = arg_str("previewId").ok_or("previewId is required")?;
+                        let selected: std::collections::BTreeMap<
+                            String,
+                            std::collections::BTreeMap<String, SecretReference>,
+                        > = serde_json::from_value(
+                            args.get("selected")
+                                .cloned()
+                                .ok_or("selected is required")?,
+                        )
+                        .map_err(|error| format!("Invalid MCP secret references: {error}"))?;
+                        let scope: ExtensionScope = serde_json::from_value(
+                            args.get("scope").cloned().ok_or("scope is required")?,
+                        )
+                        .map_err(|error| format!("Invalid extension scope: {error}"))?;
+                        serde_json::to_value(extension_service.apply_mcp_import(
+                            &preview_id,
+                            &selected,
+                            scope,
+                        )?)
+                        .map_err(|error| format!("Cannot encode MCP configurations: {error}"))
+                    }
+                    "mcp_start" => {
+                        let server_id = arg_str("serverId").ok_or("serverId is required")?;
+                        let task_id = arg_str("taskId").ok_or("taskId is required")?;
+                        let agent_run_id = arg_str("agentRunId").ok_or("agentRunId is required")?;
+                        let timeout = Duration::from_millis(
+                            args.get("timeoutMs")
+                                .and_then(Value::as_u64)
+                                .unwrap_or(30 * 60 * 1000),
+                        );
+                        let cwd = {
+                            let control = task_control
+                                .lock()
+                                .map_err(|_| "Task Control lock is poisoned".to_owned())?;
+                            control.validate_agent_run(&agent_run_id, &task_id)?;
+                            control.task_working_dir(&task_id)?
+                        };
+                        let secrets = secret_store
+                            .lock()
+                            .map_err(|_| "Secret Store lock is poisoned".to_owned())?;
+                        serde_json::to_value(extension_service.start_mcp(
+                            &server_id,
+                            &task_id,
+                            &agent_run_id,
+                            &cwd,
+                            timeout,
+                            &secrets,
+                        )?)
+                        .map_err(|error| format!("Cannot encode MCP run: {error}"))
+                    }
+                    "mcp_activate" => {
+                        let server_id = arg_str("serverId").ok_or("serverId is required")?;
+                        let task_id = arg_str("taskId").ok_or("taskId is required")?;
+                        let source_port = arg_u16("sourcePort").ok_or("sourcePort is required")?;
+                        if manager.process_id(source_port).is_none() {
+                            return Err("sourcePort is not owned by this Picode instance".into());
+                        }
+                        task_control
+                            .lock()
+                            .map_err(|_| "Task Control lock is poisoned".to_owned())?
+                            .validate_task_port(&task_id, source_port)?;
+                        let mut activation = {
+                            let secrets = secret_store
+                                .lock()
+                                .map_err(|_| "Secret Store lock is poisoned".to_owned())?;
+                            extension_service.prepare_mcp_client(&server_id, &task_id, &secrets)?
+                        };
+                        let payload = serde_json::json!({
+                            "type": "picode_mcp_context",
+                            "config": {
+                                "serverId": activation.server_id,
+                                "taskId": activation.task_id,
+                                "transport": activation.transport,
+                                "command": activation.command,
+                                "arguments": activation.arguments,
+                                "url": activation.url,
+                                "environment": activation.environment,
+                            }
+                        });
+                        broker.send_command_to_port(source_port, payload)?;
+                        activation
+                            .environment
+                            .values_mut()
+                            .for_each(Zeroize::zeroize);
+                        serde_json::to_value(
+                            extension_service.record_mcp_client_ready(&server_id, &task_id)?,
+                        )
+                        .map_err(|error| format!("Cannot encode MCP activation: {error}"))
+                    }
+                    "adapter_register" => {
+                        let adapter: ProjectAdapter = serde_json::from_value(
+                            args.get("adapter").cloned().ok_or("adapter is required")?,
+                        )
+                        .map_err(|error| format!("Invalid project adapter: {error}"))?;
+                        extension_service.register_adapter(adapter)?;
+                        Ok(Value::Null)
+                    }
+                    "adapter_set_enabled" => {
+                        let adapter_id = arg_str("adapterId").ok_or("adapterId is required")?;
+                        let enabled = arg_bool("enabled").ok_or("enabled is required")?;
+                        extension_service.set_adapter_enabled(&adapter_id, enabled)?;
+                        Ok(Value::Null)
+                    }
+                    "adapter_discover" => {
+                        let task_id = arg_str("taskId").ok_or("taskId is required")?;
+                        let workspace = task_control
+                            .lock()
+                            .map_err(|_| "Task Control lock is poisoned".to_owned())?
+                            .task_workspace(&task_id)?;
+                        serde_json::to_value(extension_service.active_adapters(&workspace)?)
+                            .map_err(|error| format!("Cannot encode project adapters: {error}"))
+                    }
+                    "dap_launch" => {
+                        let task_id = arg_str("taskId").ok_or("taskId is required")?;
+                        let agent_run_id = arg_str("agentRunId").ok_or("agentRunId is required")?;
+                        let config: DapLaunchConfig = serde_json::from_value(
+                            args.get("config").cloned().ok_or("config is required")?,
+                        )
+                        .map_err(|error| format!("Invalid DAP configuration: {error}"))?;
+                        let cwd = {
+                            let control = task_control
+                                .lock()
+                                .map_err(|_| "Task Control lock is poisoned".to_owned())?;
+                            control.validate_agent_run(&agent_run_id, &task_id)?;
+                            if control.task_kind(&task_id)? != execution::TaskKind::Harness {
+                                return Err("DAP is available only to Harness Tasks".into());
+                            }
+                            control.task_workspace(&task_id)?
+                        };
+                        serde_json::to_value(
+                            extension_service.launch_dap(
+                                &task_id,
+                                &agent_run_id,
+                                &cwd,
+                                config,
+                                arg_bool("explicitlyAuthorized").unwrap_or(false),
+                                Duration::from_millis(
+                                    args.get("timeoutMs")
+                                        .and_then(Value::as_u64)
+                                        .unwrap_or(30 * 60 * 1000),
+                                ),
+                            )?,
+                        )
+                        .map_err(|error| format!("Cannot encode DAP session: {error}"))
+                    }
+                    "dap_record_event" => {
+                        let session_id = arg_str("sessionId").ok_or("sessionId is required")?;
+                        let event = arg_str("event").ok_or("event is required")?;
+                        let max_events =
+                            args.get("maxEvents").and_then(Value::as_u64).unwrap_or(512) as usize;
+                        let session =
+                            extension_service.record_dap_event(&session_id, &event, max_events)?;
+                        if matches!(
+                            event.split_whitespace().next(),
+                            Some("terminated" | "exited")
+                        ) {
+                            let event_kind = event
+                                .split_whitespace()
+                                .next()
+                                .unwrap_or("unknown")
+                                .chars()
+                                .take(64)
+                                .collect::<String>();
+                            let evidence_content = format!(
+                                "dap_session={} request={} target={} event={} state={} event_count={}",
+                                session.id,
+                                session.request,
+                                session.target,
+                                event_kind,
+                                session.state,
+                                session.events.len()
+                            );
+                            let evidence = harness_service.record_external_evidence(
+                                &session.task_id,
+                                "dap.lifecycle",
+                                evidence_content.as_bytes(),
+                                &[],
+                                true,
+                            )?;
+                            task_control
+                                .lock()
+                                .map_err(|_| "Task Control lock is poisoned".to_owned())?
+                                .record_evidence_ref(&session.task_id, &evidence.id)?;
+                            serde_json::to_value(
+                                extension_service.attach_dap_evidence(&session.id, evidence.id)?,
+                            )
+                            .map_err(|error| format!("Cannot encode DAP session: {error}"))
+                        } else {
+                            Ok(Value::Null)
+                        }
+                    }
+                    "extension_cancel_task" => {
+                        let task_id = arg_str("taskId").ok_or("taskId is required")?;
+                        extension_service.cancel_task_processes(&task_id)?;
+                        Ok(Value::Null)
+                    }
+                    "diagnostic_add" => {
+                        let finding: DiagnosticFinding = serde_json::from_value(
+                            args.get("finding").cloned().ok_or("finding is required")?,
+                        )
+                        .map_err(|error| format!("Invalid diagnostic finding: {error}"))?;
+                        extension_service.add_diagnostic(finding)?;
+                        Ok(Value::Null)
+                    }
+                    "advisory_request" => {
+                        let task_id = arg_str("taskId").ok_or("taskId is required")?;
+                        let role = arg_str("role").ok_or("role is required")?;
+                        let model = arg_str("model").ok_or("model is required")?;
+                        let allowed_tools: std::collections::BTreeSet<String> =
+                            serde_json::from_value(
+                                args.get("allowedTools")
+                                    .cloned()
+                                    .ok_or("allowedTools is required")?,
+                            )
+                            .map_err(|error| format!("Invalid adviser tools: {error}"))?;
+                        serde_json::to_value(
+                            extension_service.request_advisory(
+                                &task_id,
+                                &role,
+                                &model,
+                                args.get("contextBytes")
+                                    .and_then(Value::as_u64)
+                                    .unwrap_or(64 * 1024) as usize,
+                                args.get("costLimitMicros")
+                                    .and_then(Value::as_u64)
+                                    .unwrap_or(1_000_000),
+                                allowed_tools,
+                            )?,
+                        )
+                        .map_err(|error| format!("Cannot encode advisory request: {error}"))
+                    }
+                    "advisory_complete" => {
+                        let advisory_id = arg_str("advisoryId").ok_or("advisoryId is required")?;
+                        let output =
+                            arg_str("candidateOutput").ok_or("candidateOutput is required")?;
+                        serde_json::to_value(
+                            extension_service.complete_advisory(&advisory_id, &output)?,
+                        )
+                        .map_err(|error| format!("Cannot encode advisory result: {error}"))
+                    }
+                    "regression_record" => {
+                        let scenario: RegressionScenario = serde_json::from_value(
+                            args.get("scenario")
+                                .cloned()
+                                .ok_or("scenario is required")?,
+                        )
+                        .map_err(|error| format!("Invalid regression scenario: {error}"))?;
+                        let metrics: RegressionMetrics = serde_json::from_value(
+                            args.get("metrics").cloned().ok_or("metrics is required")?,
+                        )
+                        .map_err(|error| format!("Invalid regression metrics: {error}"))?;
+                        let artifact = arg_str("artifact").ok_or("artifact is required")?;
+                        serde_json::to_value(extension_service.record_regression(
+                            scenario,
+                            &arg_str("picodeVersion").ok_or("picodeVersion is required")?,
+                            &arg_str("model").ok_or("model is required")?,
+                            metrics,
+                            artifact.as_bytes(),
+                        )?)
+                        .map_err(|error| format!("Cannot encode regression run: {error}"))
+                    }
+                    "regression_compare" => {
+                        let before_id = arg_str("beforeId").ok_or("beforeId is required")?;
+                        let after_id = arg_str("afterId").ok_or("afterId is required")?;
+                        serde_json::to_value(
+                            extension_service.compare_regressions(&before_id, &after_id)?,
+                        )
+                        .map_err(|error| format!("Cannot encode regression comparison: {error}"))
                     }
                     "custom_provider_discover" => {
                         let base_url = arg_str("baseUrl").ok_or("baseUrl is required")?;
@@ -1751,6 +3142,18 @@ fn main() {
                 return Ok(());
             }
             let manager = Arc::new(PiManager::new(static_dir));
+            match manager.ensure_default_packages() {
+                Ok(installed) if !installed.is_empty() => {
+                    log::info!("Installed default Pi packages: {}", installed.join(", "));
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    // A network or registry outage must not make Picode unusable.
+                    // The next launch retries because the missing package was not
+                    // added to Pi's settings.
+                    log::warn!("Could not install default Pi packages: {error}");
+                }
+            }
             let broker = Arc::new(BrokerWs::start().expect("failed to start broker websocket"));
             let app_data_dir = app
                 .path()
@@ -1775,6 +3178,37 @@ fn main() {
             let auth_sync = Arc::new(
                 PiAuthSynchronizer::for_current_user().map_err(std::io::Error::other)?,
             );
+            let machine_id = std::env::var("COMPUTERNAME")
+                .or_else(|_| std::env::var("HOSTNAME"))
+                .unwrap_or_else(|_| std::env::consts::OS.to_owned());
+            let task_control = Arc::new(Mutex::new(
+                TaskControl::open(&app_data_dir.join("task-control"), &machine_id)
+                    .map_err(std::io::Error::other)?,
+            ));
+            let harness_service = Arc::new(
+                HarnessService::new(app_data_dir.join("harness"), None)
+                    .map_err(std::io::Error::other)?,
+            );
+            let capability_service = Arc::new(Mutex::new(
+                CapabilityService::open(&app_data_dir.join("capabilities"))
+                    .map_err(std::io::Error::other)?,
+            ));
+            let orchestration_service = Arc::new(
+                OrchestrationService::open(&app_data_dir.join("orchestration"), 64 * 1024)
+                    .map_err(std::io::Error::other)?,
+            );
+            let extension_service = Arc::new(
+                ExtensionService::open(
+                    &app_data_dir.join("professional-extensions"),
+                    orchestration_service.clone(),
+                )
+                .map_err(std::io::Error::other)?,
+            );
+            let secret_store = Arc::new(Mutex::new(
+                SecretStore::new(app_data_dir.join("temporary-secrets"))
+                    .map_err(std::io::Error::other)?,
+            ));
+            let scratch_root = app_data_dir.join("scratch");
             std::env::set_var("PI_STUDIO_BROKER_PORT", broker.port().to_string());
             install_control_handler(
                 &broker,
@@ -1787,15 +3221,35 @@ fn main() {
                     compression: context_compression,
                 },
                 auth_sync,
+                task_control.clone(),
+                harness_service,
+                capability_service,
+                orchestration_service.clone(),
+                extension_service.clone(),
+                secret_store,
+                scratch_root,
                 app.handle().clone(),
             );
+            install_task_runtime_observer(
+                &broker,
+                manager.clone(),
+                task_control.clone(),
+                extension_service.clone(),
+            );
+            let extension_monitor = extension_service.clone();
+            tauri::async_runtime::spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_secs(1));
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    interval.tick().await;
+                    if let Err(error) = extension_monitor.refresh() {
+                        log::warn!("P4 extension resource monitor failed: {error}");
+                    }
+                }
+            });
 
-            let home_cwd = dirs::home_dir()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string();
             let (cwd, session_path) =
-                select_fresh_startup_target(home_cwd, find_latest_session_boot_target());
+                select_fresh_startup_target(prepare_managed_default_workspace(&app_data_dir)?);
             log::info!(
                 "[pi-desktop] fresh startup session selected for cwd={}",
                 cwd
@@ -1808,7 +3262,7 @@ fn main() {
             //   1. We can't drive that process: `cmd_new_session` /
             //      `cmd_switch_session` write to *our* `PiManager.processes`
             //      map. A pi we didn't spawn (e.g. left over from an installed
-            //      Picot still running, or a previous `bun run dev` whose
+            //      Picode still running, or a previous `bun run dev` whose
             //      Rust side crashed without taking its children with it) is
             //      not in that map, so every RPC fails with
             //      `No pi instance on port <p>` and the UI looks broken.
@@ -1818,7 +3272,7 @@ fn main() {
             //      and a different session history. That's strictly worse
             //      than starting our own.
             //
-            // Allocating a fresh port for *this* Picot instance is the
+            // Allocating a fresh port for *this* Picode instance is the
             // simple invariant that avoids both classes of confusion. The
             // tradeoff is that `http://localhost:47821` is no longer a
             // guaranteed entry point — but Picot doesn't promise that;
@@ -1828,7 +3282,7 @@ fn main() {
             let mut startup_ok = true;
             if initial_port != 47821 {
                 log::warn!(
-                    "[pi-desktop] port 47821 unavailable, using {} instead (likely another Picot instance is running)",
+                    "[pi-desktop] port 47821 unavailable, using {} instead (likely another Picode instance is running)",
                     initial_port
                 );
             }
@@ -1842,10 +3296,10 @@ fn main() {
                     );
                     app.dialog()
                         .message(format!(
-                            "Picot could not start the embedded pi runtime.\n\n{}\n\nThe Picot installation may be incomplete or corrupted. Please reinstall Picot and try again.",
+                            "Picode could not start the embedded pi runtime.\n\n{}\n\nThe Picode installation may be incomplete or corrupted. Please reinstall Picode and try again.",
                             err
                         ))
-                        .title("Picot startup failed")
+                        .title("Picode startup failed")
                         .kind(MessageDialogKind::Error)
                         .show(|_| {});
                 }
@@ -1854,6 +3308,9 @@ fn main() {
             app.manage(manager.clone());
             app.manage(broker.clone());
             app.manage(accounts);
+            app.manage(task_control);
+            app.manage(orchestration_service);
+            app.manage(extension_service);
 
             if startup_ok {
                 broker.register_session(initial_port, session_path.as_deref().unwrap_or(""));
@@ -1916,24 +3373,37 @@ fn main() {
                 if let Some(manager) = app_handle.try_state::<PiManagerState>() {
                     manager.kill_all();
                 }
+                if let Some(orchestration) = app_handle.try_state::<OrchestrationServiceState>() {
+                    if let Err(error) = orchestration.cancel_all_jobs() {
+                        log::error!("failed to cancel owned Picode process groups: {error}");
+                    }
+                }
             }
         });
 }
 
 #[cfg(test)]
 mod startup_tests {
-    use super::select_fresh_startup_target;
+    use super::{prepare_managed_default_workspace, select_fresh_startup_target};
 
     #[test]
-    fn keeps_the_latest_workspace_but_never_resumes_its_session_on_app_start() {
-        let selected = select_fresh_startup_target(
-            "/home/user".to_string(),
-            Some((
-                "/work/project".to_string(),
-                "/sessions/old-session.jsonl".to_string(),
-            )),
-        );
+    fn fresh_startup_uses_managed_scratch_and_never_adopts_a_previous_workspace() {
+        let selected = select_fresh_startup_target("/app-data/scratch/default".to_string());
 
-        assert_eq!(selected, ("/work/project".to_string(), None));
+        assert_eq!(selected, ("/app-data/scratch/default".to_string(), None));
+    }
+
+    #[test]
+    fn managed_default_workspace_is_created_below_the_application_data_directory() {
+        let root =
+            std::env::temp_dir().join(format!("picode-default-workspace-{}", uuid::Uuid::new_v4()));
+
+        let selected = prepare_managed_default_workspace(&root).unwrap();
+        let expected = root.join("scratch").join("default");
+
+        assert_eq!(std::path::PathBuf::from(selected), expected);
+        assert!(expected.is_dir());
+
+        let _ = std::fs::remove_dir_all(root);
     }
 }

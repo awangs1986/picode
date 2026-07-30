@@ -1,7 +1,7 @@
 /**
- * Embedded Server Extension for Picot desktop
+ * Embedded Server Extension for Picode desktop
  *
- * Starts the HTTP + WebSocket server that the Picot Tauri WebView talks to.
+ * Starts the HTTP + WebSocket server that the Picode Tauri WebView talks to.
  * This is not a user-facing "pi extension" — it ships inside the Picot
  * .app bundle and is loaded by the bundled `pi` binary that Picot spawns
  * via `--extension <bundle>/embedded-server.mjs`.
@@ -29,7 +29,7 @@
  *   `PI_STUDIO_PI_VERSION` env var.
  */
 
-import { execFile, execFileSync } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as http from "node:http";
 import * as os from "node:os";
@@ -42,7 +42,7 @@ import {
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
 import QRCode from "qrcode";
-import { type WebSocket, WebSocketServer } from "ws";
+import { WebSocket, WebSocketServer } from "ws";
 import {
   buildCostDashboardPayload,
   buildEmptyCostDashboardPayload,
@@ -191,6 +191,502 @@ const BIND_HOST = LAN_BIND_HOST;
 const EMBEDDED_PI_VERSION = process.env.PI_STUDIO_PI_VERSION || "";
 
 const STATIC_DIR = process.env.PI_STUDIO_STATIC_DIR || findPublicDir();
+
+export async function callBrokerControl(
+  command: string,
+  args: Record<string, unknown>,
+  options: { timeoutMs?: number; signal?: AbortSignal } = {},
+): Promise<unknown> {
+  const brokerPort = Number.parseInt(process.env.PI_STUDIO_BROKER_PORT || "", 10);
+  if (!Number.isFinite(brokerPort) || brokerPort <= 0) {
+    throw new Error("Picode broker is unavailable");
+  }
+  const timeoutMs = Math.max(100, Math.min(60_000, options.timeoutMs ?? 30_000));
+  const requestId = `agent-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(`ws://127.0.0.1:${brokerPort}/ui-ws`);
+    let settled = false;
+    const finish = (error?: Error, result?: unknown) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      options.signal?.removeEventListener("abort", abort);
+      try {
+        socket.close();
+      } catch {}
+      if (error) reject(error);
+      else resolve(result);
+    };
+    const abort = () => finish(new Error(`Broker control ${command} was cancelled`));
+    const timer = setTimeout(
+      () => finish(new Error(`Broker control ${command} timed out after ${timeoutMs}ms`)),
+      timeoutMs,
+    );
+    options.signal?.addEventListener("abort", abort, { once: true });
+    socket.once("open", () => {
+      socket.send(
+        JSON.stringify({
+          type: "broker_control",
+          protocolVersion: 1,
+          requestId,
+          command,
+          args,
+        }),
+      );
+    });
+    socket.on("message", (raw) => {
+      let message: Record<string, unknown>;
+      try {
+        message = JSON.parse(String(raw));
+      } catch {
+        return;
+      }
+      if (message.type !== "control_response" || message.requestId !== requestId) return;
+      if (message.ok === false) finish(new Error(String(message.error || "Broker control failed")));
+      else finish(undefined, message.result);
+    });
+    socket.once("error", (error) =>
+      finish(new Error(`Broker connection failed: ${error.message}`)),
+    );
+    socket.once("close", () => {
+      if (!settled) finish(new Error(`Broker disconnected during ${command}`));
+    });
+  });
+}
+
+export type McpClientContext = {
+  serverId: string;
+  taskId: string;
+  transport: "stdio" | "streamableHttp";
+  command?: string;
+  arguments: string[];
+  url?: string;
+  environment: Record<string, string>;
+};
+
+function normalizeMcpClientContext(value: unknown): McpClientContext | null {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as Partial<McpClientContext>;
+  if (
+    typeof candidate.serverId !== "string" ||
+    !candidate.serverId.trim() ||
+    typeof candidate.taskId !== "string" ||
+    !candidate.taskId.trim() ||
+    !["stdio", "streamableHttp"].includes(String(candidate.transport)) ||
+    !Array.isArray(candidate.arguments) ||
+    candidate.arguments.some((item) => typeof item !== "string" || item.includes("\0")) ||
+    !candidate.environment ||
+    typeof candidate.environment !== "object" ||
+    Object.entries(candidate.environment).some(
+      ([name, content]) => !name || name.includes("=") || typeof content !== "string",
+    )
+  ) {
+    return null;
+  }
+  if (
+    candidate.transport === "stdio" &&
+    (typeof candidate.command !== "string" || !candidate.command.trim())
+  ) {
+    return null;
+  }
+  if (candidate.transport === "streamableHttp") {
+    if (typeof candidate.url !== "string") return null;
+    try {
+      const url = new URL(candidate.url);
+      if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) return null;
+    } catch {
+      return null;
+    }
+  }
+  return {
+    serverId: candidate.serverId.trim(),
+    taskId: candidate.taskId.trim(),
+    transport: candidate.transport as McpClientContext["transport"],
+    command: candidate.command?.trim(),
+    arguments: candidate.arguments,
+    url: candidate.url,
+    environment: Object.fromEntries(Object.entries(candidate.environment)),
+  };
+}
+
+type McpJsonRpcResponse = {
+  id?: number;
+  result?: unknown;
+  error?: { code?: number; message?: string };
+};
+
+function parseMcpHttpBody(contentType: string, body: string): McpJsonRpcResponse {
+  if (contentType.includes("text/event-stream")) {
+    const payload = body
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).trim())
+      .find((line) => line && line !== "[DONE]");
+    if (!payload) throw new Error("MCP HTTP response contained no JSON-RPC event");
+    return JSON.parse(payload);
+  }
+  return JSON.parse(body);
+}
+
+async function runMcpHttpRequest(
+  config: McpClientContext,
+  method: string,
+  params: unknown,
+  signal?: AbortSignal,
+): Promise<unknown> {
+  if (!config.url) throw new Error("Streamable HTTP MCP requires a URL");
+  const endpoint = config.url;
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+    accept: "application/json, text/event-stream",
+    ...config.environment,
+  };
+  let sessionId = "";
+  const post = async (payload: unknown, expectResponse = true) => {
+    if (sessionId) headers["mcp-session-id"] = sessionId;
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(payload),
+      signal,
+    });
+    if (!response.ok) throw new Error(`MCP HTTP returned ${response.status}`);
+    sessionId = response.headers.get("mcp-session-id") || sessionId;
+    if (!expectResponse || response.status === 202) return undefined;
+    const body = await response.text();
+    if (body.length > 4 * 1024 * 1024) throw new Error("MCP HTTP response exceeds 4 MiB");
+    return parseMcpHttpBody(response.headers.get("content-type") || "", body);
+  };
+  const initialized = (await post({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "initialize",
+    params: {
+      protocolVersion: "2025-11-25",
+      capabilities: {},
+      clientInfo: { name: "Picode", version: "1" },
+    },
+  })) as McpJsonRpcResponse;
+  if (initialized?.error) throw new Error(initialized.error.message || "MCP initialize failed");
+  await post({ jsonrpc: "2.0", method: "notifications/initialized", params: {} }, false);
+  const response = (await post({ jsonrpc: "2.0", id: 2, method, params })) as McpJsonRpcResponse;
+  if (response?.error) throw new Error(response.error.message || "MCP request failed");
+  return response?.result;
+}
+
+async function runMcpStdioRequest(
+  config: McpClientContext,
+  method: string,
+  params: unknown,
+  signal?: AbortSignal,
+): Promise<unknown> {
+  if (!config.command) throw new Error("stdio MCP requires a command");
+  const child = spawn(config.command, config.arguments, {
+    cwd: process.cwd(),
+    env: { ...process.env, ...config.environment },
+    shell: false,
+    windowsHide: true,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  const pending = new Map<
+    number,
+    { resolve: (value: unknown) => void; reject: (error: Error) => void }
+  >();
+  let buffer = "";
+  let outputBytes = 0;
+  let stderr = "";
+  const rejectAll = (error: Error) => {
+    for (const waiter of pending.values()) waiter.reject(error);
+    pending.clear();
+  };
+  const abort = () => {
+    rejectAll(new Error("MCP request was cancelled"));
+    child.kill();
+  };
+  signal?.addEventListener("abort", abort, { once: true });
+  child.once("error", (error) => rejectAll(new Error(`start MCP process: ${error.message}`)));
+  child.stderr?.on("data", (chunk: Buffer) => {
+    outputBytes += chunk.length;
+    stderr = `${stderr}${chunk.toString("utf8")}`.slice(-16 * 1024);
+    if (outputBytes > 4 * 1024 * 1024) abort();
+  });
+  child.stdout?.on("data", (chunk: Buffer) => {
+    outputBytes += chunk.length;
+    if (outputBytes > 4 * 1024 * 1024) {
+      rejectAll(new Error("MCP output exceeds 4 MiB"));
+      child.kill();
+      return;
+    }
+    buffer += chunk.toString("utf8");
+    while (buffer.includes("\n")) {
+      const newline = buffer.indexOf("\n");
+      const line = buffer.slice(0, newline).trim();
+      buffer = buffer.slice(newline + 1);
+      if (!line) continue;
+      let response: McpJsonRpcResponse;
+      try {
+        response = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (typeof response.id !== "number") continue;
+      const waiter = pending.get(response.id);
+      if (!waiter) continue;
+      pending.delete(response.id);
+      if (response.error) waiter.reject(new Error(response.error.message || "MCP request failed"));
+      else waiter.resolve(response.result);
+    }
+  });
+  const send = (payload: unknown) => child.stdin?.write(`${JSON.stringify(payload)}\n`);
+  const request = (id: number, requestMethod: string, requestParams: unknown) =>
+    new Promise<unknown>((resolve, reject) => {
+      pending.set(id, { resolve, reject });
+      send({ jsonrpc: "2.0", id, method: requestMethod, params: requestParams });
+    });
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    const protocol = (async () => {
+      await request(1, "initialize", {
+        protocolVersion: "2025-11-25",
+        capabilities: {},
+        clientInfo: { name: "Picode", version: "1" },
+      });
+      send({ jsonrpc: "2.0", method: "notifications/initialized", params: {} });
+      return request(2, method, params);
+    })();
+    return await Promise.race([
+      protocol,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error("MCP request timed out after 30000ms")), 30_000);
+      }),
+    ]);
+  } catch (error) {
+    const detail = stderr.trim() ? `: ${stderr.trim()}` : "";
+    throw new Error(`${error instanceof Error ? error.message : String(error)}${detail}`);
+  } finally {
+    if (timer) clearTimeout(timer);
+    signal?.removeEventListener("abort", abort);
+    rejectAll(new Error("MCP session closed"));
+    if (!child.killed) child.kill();
+  }
+}
+
+export async function runScopedMcpRequest(
+  config: McpClientContext,
+  method: "tools/list" | "tools/call",
+  params: unknown,
+  signal?: AbortSignal,
+): Promise<unknown> {
+  return config.transport === "stdio"
+    ? runMcpStdioRequest(config, method, params, signal)
+    : runMcpHttpRequest(config, method, params, signal);
+}
+
+type ScopedLspRequest = {
+  command: string;
+  args: string[];
+  cwd: string;
+  method: string;
+  params: unknown;
+  timeoutMs: number;
+  maxOutputBytes: number;
+  notifications?: Array<{ method: string; params: unknown }>;
+  signal?: AbortSignal;
+};
+
+type LspResponse = { id?: number; result?: unknown; error?: { message?: string } };
+
+export async function runScopedLspRequest(options: ScopedLspRequest): Promise<unknown> {
+  const command = options.command.trim();
+  if (
+    !command ||
+    /[|&;<>()`\r\n]/.test(command) ||
+    /\s(?:\/c|-c)\s/i.test(command) ||
+    /^(?:cmd|powershell|pwsh|sh|bash)\s/i.test(command)
+  ) {
+    throw new Error("LSP command must be a single executable, never a shell expression");
+  }
+  if (!path.isAbsolute(options.cwd) || !fs.statSync(options.cwd).isDirectory()) {
+    throw new Error("LSP cwd must be an existing absolute workspace directory");
+  }
+  const maxOutputBytes = Math.max(1024, Math.min(4 * 1024 * 1024, options.maxOutputBytes));
+  const timeoutMs = Math.max(100, Math.min(30_000, options.timeoutMs));
+  const child = spawn(command, options.args, {
+    cwd: options.cwd,
+    shell: false,
+    windowsHide: true,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  const stdout = child.stdout;
+  const stdin = child.stdin;
+  if (!stdout || !stdin) {
+    child.kill();
+    throw new Error("LSP process did not expose protocol streams");
+  }
+  // A compliant server may close immediately after the `exit` notification;
+  // suppress the expected late EPIPE from Node's buffered stdin writes.
+  stdin.on("error", () => {});
+
+  let buffer = Buffer.alloc(0);
+  let stderr = "";
+  let totalOutput = 0;
+  let protocolFailure: Error | null = null;
+  const pending = new Map<
+    number,
+    { resolve: (value: unknown) => void; reject: (error: Error) => void }
+  >();
+
+  const rejectAll = (error: Error) => {
+    for (const waiter of pending.values()) waiter.reject(error);
+    pending.clear();
+  };
+  const abortHandler = () => {
+    const error = new Error("LSP request was cancelled");
+    rejectAll(error);
+    child.kill();
+  };
+  options.signal?.addEventListener("abort", abortHandler, { once: true });
+  child.on("error", (error) => rejectAll(new Error(`start LSP process: ${error.message}`)));
+  child.stderr?.on("data", (chunk: Buffer) => {
+    totalOutput += chunk.length;
+    stderr = `${stderr}${chunk.toString("utf8")}`.slice(-16 * 1024);
+    if (totalOutput > maxOutputBytes && !protocolFailure) {
+      protocolFailure = new Error("LSP output exceeds configured limit");
+      rejectAll(protocolFailure);
+      child.kill();
+    }
+  });
+  stdout.on("data", (chunk: Buffer) => {
+    totalOutput += chunk.length;
+    if (totalOutput > maxOutputBytes && !protocolFailure) {
+      protocolFailure = new Error("LSP output exceeds configured limit");
+      rejectAll(protocolFailure);
+      child.kill();
+      return;
+    }
+    buffer = Buffer.concat([buffer, chunk]);
+    while (true) {
+      const headerEnd = buffer.indexOf("\r\n\r\n");
+      if (headerEnd < 0) return;
+      const header = buffer.subarray(0, headerEnd).toString("utf8");
+      const length = Number(/Content-Length:\s*(\d+)/i.exec(header)?.[1]);
+      if (!Number.isSafeInteger(length) || length < 0 || length > maxOutputBytes) {
+        protocolFailure = new Error("LSP response has an invalid or excessive Content-Length");
+        rejectAll(protocolFailure);
+        child.kill();
+        return;
+      }
+      const frameEnd = headerEnd + 4 + length;
+      if (buffer.length < frameEnd) return;
+      let response: LspResponse;
+      try {
+        response = JSON.parse(buffer.subarray(headerEnd + 4, frameEnd).toString("utf8"));
+      } catch {
+        protocolFailure = new Error("LSP returned invalid JSON");
+        rejectAll(protocolFailure);
+        child.kill();
+        return;
+      }
+      buffer = buffer.subarray(frameEnd);
+      if (typeof response.id !== "number") continue;
+      const waiter = pending.get(response.id);
+      if (!waiter) continue;
+      pending.delete(response.id);
+      if (response.error) waiter.reject(new Error(response.error.message || "LSP request failed"));
+      else waiter.resolve(response.result);
+    }
+  });
+
+  const send = (payload: unknown) => {
+    const body = Buffer.from(JSON.stringify(payload));
+    stdin.write(`Content-Length: ${body.length}\r\n\r\n`);
+    stdin.write(body);
+  };
+  const request = (id: number, method: string, params: unknown) => {
+    const response = new Promise<unknown>((resolve, reject) => {
+      pending.set(id, { resolve, reject });
+    });
+    send({ jsonrpc: "2.0", id, method, params });
+    return response;
+  };
+
+  const protocol = (async () => {
+    await request(1, "initialize", {
+      processId: process.pid,
+      rootUri: pathToFileUrl(options.cwd),
+      capabilities: {},
+      clientInfo: { name: "Picode", version: "1" },
+    });
+    send({ jsonrpc: "2.0", method: "initialized", params: {} });
+    for (const notification of options.notifications ?? []) {
+      send({ jsonrpc: "2.0", method: notification.method, params: notification.params });
+    }
+    const result = await request(2, options.method, options.params);
+    await request(3, "shutdown", null);
+    send({ jsonrpc: "2.0", method: "exit" });
+    return result;
+  })();
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      protocol,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`LSP request timed out after ${timeoutMs}ms`)),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } catch (error) {
+    if (protocolFailure) throw protocolFailure;
+    const detail = stderr.trim() ? `: ${stderr.trim()}` : "";
+    throw new Error(`${error instanceof Error ? error.message : String(error)}${detail}`);
+  } finally {
+    options.signal?.removeEventListener("abort", abortHandler);
+    if (timer) clearTimeout(timer);
+    rejectAll(new Error("LSP session closed"));
+    if (!child.killed) child.kill();
+  }
+}
+
+function pathToFileUrl(value: string): string {
+  const normalized = value.replace(/\\/g, "/");
+  return encodeURI(normalized.startsWith("/") ? `file://${normalized}` : `file:///${normalized}`);
+}
+
+function languageServerCommand(language: string): { command: string; args: string[] } | null {
+  switch (language) {
+    case "rust":
+      return { command: "rust-analyzer", args: [] };
+    case "typescript":
+    case "javascript":
+      return { command: "typescript-language-server", args: ["--stdio"] };
+    case "python":
+      return { command: "pyright-langserver", args: ["--stdio"] };
+    case "csharp":
+      return { command: "csharp-ls", args: [] };
+    case "cpp":
+    case "c":
+      return { command: "clangd", args: [] };
+    default:
+      return null;
+  }
+}
+
+function lspMethod(operation: string): string | null {
+  switch (operation) {
+    case "hover":
+      return "textDocument/hover";
+    case "definition":
+      return "textDocument/definition";
+    case "references":
+      return "textDocument/references";
+    case "documentSymbols":
+      return "textDocument/documentSymbol";
+    default:
+      return null;
+  }
+}
 
 function findPublicDir(): string {
   const candidates: string[] = [];
@@ -611,6 +1107,261 @@ interface RpcCommand {
   [key: string]: unknown;
 }
 
+export type TaskCapabilityContext = {
+  taskId: string;
+  taskKind: "simple" | "harness";
+  catalogEnabled: boolean;
+  taskCapabilities: string[];
+  toolsDeclarationState: string;
+  compactPrompt: string;
+};
+
+export type ImportedWorkflowContext = {
+  id: string;
+  taskId: string;
+  kind: "rule" | "skill" | "command";
+  version: string;
+  content: string;
+};
+
+export function buildImportedWorkflowPrompt(
+  taskId: string | null | undefined,
+  workflows: ImportedWorkflowContext[],
+): string {
+  if (!taskId) return "";
+  const active = workflows
+    .filter((item) => item.taskId === taskId)
+    .slice(-16)
+    .filter((item) => item.content.trim());
+  if (!active.length) return "";
+  const sections = active.map(
+    (item) =>
+      `\n[Explicit ${item.kind} ${item.id} @ ${item.version}]\n${item.content.trim().slice(0, 512 * 1024)}`,
+  );
+  return `\n\n[Picode explicit imported workflows]\nThe user explicitly invoked the following workflow. Its workflow takes precedence over Picode defaults for this task, while host/API safety boundaries remain unchanged.${sections.join("\n")}`;
+}
+
+function normalizeImportedWorkflow(value: unknown): ImportedWorkflowContext | null {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as Partial<ImportedWorkflowContext>;
+  if (
+    typeof candidate.id !== "string" ||
+    !candidate.id.trim() ||
+    typeof candidate.taskId !== "string" ||
+    !candidate.taskId.trim() ||
+    !["rule", "skill", "command"].includes(String(candidate.kind)) ||
+    typeof candidate.version !== "string" ||
+    !candidate.version.trim() ||
+    typeof candidate.content !== "string" ||
+    !candidate.content.trim() ||
+    candidate.content.length > 512 * 1024
+  ) {
+    return null;
+  }
+  return {
+    id: candidate.id.trim(),
+    taskId: candidate.taskId.trim(),
+    kind: candidate.kind as ImportedWorkflowContext["kind"],
+    version: candidate.version.trim(),
+    content: candidate.content,
+  };
+}
+
+export type SubagentContext = {
+  parentRunId: string;
+  envelope: {
+    goal: string;
+    scope: string[];
+    method: string;
+    tools: string[];
+    permissions: string[];
+    context: string[];
+    stopConditions: string[];
+    expectedResult: string;
+  };
+};
+
+const SUBAGENT_TOOL_MAP: Record<string, string[]> = {
+  search: ["grep", "find", "ls"],
+  read: ["read", "ls"],
+  execute: ["bash"],
+  edit: ["edit", "write"],
+  write: ["edit", "write"],
+};
+
+export function subagentToolAllowed(context: SubagentContext | null, toolName: string): boolean {
+  if (!context) return true;
+  return context.envelope.tools.some(
+    (declared) => declared === toolName || SUBAGENT_TOOL_MAP[declared]?.includes(toolName),
+  );
+}
+
+export function buildSubagentPrompt(context: SubagentContext | null): string {
+  if (!context) return "";
+  const envelope = context.envelope;
+  return [
+    `\n\n[Picode Subagent; parent Agent Run ${context.parentRunId}]`,
+    `Goal: ${envelope.goal}`,
+    `Scope: ${envelope.scope.join(", ")}`,
+    `Method: ${envelope.method}`,
+    `Allowed tools: ${envelope.tools.join(", ")}`,
+    `Context: ${envelope.context.join(" | ")}`,
+    `Stop conditions: ${envelope.stopConditions.join(" | ")}`,
+    `Expected result: ${envelope.expectedResult}`,
+    "You are a bounded worker. You must not expand scope, permissions, tools, or method. Report blockers to the parent instead of improvising.",
+  ].join("\n");
+}
+
+export function buildAdvisoryDelegation(
+  role: string,
+  goal: string,
+  scope: string[],
+  context: string[],
+  expectedResult: string,
+) {
+  const envelope = {
+    goal,
+    scope,
+    method: `Provide one bounded ${role} second opinion using read/search only.`,
+    tools: ["search", "read"],
+    permissions: ["workspace.read"],
+    context,
+    stopConditions: ["Return one candidate opinion or a bounded blocker; do not act on findings."],
+    expectedResult,
+  };
+  return {
+    class: "advisory-review",
+    envelope,
+    requiresWrite: false,
+    usesSecret: false,
+    destructive: false,
+    ambiguous: false,
+    independentlyVerifiable: true,
+    contextBytes: Buffer.byteLength(JSON.stringify(envelope)),
+  };
+}
+
+function normalizeSubagentContext(value: unknown): SubagentContext | null {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as Partial<SubagentContext>;
+  const envelope = candidate.envelope as Partial<SubagentContext["envelope"]> | undefined;
+  const strings = (items: unknown): string[] =>
+    Array.isArray(items)
+      ? items.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+      : [];
+  if (
+    typeof candidate.parentRunId !== "string" ||
+    !candidate.parentRunId.trim() ||
+    typeof envelope?.goal !== "string" ||
+    !envelope.goal.trim() ||
+    typeof envelope.method !== "string" ||
+    !envelope.method.trim() ||
+    typeof envelope.expectedResult !== "string" ||
+    !envelope.expectedResult.trim()
+  ) {
+    return null;
+  }
+  return {
+    parentRunId: candidate.parentRunId.trim(),
+    envelope: {
+      goal: envelope.goal.trim(),
+      scope: strings(envelope.scope),
+      method: envelope.method.trim(),
+      tools: strings(envelope.tools),
+      permissions: strings(envelope.permissions),
+      context: strings(envelope.context),
+      stopConditions: strings(envelope.stopConditions),
+      expectedResult: envelope.expectedResult.trim(),
+    },
+  };
+}
+
+export type TaskCapabilitySearchResult = {
+  id: string;
+  summary: string;
+  scope: "global" | "task";
+  activation: "onDemand" | "explicit";
+  permissions: string[];
+  score: number;
+};
+
+const EMBEDDED_CAPABILITIES: Omit<TaskCapabilitySearchResult, "score">[] = [
+  {
+    id: "rust-lsp",
+    summary: "Lazy scoped Rust symbols, references, types, and diagnostics",
+    scope: "global",
+    activation: "onDemand",
+    permissions: ["workspace.read", "process.exec"],
+  },
+  {
+    id: "local-code-index",
+    summary: "Bounded local code and symbol search without remote vectors",
+    scope: "global",
+    activation: "onDemand",
+    permissions: ["workspace.read"],
+  },
+  {
+    id: "task-build",
+    summary: "Confirmed task-scoped Harness build and verification actions",
+    scope: "task",
+    activation: "explicit",
+    permissions: ["workspace.read", "process.exec"],
+  },
+];
+
+export function searchTaskCapabilities(
+  context: TaskCapabilityContext | null,
+  query: string,
+  limit = 8,
+): TaskCapabilitySearchResult[] {
+  if (!context?.catalogEnabled || typeof query !== "string" || !query.trim()) return [];
+  const terms = query.toLowerCase().trim().split(/\s+/).filter(Boolean);
+  return EMBEDDED_CAPABILITIES.filter(
+    (capability) =>
+      capability.scope === "global" || context.taskCapabilities.includes(capability.id),
+  )
+    .map((capability) => {
+      const id = capability.id.toLowerCase();
+      const text = `${capability.summary} ${capability.permissions.join(" ")}`.toLowerCase();
+      const score = terms.reduce(
+        (total, term) =>
+          total + (id === term ? 10 : id.includes(term) ? 6 : text.includes(term) ? 2 : 0),
+        0,
+      );
+      return { ...capability, score };
+    })
+    .filter((capability) => capability.score > 0)
+    .sort((left, right) => right.score - left.score || left.id.localeCompare(right.id))
+    .slice(0, Math.max(1, Math.min(20, Math.trunc(limit) || 8)));
+}
+
+export function buildTaskCapabilityPrompt(context: TaskCapabilityContext | null): string {
+  if (!context?.compactPrompt.trim()) return "";
+  return `\n\n[Picode task ${context.taskId}]\n${context.compactPrompt.trim()}`;
+}
+
+function normalizeTaskCapabilityContext(value: unknown): TaskCapabilityContext | null {
+  if (value === null) return null;
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as Partial<TaskCapabilityContext>;
+  if (typeof candidate.taskId !== "string" || !candidate.taskId.trim()) return null;
+  return {
+    taskId: candidate.taskId.trim(),
+    taskKind: candidate.taskKind === "harness" ? "harness" : "simple",
+    catalogEnabled: candidate.catalogEnabled === true,
+    taskCapabilities: Array.isArray(candidate.taskCapabilities)
+      ? candidate.taskCapabilities.filter(
+          (item): item is string => typeof item === "string" && item.trim().length > 0,
+        )
+      : [],
+    toolsDeclarationState:
+      typeof candidate.toolsDeclarationState === "string"
+        ? candidate.toolsDeclarationState
+        : "absent",
+    compactPrompt: typeof candidate.compactPrompt === "string" ? candidate.compactPrompt : "",
+  };
+}
+
 type StoredCredential = { type: "api_key"; key: string } | Record<string, unknown>;
 type ReloadableCredentialStore = {
   reload?: () => void;
@@ -736,6 +1487,12 @@ type EmbeddedServerGlobal = {
   // between sessions during a reload. We cache the first registry we see
   // here and prefer it (when present) over `latestCtx?.modelRegistry`.
   modelRegistry: ModelRegistry | null;
+  // Set only by an explicit Task Control prompt preparation. Keeping this
+  // process-scoped lets a Pi session reload without losing its task binding.
+  taskCapabilityContext: TaskCapabilityContext | null;
+  importedWorkflows: ImportedWorkflowContext[];
+  mcpClients: McpClientContext[];
+  subagentContext: SubagentContext | null;
   // The freshest `ExtensionAPI` (i.e. `pi`) reference, re-published on
   // every `session_start`. Command handlers MUST go through this getter
   // instead of capturing the `pi` parameter from `export default function`
@@ -765,6 +1522,8 @@ type CatalogModel = {
   id?: string;
   name?: string;
   contextWindow?: number;
+  reasoning?: boolean;
+  thinkingLevelMap?: Record<string, string | null>;
 };
 
 type ModelHealthStatus = "unknown" | "healthy" | "unhealthy";
@@ -776,9 +1535,19 @@ type ModelHealth = {
   error?: string;
 };
 
+type ModelCatalogMode = "recommended" | "all" | "manual";
+
+type ProviderCatalogPolicy = {
+  kind: "codex-proxy";
+  recommendedModelIds: Set<string>;
+  endpointLabel?: string;
+};
+
 type ModelPreferencesFile = {
   visibility?: Record<string, boolean>;
   health?: Record<string, ModelHealth>;
+  catalogModes?: Record<string, ModelCatalogMode>;
+  manualModels?: Record<string, string[]>;
 };
 
 function modelPreferenceKey(provider: string, modelId: string) {
@@ -816,7 +1585,9 @@ export class ModelPreferencesStore {
   }
 
   read(): Required<ModelPreferencesFile> {
-    if (!fs.existsSync(this.path)) return { visibility: {}, health: {} };
+    if (!fs.existsSync(this.path)) {
+      return { visibility: {}, health: {}, catalogModes: {}, manualModels: {} };
+    }
     try {
       const parsed = JSON.parse(fs.readFileSync(this.path, "utf8")) as ModelPreferencesFile;
       return {
@@ -830,9 +1601,28 @@ export class ModelPreferencesStore {
           parsed.health && typeof parsed.health === "object" && !Array.isArray(parsed.health)
             ? parsed.health
             : {},
+        catalogModes:
+          parsed.catalogModes &&
+          typeof parsed.catalogModes === "object" &&
+          !Array.isArray(parsed.catalogModes)
+            ? parsed.catalogModes
+            : {},
+        manualModels:
+          parsed.manualModels &&
+          typeof parsed.manualModels === "object" &&
+          !Array.isArray(parsed.manualModels)
+            ? Object.fromEntries(
+                Object.entries(parsed.manualModels).map(([provider, models]) => [
+                  provider,
+                  Array.isArray(models)
+                    ? models.filter((model): model is string => typeof model === "string")
+                    : [],
+                ]),
+              )
+            : {},
       };
     } catch {
-      return { visibility: {}, health: {} };
+      return { visibility: {}, health: {}, catalogModes: {}, manualModels: {} };
     }
   }
 
@@ -843,12 +1633,36 @@ export class ModelPreferencesStore {
 
   isVisible(provider: string, modelId: string) {
     const prefs = this.read();
-    return prefs.visibility[modelPreferenceKey(provider, modelId)] !== false;
+    return prefs.visibility[modelPreferenceKey(provider, modelId)] === true;
   }
 
   setVisibility(provider: string, modelId: string, visible: boolean) {
     const prefs = this.read();
     prefs.visibility[modelPreferenceKey(provider, modelId)] = visible;
+    this.write(prefs);
+  }
+
+  getCatalogMode(provider: string, fallback: ModelCatalogMode): ModelCatalogMode {
+    const mode = this.read().catalogModes[provider];
+    return mode === "recommended" || mode === "all" || mode === "manual" ? mode : fallback;
+  }
+
+  setCatalogMode(provider: string, mode: ModelCatalogMode) {
+    const prefs = this.read();
+    prefs.catalogModes[provider] = mode;
+    this.write(prefs);
+  }
+
+  getManualModels(provider: string) {
+    return this.read().manualModels[provider] ?? [];
+  }
+
+  setManualModel(provider: string, modelId: string, enabled: boolean) {
+    const prefs = this.read();
+    const models = new Set(prefs.manualModels[provider] ?? []);
+    if (enabled) models.add(modelId);
+    else models.delete(modelId);
+    prefs.manualModels[provider] = [...models].sort();
     this.write(prefs);
   }
 
@@ -864,18 +1678,116 @@ export class ModelPreferencesStore {
   }
 }
 
+function readCodexRecommendedModelIds(
+  cachePath = path.join(os.homedir(), ".codex", "models_cache.json"),
+) {
+  const ids = new Set<string>(["gpt-5.2"]);
+  try {
+    const parsed = JSON.parse(fs.readFileSync(cachePath, "utf8")) as {
+      models?: Array<{ id?: string; slug?: string; visibility?: string }>;
+    };
+    for (const model of parsed.models ?? []) {
+      const id = typeof model.slug === "string" ? model.slug : model.id;
+      if (id && model.visibility !== "hide") ids.add(id);
+    }
+  } catch {
+    // The legacy gpt-5.2 fallback keeps recommended mode usable without Codex installed.
+  }
+  return ids;
+}
+
+export function loadProviderCatalogPolicies(
+  modelsPath = path.join(PI_AGENT_ROOT, "models.json"),
+  codexCachePath = path.join(os.homedir(), ".codex", "models_cache.json"),
+) {
+  const policies = new Map<string, ProviderCatalogPolicy>();
+  try {
+    const parsed = JSON.parse(fs.readFileSync(modelsPath, "utf8")) as {
+      providers?: Record<string, { name?: string; baseUrl?: string }>;
+    };
+    for (const [provider, config] of Object.entries(parsed.providers ?? {})) {
+      const name = String(config?.name ?? "").toLowerCase();
+      const isCodexProxy =
+        provider === "codex-proxy" ||
+        (name.includes("codex") && (name.includes("proxy") || name.includes("reverse")));
+      if (!isCodexProxy) continue;
+      let endpointLabel: string | undefined;
+      try {
+        endpointLabel = config.baseUrl ? new URL(config.baseUrl).host : undefined;
+      } catch {
+        endpointLabel = undefined;
+      }
+      policies.set(provider, {
+        kind: "codex-proxy",
+        recommendedModelIds: readCodexRecommendedModelIds(codexCachePath),
+        endpointLabel,
+      });
+    }
+  } catch {
+    return policies;
+  }
+  return policies;
+}
+
+function filterModelsForCatalog(
+  models: CatalogModel[],
+  provider: string,
+  preferences: ModelPreferencesStore,
+  policies: Map<string, ProviderCatalogPolicy>,
+) {
+  const policy = policies.get(provider);
+  if (!policy) return models;
+  const mode = preferences.getCatalogMode(provider, "recommended");
+  if (mode === "all") return models;
+  const allowed =
+    mode === "manual" ? new Set(preferences.getManualModels(provider)) : policy.recommendedModelIds;
+  return models.filter((model) => Boolean(model.id && allowed.has(model.id)));
+}
+
+const CURSOR_REPRESENTATIVE_EFFORT =
+  /\s+(?:Extra High|XHigh|Medium|Minimal|High|Low|None)(?=\s+(?:Thinking|Fast)\b|$)/gi;
+
+function modelForDisplay<T extends CatalogModel>(model: T): T {
+  if (
+    model.provider !== "cursor" ||
+    model.reasoning !== true ||
+    !model.thinkingLevelMap ||
+    typeof model.name !== "string"
+  ) {
+    return model;
+  }
+  const name = model.name
+    .replace(CURSOR_REPRESENTATIVE_EFFORT, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+  return name === model.name ? model : { ...model, name };
+}
+
 export async function getAvailableModelsForRpc(
   ctx: { modelRegistry?: AvailableModelRegistry } | null,
   fallbackRegistry: AvailableModelRegistry | null,
   preferences = new ModelPreferencesStore(),
+  policies = new Map<string, ProviderCatalogPolicy>(),
 ) {
   const registry = ctx?.modelRegistry ?? fallbackRegistry;
   if (!registry) throw new Error("Model registry not ready yet — try again in a moment.");
   const models = await registry.getAvailable();
-  return models.filter((model) => {
-    const m = model as CatalogModel;
-    return m.provider && m.id ? preferences.isVisible(m.provider, m.id) : true;
-  });
+  const filtered = Array.from(
+    new Set(models.map((model) => (model as CatalogModel).provider).filter(Boolean)),
+  ).flatMap((provider) =>
+    filterModelsForCatalog(
+      (models as CatalogModel[]).filter((model) => model.provider === provider),
+      provider as string,
+      preferences,
+      policies,
+    ),
+  );
+  return filtered
+    .filter((model) => {
+      const m = model as CatalogModel;
+      return m.provider && m.id ? preferences.isVisible(m.provider, m.id) : true;
+    })
+    .map((model) => modelForDisplay(model as CatalogModel));
 }
 
 type CatalogRegistry = {
@@ -892,6 +1804,7 @@ type CatalogRegistry = {
 export async function buildModelCatalog(
   registry: CatalogRegistry,
   preferences: ModelPreferencesStore,
+  policies = new Map<string, ProviderCatalogPolicy>(),
 ) {
   const allModels = registry.getAll();
   const availableModels = await registry.getAvailable();
@@ -908,26 +1821,42 @@ export async function buildModelCatalog(
     providers: providerNames.map((provider) => {
       const providerName = provider as string;
       const status = registry.getProviderAuthStatus(providerName);
+      const policy = policies.get(providerName);
+      const catalogMode = policy
+        ? preferences.getCatalogMode(providerName, "recommended")
+        : undefined;
+      const catalogModels = filterModelsForCatalog(
+        allModels.filter(
+          (model) =>
+            model.provider === providerName &&
+            model.id &&
+            availableKeys.has(modelPreferenceKey(providerName, model.id)),
+        ),
+        providerName,
+        preferences,
+        policies,
+      );
       return {
         provider: providerName,
         displayName: registry.getProviderDisplayName(providerName),
         configured: Boolean(status.configured),
         source: status.source,
         label: status.label,
-        models: allModels
-          .filter(
-            (model) =>
-              model.provider === providerName &&
-              model.id &&
-              availableKeys.has(modelPreferenceKey(providerName, model.id)),
-          )
+        ...(policy
+          ? {
+              catalogMode,
+              catalogPolicy: policy.kind,
+              endpointLabel: policy.endpointLabel,
+            }
+          : {}),
+        models: catalogModels
           .sort((a, b) => String(a.id).localeCompare(String(b.id)))
           .map((model) => {
             const modelId = model.id as string;
             return {
               provider: providerName,
               id: modelId,
-              name: model.name,
+              name: modelForDisplay(model).name,
               contextWindow: model.contextWindow,
               available: availableKeys.has(modelPreferenceKey(providerName, modelId)),
               visible: preferences.isVisible(providerName, modelId),
@@ -1081,6 +2010,10 @@ function getOrCreateGlobalState(): EmbeddedServerGlobal {
       getLatestCtx: null,
       getApi: null,
       modelRegistry: null,
+      taskCapabilityContext: null,
+      importedWorkflows: [],
+      mcpClients: [],
+      subagentContext: null,
       sessionHeaderCache: new Map<string, SessionFileCacheEntry<unknown>>(),
       sessionMetricsCache: new Map<string, SessionFileCacheEntry<unknown>>(),
     } as EmbeddedServerGlobal;
@@ -1093,6 +2026,7 @@ export default function (pi: ExtensionAPI) {
 
   // Store latest context reference for use in command handlers
   let latestCtx: ExtensionContext | null = null;
+  let didRefreshModelRegistry = false;
 
   // ═══════════════════════════════════════
   // Always resolve the freshest `pi` from globalState before calling any
@@ -1116,6 +2050,477 @@ export default function (pi: ExtensionAPI) {
   // must treat that as "no active session".
   function currentPi(): ExtensionAPI | null {
     return globalState.getApi?.() ?? null;
+  }
+
+  const capabilitySearchParameters = {
+    type: "object",
+    properties: {
+      query: { type: "string", description: "Capability or task need to search for" },
+      limit: { type: "number", minimum: 1, maximum: 20 },
+    },
+    required: ["query"],
+    additionalProperties: false,
+  } as unknown as Parameters<ExtensionAPI["registerTool"]>[0]["parameters"];
+
+  pi.registerTool({
+    name: "picode_search_tools",
+    label: "Search Picode Tools",
+    description:
+      "Search the local lazy Picode capability catalog without loading extensions or making another model call.",
+    promptSnippet: "Search lazy Picode capabilities by need.",
+    parameters: capabilitySearchParameters,
+    async execute(_toolCallId, rawParams, signal) {
+      signal?.throwIfAborted?.();
+      const params = rawParams as unknown as { query?: unknown; limit?: unknown };
+      const query = typeof params.query === "string" ? params.query : "";
+      const limit = typeof params.limit === "number" ? params.limit : 8;
+      const results = searchTaskCapabilities(globalState.taskCapabilityContext, query, limit);
+      if (results.some((result) => result.id.endsWith("-lsp"))) {
+        setOptionalToolActive("picode_lsp", true);
+      }
+      return {
+        content: [
+          {
+            type: "text",
+            text:
+              results.length > 0
+                ? JSON.stringify({ query, results }, null, 2)
+                : "No enabled task capability matched. Optional capabilities remain unloaded.",
+          },
+        ],
+        details: { count: results.length, taskId: globalState.taskCapabilityContext?.taskId },
+      };
+    },
+  });
+
+  const lspParameters = {
+    type: "object",
+    properties: {
+      language: {
+        type: "string",
+        enum: ["rust", "typescript", "javascript", "python", "csharp", "cpp", "c"],
+      },
+      operation: {
+        type: "string",
+        enum: ["hover", "definition", "references", "documentSymbols"],
+      },
+      path: { type: "string", description: "Workspace-relative source file" },
+      line: { type: "number", minimum: 1 },
+      character: { type: "number", minimum: 1 },
+    },
+    required: ["language", "operation", "path"],
+    additionalProperties: false,
+  } as unknown as Parameters<ExtensionAPI["registerTool"]>[0]["parameters"];
+
+  pi.registerTool({
+    name: "picode_lsp",
+    label: "Picode LSP",
+    description:
+      "Start one known language server only for the current workspace request, return a bounded navigation result, then stop it.",
+    promptSnippet: "Request scoped language-server navigation after discovering an LSP capability.",
+    parameters: lspParameters,
+    async execute(_toolCallId, rawParams, signal, _onUpdate, ctx) {
+      signal?.throwIfAborted?.();
+      const params = rawParams as unknown as Record<string, unknown>;
+      const language = typeof params.language === "string" ? params.language : "";
+      const operation = typeof params.operation === "string" ? params.operation : "";
+      const requestedPath = typeof params.path === "string" ? params.path : "";
+      const server = languageServerCommand(language);
+      if (!server)
+        throw new Error(`No Picode LSP adapter is configured for ${language || "unknown"}`);
+      const root = fs.realpathSync(ctx.cwd || process.cwd());
+      const file = fs.realpathSync(path.resolve(root, requestedPath));
+      const relative = path.relative(root, file);
+      if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+        throw new Error("LSP source file must stay inside the current workspace");
+      }
+      const method = lspMethod(operation);
+      if (!method) throw new Error(`Unsupported LSP operation: ${operation}`);
+      const text = fs.readFileSync(file, "utf8");
+      if (Buffer.byteLength(text) > 1024 * 1024) {
+        throw new Error("LSP source file exceeds the 1 MiB model-facing limit");
+      }
+      const uri = pathToFileUrl(file);
+      const position = {
+        line: Math.max(0, Number(params.line || 1) - 1),
+        character: Math.max(0, Number(params.character || 1) - 1),
+      };
+      const requestParams =
+        operation === "documentSymbols"
+          ? { textDocument: { uri } }
+          : operation === "references"
+            ? { textDocument: { uri }, position, context: { includeDeclaration: true } }
+            : { textDocument: { uri }, position };
+      const result = await runScopedLspRequest({
+        command: server.command,
+        args: server.args,
+        cwd: root,
+        method,
+        params: requestParams,
+        notifications: [
+          {
+            method: "textDocument/didOpen",
+            params: {
+              textDocument: { uri, languageId: language, version: 1, text },
+            },
+          },
+        ],
+        timeoutMs: 15_000,
+        maxOutputBytes: 2 * 1024 * 1024,
+        signal,
+      });
+      const encoded = JSON.stringify(result, null, 2);
+      const bounded =
+        encoded.length > 64 * 1024 ? `${encoded.slice(0, 64 * 1024)}\n… truncated` : encoded;
+      return {
+        content: [{ type: "text", text: bounded }],
+        details: { language, operation, path: relative.replace(/\\/g, "/") },
+      };
+    },
+  });
+
+  async function activeAgentRunForTask(taskId: string, signal?: AbortSignal) {
+    const snapshot = (await callBrokerControl("task_snapshot", {}, { signal })) as {
+      agentRuns?: Array<{
+        id?: string;
+        taskId?: string;
+        sourcePort?: number;
+        state?: string;
+      }>;
+    };
+    const terminal = new Set(["completed", "failed", "cancelled", "terminated"]);
+    const run = [...(snapshot.agentRuns || [])]
+      .reverse()
+      .find(
+        (item) =>
+          item.taskId === taskId &&
+          item.sourcePort === PORT &&
+          typeof item.id === "string" &&
+          !terminal.has(String(item.state)),
+      );
+    if (!run?.id) throw new Error("No active Agent Run is bound to this Pi task process");
+    return run.id;
+  }
+
+  const backgroundJobParameters = {
+    type: "object",
+    properties: {
+      executable: {
+        type: "string",
+        description: "Executable name or absolute path; no shell expression",
+      },
+      arguments: { type: "array", items: { type: "string" }, maxItems: 128 },
+      timeoutMs: { type: "number", minimum: 100, maximum: 86_400_000 },
+    },
+    required: ["executable", "arguments"],
+    additionalProperties: false,
+  } as unknown as Parameters<ExtensionAPI["registerTool"]>[0]["parameters"];
+
+  pi.registerTool({
+    name: "picode_background_job",
+    label: "Picode Background Job",
+    description:
+      "Start a directly-argv-encoded, task-owned background process. Picode retains bounded live output and a full hashed artifact; the Runtime Monitor can cancel it.",
+    promptSnippet:
+      "Run a long Harness command as an owned background job when foreground execution is inappropriate.",
+    parameters: backgroundJobParameters,
+    async execute(_toolCallId, rawParams, signal) {
+      if (globalState.taskCapabilityContext?.taskKind !== "harness") {
+        throw new Error("Background jobs are available only to Harness Tasks");
+      }
+      const taskId = globalState.taskCapabilityContext.taskId;
+      const agentRunId = await activeAgentRunForTask(taskId, signal);
+      const params = rawParams as unknown as {
+        executable: string;
+        arguments: string[];
+        timeoutMs?: number;
+      };
+      const result = await callBrokerControl(
+        "background_job_start",
+        {
+          taskId,
+          agentRunId,
+          executable: params.executable,
+          arguments: params.arguments,
+          timeoutMs: params.timeoutMs ?? 30 * 60 * 1000,
+        },
+        { signal, timeoutMs: 60_000 },
+      );
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2).slice(0, 64 * 1024) }],
+        details: result,
+      };
+    },
+  });
+
+  const delegationParameters = {
+    type: "object",
+    properties: {
+      class: { type: "string", enum: ["repository-search", "documentation-search"] },
+      goal: { type: "string", minLength: 1, maxLength: 4096 },
+      scope: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 32 },
+      method: { type: "string", minLength: 1, maxLength: 2048 },
+      tools: {
+        type: "array",
+        items: { type: "string", enum: ["search", "read"] },
+        minItems: 1,
+        maxItems: 2,
+      },
+      context: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 32 },
+      stopConditions: {
+        type: "array",
+        items: { type: "string" },
+        minItems: 1,
+        maxItems: 16,
+      },
+      expectedResult: { type: "string", minLength: 1, maxLength: 2048 },
+    },
+    required: [
+      "class",
+      "goal",
+      "scope",
+      "method",
+      "tools",
+      "context",
+      "stopConditions",
+      "expectedResult",
+    ],
+    additionalProperties: false,
+  } as unknown as Parameters<ExtensionAPI["registerTool"]>[0]["parameters"];
+
+  pi.registerTool({
+    name: "picode_delegate",
+    label: "Picode Delegate",
+    description:
+      "Delegate only a bounded, read-only, independently verifiable search to a user-qualified model. The child cannot write, use secrets, expand scope, or delegate again.",
+    promptSnippet:
+      "Delegate a simple bounded search only when the configured user policy qualifies it.",
+    parameters: delegationParameters,
+    async execute(_toolCallId, rawParams, signal) {
+      if (globalState.taskCapabilityContext?.taskKind !== "harness") {
+        throw new Error("Subagent delegation is available only to Harness Tasks");
+      }
+      const taskId = globalState.taskCapabilityContext.taskId;
+      const parentRunId = await activeAgentRunForTask(taskId, signal);
+      const params = rawParams as unknown as Record<string, unknown>;
+      const envelope = {
+        goal: params.goal,
+        scope: params.scope,
+        method: params.method,
+        tools: params.tools,
+        permissions: ["workspace.read"],
+        context: params.context,
+        stopConditions: params.stopConditions,
+        expectedResult: params.expectedResult,
+      };
+      const contextBytes = Buffer.byteLength(JSON.stringify(envelope));
+      const result = await callBrokerControl(
+        "subagent_spawn",
+        {
+          useConfiguredPolicy: true,
+          request: {
+            taskId,
+            parentRunId,
+            work: {
+              class: params.class,
+              envelope,
+              requiresWrite: false,
+              usesSecret: false,
+              destructive: false,
+              ambiguous: false,
+              independentlyVerifiable: true,
+              contextBytes,
+            },
+            policy: { candidates: [], fallback: "doNotDelegate" },
+            qualifiedModels: [],
+          },
+        },
+        { signal, timeoutMs: 60_000 },
+      );
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Subagent started. Its result will return as an unverified candidate to this Agent Run.\n${JSON.stringify(result, null, 2)}`.slice(
+              0,
+              64 * 1024,
+            ),
+          },
+        ],
+        details: result,
+      };
+    },
+  });
+
+  const advisoryParameters = {
+    type: "object",
+    properties: {
+      role: { type: "string", minLength: 1, maxLength: 128 },
+      goal: { type: "string", minLength: 1, maxLength: 4096 },
+      scope: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 32 },
+      context: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 32 },
+      expectedResult: { type: "string", minLength: 1, maxLength: 2048 },
+      costLimitMicros: { type: "number", minimum: 1, maximum: 1_000_000_000 },
+    },
+    required: ["role", "goal", "scope", "context", "expectedResult", "costLimitMicros"],
+    additionalProperties: false,
+  } as unknown as Parameters<ExtensionAPI["registerTool"]>[0]["parameters"];
+
+  pi.registerTool({
+    name: "picode_advisory",
+    label: "Picode Advisory",
+    description:
+      "Request one bounded read-only second opinion from a model explicitly qualified by the user. The opinion returns to the main Agent and is never verification evidence.",
+    promptSnippet:
+      "Ask a user-qualified advisory model for a bounded second opinion when independent review is useful.",
+    parameters: advisoryParameters,
+    async execute(_toolCallId, rawParams, signal) {
+      const task = globalState.taskCapabilityContext;
+      if (!task) throw new Error("No active Picode task is bound to this Pi process");
+      const parentRunId = await activeAgentRunForTask(task.taskId, signal);
+      const params = rawParams as unknown as {
+        role: string;
+        goal: string;
+        scope: string[];
+        context: string[];
+        expectedResult: string;
+        costLimitMicros: number;
+      };
+      const work = buildAdvisoryDelegation(
+        params.role,
+        params.goal,
+        params.scope,
+        params.context,
+        params.expectedResult,
+      );
+      const result = await callBrokerControl(
+        "subagent_spawn",
+        {
+          useConfiguredPolicy: true,
+          advisory: {
+            role: params.role,
+            contextBytes: work.contextBytes,
+            costLimitMicros: params.costLimitMicros,
+          },
+          request: {
+            taskId: task.taskId,
+            parentRunId,
+            work,
+            policy: { candidates: [], fallback: "doNotDelegate" },
+            qualifiedModels: [],
+          },
+        },
+        { signal, timeoutMs: 60_000 },
+      );
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Adviser started. Its bounded opinion will return to this Agent Run and is not evidence.\n${JSON.stringify(result, null, 2)}`.slice(
+              0,
+              64 * 1024,
+            ),
+          },
+        ],
+        details: result,
+      };
+    },
+  });
+
+  const mcpParameters = {
+    type: "object",
+    properties: {
+      serverId: { type: "string", minLength: 1 },
+      action: { type: "string", enum: ["list", "call"] },
+      toolName: { type: "string" },
+      arguments: { type: "object", additionalProperties: true },
+    },
+    required: ["serverId", "action"],
+    additionalProperties: false,
+  } as unknown as Parameters<ExtensionAPI["registerTool"]>[0]["parameters"];
+
+  pi.registerTool({
+    name: "picode_mcp",
+    label: "Picode MCP",
+    description:
+      "List or call tools on an MCP server that the user explicitly imported and enabled for this exact task. Each stdio request uses a bounded one-shot child process.",
+    promptSnippet: "Use an explicitly enabled task MCP server by server ID.",
+    parameters: mcpParameters,
+    async execute(_toolCallId, rawParams, signal) {
+      const params = rawParams as unknown as {
+        serverId?: string;
+        action?: string;
+        toolName?: string;
+        arguments?: Record<string, unknown>;
+      };
+      const config = globalState.mcpClients.find(
+        (item) =>
+          item.serverId === params.serverId &&
+          item.taskId === globalState.taskCapabilityContext?.taskId,
+      );
+      if (!config) throw new Error("MCP server is not enabled for this task");
+      if (params.action === "call" && !params.toolName?.trim()) {
+        throw new Error("MCP toolName is required for call");
+      }
+      const result = await runScopedMcpRequest(
+        config,
+        params.action === "call" ? "tools/call" : "tools/list",
+        params.action === "call"
+          ? { name: params.toolName, arguments: params.arguments || {} }
+          : {},
+        signal,
+      );
+      const encoded = JSON.stringify(result, null, 2);
+      return {
+        content: [
+          {
+            type: "text",
+            text:
+              encoded.length > 64 * 1024
+                ? `${encoded.slice(0, 64 * 1024)}\n… bounded by Picode`
+                : encoded,
+          },
+        ],
+        details: { serverId: config.serverId, action: params.action },
+      };
+    },
+  });
+
+  function setOptionalToolActive(name: string, enabled: boolean) {
+    const api = currentPi();
+    if (!api) return;
+    const active = api.getActiveTools().filter((tool) => tool !== name);
+    if (enabled) active.push(name);
+    api.setActiveTools(active);
+  }
+
+  function setCapabilitySearchActive(enabled: boolean) {
+    const api = currentPi();
+    if (!api) return;
+    const active = api
+      .getActiveTools()
+      .filter(
+        (name) =>
+          name !== "picode_search_tools" &&
+          name !== "picode_lsp" &&
+          name !== "picode_background_job" &&
+          name !== "picode_delegate" &&
+          name !== "picode_advisory" &&
+          name !== "picode_mcp",
+      );
+    if (enabled) active.push("picode_search_tools");
+    if (enabled) active.push("picode_advisory");
+    if (globalState.taskCapabilityContext?.taskKind === "harness") {
+      active.push("picode_background_job", "picode_delegate");
+    }
+    if (
+      globalState.mcpClients.some(
+        (item) => item.taskId === globalState.taskCapabilityContext?.taskId,
+      )
+    ) {
+      active.push("picode_mcp");
+    }
+    api.setActiveTools(active);
   }
 
   // ═══════════════════════════════════════
@@ -1243,11 +2648,46 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     rememberCtx(ctx);
+    if (!didRefreshModelRegistry && ctx.modelRegistry) {
+      didRefreshModelRegistry = true;
+      // Cursor providers can otherwise expose a fallback or yesterday's
+      // catalog while the GUI is already rendering. The Cursor integrations
+      // handle this as a live refresh; other providers simply re-read their
+      // normal local configuration.
+      void ctx.modelRegistry.refresh().catch((error: unknown) => {
+        console.warn("[Embedded] Initial model registry refresh failed:", error);
+      });
+    }
     turnCount = 0;
     titleSet = false;
     userMessages = [];
     // Update instance registry with new session file
     updateInstanceSession(ctx.sessionManager.getSessionFile() || "");
+    setCapabilitySearchActive(
+      globalState.taskCapabilityContext?.catalogEnabled === true ||
+        (globalState.taskCapabilityContext?.taskCapabilities.length ?? 0) > 0,
+    );
+  });
+
+  pi.on("before_agent_start", async (event) => {
+    const suffix =
+      buildTaskCapabilityPrompt(globalState.taskCapabilityContext) +
+      buildImportedWorkflowPrompt(
+        globalState.taskCapabilityContext?.taskId,
+        globalState.importedWorkflows,
+      ) +
+      buildSubagentPrompt(globalState.subagentContext);
+    if (!suffix) return undefined;
+    return { systemPrompt: event.systemPrompt + suffix };
+  });
+
+  pi.on("tool_call", async (event) => {
+    const context = globalState.subagentContext;
+    if (!context || subagentToolAllowed(context, event.toolName)) return undefined;
+    return {
+      block: true,
+      reason: `Subagent tool ${event.toolName} is outside its declared delegation envelope`,
+    };
   });
 
   pi.on("turn_start", async (_event, _ctx) => {
@@ -1423,6 +2863,89 @@ export default function (pi: ExtensionAPI) {
 
     try {
       switch (command.type) {
+        case "picode_task_context": {
+          const context = normalizeTaskCapabilityContext(command.context);
+          if (context?.taskId !== globalState.taskCapabilityContext?.taskId) {
+            globalState.importedWorkflows = [];
+            globalState.mcpClients = [];
+          }
+          globalState.taskCapabilityContext = context;
+          if (!context) {
+            globalState.subagentContext = null;
+            globalState.importedWorkflows = [];
+            globalState.mcpClients = [];
+          }
+          setCapabilitySearchActive(
+            context?.catalogEnabled === true || (context?.taskCapabilities.length ?? 0) > 0,
+          );
+          sendTo(ws, success("picode_task_context", { taskId: context?.taskId ?? null }));
+          break;
+        }
+
+        case "picode_mcp_context": {
+          const config = normalizeMcpClientContext(command.config);
+          if (!config || config.taskId !== globalState.taskCapabilityContext?.taskId) {
+            sendTo(
+              ws,
+              error(
+                "picode_mcp_context",
+                "MCP configuration is invalid or belongs to another task",
+              ),
+            );
+            break;
+          }
+          globalState.mcpClients = globalState.mcpClients
+            .filter((item) => item.serverId !== config.serverId)
+            .concat(config)
+            .slice(-16);
+          setCapabilitySearchActive(true);
+          sendTo(ws, success("picode_mcp_context", { serverId: config.serverId }));
+          break;
+        }
+
+        case "picode_imported_capability": {
+          const workflow = normalizeImportedWorkflow({
+            id: command.importedId,
+            taskId: command.taskId,
+            kind: command.kind,
+            version: command.version,
+            content: command.content,
+          });
+          if (!workflow || workflow.taskId !== globalState.taskCapabilityContext?.taskId) {
+            sendTo(
+              ws,
+              error(
+                "picode_imported_capability",
+                "Imported workflow is invalid or belongs to another task",
+              ),
+            );
+            break;
+          }
+          globalState.importedWorkflows = globalState.importedWorkflows
+            .filter((item) => item.id !== workflow.id)
+            .concat(workflow)
+            .slice(-16);
+          sendTo(ws, success("picode_imported_capability", { importedId: workflow.id }));
+          break;
+        }
+
+        case "picode_subagent_context": {
+          const context = normalizeSubagentContext({
+            parentRunId: command.parentRunId,
+            envelope: command.envelope,
+          });
+          if (!context) {
+            sendTo(ws, error("picode_subagent_context", "Invalid delegation envelope"));
+            break;
+          }
+          globalState.subagentContext = context;
+          const a = requireApi("picode_subagent_context");
+          if (!a) break;
+          a.setActiveTools(a.getActiveTools().filter((tool) => subagentToolAllowed(context, tool)));
+          sendTo(ws, success("picode_subagent_context", { parentRunId: context.parentRunId }));
+          break;
+        }
+
         case "picot_reload_accounts": {
           const registry = ctx?.modelRegistry ?? globalState.modelRegistry;
           if (!registry) {
@@ -1661,6 +3184,7 @@ export default function (pi: ExtensionAPI) {
             ctx,
             globalState.modelRegistry,
             new ModelPreferencesStore(),
+            loadProviderCatalogPolicies(),
           );
           sendTo(ws, success("get_available_models", { models }));
           break;
@@ -1678,6 +3202,7 @@ export default function (pi: ExtensionAPI) {
           const catalog = await buildModelCatalog(
             registry as unknown as CatalogRegistry,
             new ModelPreferencesStore(),
+            loadProviderCatalogPolicies(),
           );
           sendTo(ws, success("list_model_catalog", catalog));
           break;
@@ -1694,6 +3219,54 @@ export default function (pi: ExtensionAPI) {
           const preferences = new ModelPreferencesStore();
           preferences.setVisibility(provider, modelId, visible);
           sendTo(ws, success("set_model_visibility", { provider, modelId, visible }));
+          break;
+        }
+
+        case "set_model_catalog_mode": {
+          const provider = typeof command.provider === "string" ? command.provider.trim() : "";
+          const mode = typeof command.mode === "string" ? command.mode.trim() : "";
+          if (!provider || !["recommended", "all", "manual"].includes(mode)) {
+            sendTo(
+              ws,
+              error("set_model_catalog_mode", "provider and a valid catalog mode are required"),
+            );
+            break;
+          }
+          new ModelPreferencesStore().setCatalogMode(provider, mode as ModelCatalogMode);
+          sendTo(ws, success("set_model_catalog_mode", { provider, mode }));
+          break;
+        }
+
+        case "set_manual_catalog_model": {
+          const provider = typeof command.provider === "string" ? command.provider.trim() : "";
+          const modelId = typeof command.modelId === "string" ? command.modelId.trim() : "";
+          const registry = ctx?.modelRegistry ?? globalState.modelRegistry;
+          if (!provider || !modelId || !registry) {
+            sendTo(
+              ws,
+              error(
+                "set_manual_catalog_model",
+                "provider, modelId, and model registry are required",
+              ),
+            );
+            break;
+          }
+          const exists = registry
+            .getAll()
+            .some((model) => model.provider === provider && model.id === modelId);
+          if (!exists) {
+            sendTo(
+              ws,
+              error(
+                "set_manual_catalog_model",
+                `The provider did not advertise model ${provider}/${modelId}`,
+              ),
+            );
+            break;
+          }
+          const enabled = command.enabled !== false;
+          new ModelPreferencesStore().setManualModel(provider, modelId, enabled);
+          sendTo(ws, success("set_manual_catalog_model", { provider, modelId, enabled }));
           break;
         }
 
@@ -2430,7 +4003,7 @@ export default function (pi: ExtensionAPI) {
         JSON.stringify({
           success: true,
           embedded: true,
-          note: "Session switching is controlled by Picot's Rust side",
+          note: "Session switching is controlled by Picode's Rust side",
         }),
       );
       return;
@@ -3994,7 +5567,7 @@ export default function (pi: ExtensionAPI) {
       globalState.localUrl = `http://${localHost}:${port}`;
       const lanUrls = buildLanUrls(port);
       globalState.lanUrl = lanUrls[0] || "";
-      console.log(`[Embedded] Picot embedded server running on ${globalState.localUrl}`);
+      console.log(`[Embedded] Picode embedded server running on ${globalState.localUrl}`);
       const statusTarget = !isLoopbackHost(BIND_HOST)
         ? `${BIND_HOST}:${port}${globalState.lanUrl ? ` (${globalState.lanUrl})` : ""}`
         : `${BIND_HOST}:${port}`;

@@ -1,24 +1,200 @@
 // @vitest-environment node
 
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   buildModelCatalog,
   getAvailableModelsForRpc,
+  loadProviderCatalogPolicies,
   ModelPreferencesStore,
   sanitizeHealthError,
 } from "./embedded-server.ts";
 
 describe("embedded server model listing", () => {
+  it("recognizes an imported Codex reverse proxy and reads Codex's visible catalog", () => {
+    const root = mkdtempSync(join(tmpdir(), "picot-model-policy-"));
+    const modelsPath = join(root, "models.json");
+    const cachePath = join(root, "models_cache.json");
+    writeFileSync(
+      modelsPath,
+      JSON.stringify({
+        providers: {
+          openai: {
+            name: "Codex reverse proxy",
+            baseUrl: "https://proxy.example/v1",
+          },
+        },
+      }),
+    );
+    writeFileSync(
+      cachePath,
+      JSON.stringify({
+        models: [
+          { slug: "gpt-5.6-terra", visibility: "list" },
+          { slug: "codex-auto-review", visibility: "hide" },
+        ],
+      }),
+    );
+
+    const policy = loadProviderCatalogPolicies(modelsPath, cachePath).get("openai");
+
+    expect(policy?.kind).toBe("codex-proxy");
+    expect(policy?.endpointLabel).toBe("proxy.example");
+    expect(policy ? [...policy.recommendedModelIds].sort() : []).toEqual([
+      "gpt-5.2",
+      "gpt-5.6-terra",
+    ]);
+  });
+
+  it("keeps newly discovered models out of the picker until the user enables them", async () => {
+    const models = [{ provider: "cursor", id: "gpt-5.6" }];
+    const store = new ModelPreferencesStore(
+      join(mkdtempSync(join(tmpdir(), "picot-models-")), "prefs.json"),
+    );
+
+    await expect(
+      getAvailableModelsForRpc(null, { getAvailable: async () => models }, store),
+    ).resolves.toEqual([]);
+  });
+
+  it("keeps equal model ids independently selectable for different agent providers", async () => {
+    const models = [
+      { provider: "cursor", id: "gpt-5.6" },
+      { provider: "openai-codex", id: "gpt-5.6" },
+    ];
+    const store = new ModelPreferencesStore(
+      join(mkdtempSync(join(tmpdir(), "picot-models-")), "prefs.json"),
+    );
+    store.setVisibility("cursor", "gpt-5.6", true);
+    store.setVisibility("openai-codex", "gpt-5.6", true);
+
+    await expect(
+      getAvailableModelsForRpc(null, { getAvailable: async () => models }, store),
+    ).resolves.toEqual(models);
+  });
+
+  it("does not present Cursor's representative effort as part of the model name", async () => {
+    const store = new ModelPreferencesStore(
+      join(mkdtempSync(join(tmpdir(), "picot-models-")), "prefs.json"),
+    );
+    const models = [
+      {
+        provider: "cursor",
+        id: "gpt-5.6-terra-max-fast",
+        name: "GPT-5.6 Terra Max Medium Fast",
+        reasoning: true,
+        thinkingLevelMap: { low: "low", medium: "medium", high: "high" },
+      },
+      {
+        provider: "cursor",
+        id: "kimi-k3-max",
+        name: "Kimi K3 Max Low",
+        reasoning: true,
+        thinkingLevelMap: { low: "low", high: "high" },
+      },
+    ];
+    for (const model of models) store.setVisibility(model.provider, model.id, true);
+    const registry = {
+      getAll: () => models,
+      getAvailable: async () => models,
+      getProviderAuthStatus: () => ({ configured: true, source: "stored" }),
+      getProviderDisplayName: () => "Cursor",
+    };
+
+    const available = await getAvailableModelsForRpc(null, registry, store);
+    const catalog = await buildModelCatalog(registry, store);
+
+    expect(available.map((model) => model.name)).toEqual(["GPT-5.6 Terra Max Fast", "Kimi K3 Max"]);
+    expect(catalog.providers[0].models.map((model) => model.name)).toEqual([
+      "GPT-5.6 Terra Max Fast",
+      "Kimi K3 Max",
+    ]);
+  });
+
+  it("defaults Codex reverse proxies to the recommended intersection", async () => {
+    const store = new ModelPreferencesStore(
+      join(mkdtempSync(join(tmpdir(), "picot-models-")), "prefs.json"),
+    );
+    const models = [
+      { provider: "openai", id: "gpt-4" },
+      { provider: "openai", id: "gpt-5.2" },
+      { provider: "openai", id: "gpt-5.6-terra" },
+    ];
+    const registry = {
+      getAll: () => models,
+      getAvailable: async () => models,
+      getProviderAuthStatus: () => ({ configured: true, source: "stored" }),
+      getProviderDisplayName: () => "Codex reverse proxy",
+    };
+    const policies = new Map([
+      [
+        "openai",
+        {
+          kind: "codex-proxy",
+          recommendedModelIds: new Set(["gpt-5.2", "gpt-5.6-terra"]),
+          endpointLabel: "awangsawangs.xyz",
+        },
+      ],
+    ]);
+
+    const catalog = await buildModelCatalog(registry, store, policies);
+
+    expect(catalog.providers[0]).toMatchObject({
+      provider: "openai",
+      catalogMode: "recommended",
+      catalogPolicy: "codex-proxy",
+      endpointLabel: "awangsawangs.xyz",
+    });
+    expect(catalog.providers[0].models.map((model) => model.id)).toEqual([
+      "gpt-5.2",
+      "gpt-5.6-terra",
+    ]);
+  });
+
+  it("supports all and manual Codex proxy catalog modes independently", async () => {
+    const store = new ModelPreferencesStore(
+      join(mkdtempSync(join(tmpdir(), "picot-models-")), "prefs.json"),
+    );
+    const models = [
+      { provider: "openai", id: "gpt-4" },
+      { provider: "openai", id: "gpt-5.6-terra" },
+    ];
+    const registry = {
+      getAll: () => models,
+      getAvailable: async () => models,
+      getProviderAuthStatus: () => ({ configured: true, source: "stored" }),
+      getProviderDisplayName: () => "Codex reverse proxy",
+    };
+    const policies = new Map([
+      ["openai", { kind: "codex-proxy", recommendedModelIds: new Set(["gpt-5.6-terra"]) }],
+    ]);
+
+    store.setCatalogMode("openai", "all");
+    let catalog = await buildModelCatalog(registry, store, policies);
+    expect(catalog.providers[0].models.map((model) => model.id)).toEqual([
+      "gpt-4",
+      "gpt-5.6-terra",
+    ]);
+
+    store.setCatalogMode("openai", "manual");
+    store.setManualModel("openai", "gpt-4", true);
+    catalog = await buildModelCatalog(registry, store, policies);
+    expect(catalog.providers[0].models.map((model) => model.id)).toEqual(["gpt-4"]);
+  });
+
   it("uses the cached model registry when session context is unavailable", async () => {
     const models = [{ provider: "anthropic", id: "claude-sonnet-5" }];
     const registry = {
       getAvailable: async () => models,
     };
+    const store = new ModelPreferencesStore(
+      join(mkdtempSync(join(tmpdir(), "picot-models-")), "prefs.json"),
+    );
+    store.setVisibility("anthropic", "claude-sonnet-5", true);
 
-    await expect(getAvailableModelsForRpc(null, registry)).resolves.toEqual(models);
+    await expect(getAvailableModelsForRpc(null, registry, store)).resolves.toEqual(models);
   });
 
   it("excludes hidden models from the available model RPC list", async () => {
@@ -29,6 +205,7 @@ describe("embedded server model listing", () => {
     const store = new ModelPreferencesStore(
       join(mkdtempSync(join(tmpdir(), "picot-models-")), "prefs.json"),
     );
+    store.setVisibility("anthropic", "claude-sonnet-5", true);
     store.setVisibility("anthropic", "claude-opus-5", false);
 
     await expect(
@@ -47,6 +224,7 @@ describe("embedded server model listing", () => {
       join(mkdtempSync(join(tmpdir(), "picot-models-")), "prefs.json"),
     );
     store.setVisibility("anthropic", "claude-opus-5", false);
+    store.setVisibility("anthropic", "claude-sonnet-5", true);
     store.setHealth("anthropic", "claude-sonnet-5", {
       status: "healthy",
       checkedAt: "2026-07-08T00:00:00.000Z",
@@ -107,7 +285,7 @@ describe("embedded server model listing", () => {
               name: undefined,
               contextWindow: undefined,
               available: true,
-              visible: true,
+              visible: false,
               health: { status: "unknown" },
             },
           ],
@@ -141,13 +319,14 @@ describe("embedded server model listing", () => {
   it("persists model visibility preferences", () => {
     const path = join(mkdtempSync(join(tmpdir(), "picot-models-")), "prefs.json");
     const first = new ModelPreferencesStore(path);
-    first.setVisibility("anthropic", "claude-opus-5", false);
+    expect(first.isVisible("anthropic", "claude-opus-5")).toBe(false);
+    first.setVisibility("anthropic", "claude-opus-5", true);
 
     const second = new ModelPreferencesStore(path);
 
-    expect(second.isVisible("anthropic", "claude-opus-5")).toBe(false);
+    expect(second.isVisible("anthropic", "claude-opus-5")).toBe(true);
     expect(JSON.parse(readFileSync(path, "utf8"))).toMatchObject({
-      visibility: { "anthropic/claude-opus-5": false },
+      visibility: { "anthropic/claude-opus-5": true },
     });
   });
 

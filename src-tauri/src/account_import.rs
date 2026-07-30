@@ -48,6 +48,7 @@ pub struct ImportApplyResult {
     pub active_pi_provider: Option<String>,
     pub deactivated_pi_providers: Vec<String>,
     pub accounts: Vec<AccountSummary>,
+    pub restart_required: bool,
     #[serde(skip_serializing)]
     pub previous_active_account_id: Option<String>,
 }
@@ -60,6 +61,7 @@ pub struct AccountActivationResult {
     pub active_pi_provider: String,
     pub deactivated_pi_providers: Vec<String>,
     pub accounts: Vec<AccountSummary>,
+    pub restart_required: bool,
     #[serde(skip_serializing)]
     pub previous_active_account_id: Option<String>,
 }
@@ -178,6 +180,7 @@ impl AccountImportService {
             active_pi_provider: account.pi_provider,
             deactivated_pi_providers,
             accounts,
+            restart_required: false,
             previous_active_account_id,
         })
     }
@@ -380,6 +383,7 @@ impl AccountImportService {
             active_pi_provider,
             deactivated_pi_providers,
             accounts: summaries,
+            restart_required: false,
             previous_active_account_id,
         })
     }
@@ -417,6 +421,18 @@ fn first_string(value: &Value, paths: &[&[&str]]) -> Option<String> {
             current = current.get(*key)?;
         }
         non_empty(Some(current))
+    })
+}
+
+fn first_u64(value: &Value, paths: &[&[&str]]) -> Option<u64> {
+    paths.iter().find_map(|path| {
+        let mut current = value;
+        for key in *path {
+            current = current.get(*key)?;
+        }
+        current
+            .as_u64()
+            .or_else(|| current.as_str()?.trim().parse::<u64>().ok())
     })
 }
 
@@ -864,7 +880,7 @@ fn preview_local_cursor() -> Result<Vec<ParsedCandidate>, String> {
         "path": db_path,
     });
     Ok(vec![cursor_desktop_candidate(
-        access, refresh, auth_id, email, source,
+        access, refresh, auth_id, email, None, source,
     )])
 }
 
@@ -878,6 +894,8 @@ fn parse_cursor_json(content: &str, source: Value) -> Result<Vec<ParsedCandidate
                 &["cursor_api_key"],
                 &["apiKey"],
                 &["api_key"],
+                &["credentials", "key"],
+                &["cursor", "key"],
             ],
         ) {
             let label = first_string(&value, &[&["name"], &["label"]])
@@ -898,7 +916,13 @@ fn parse_cursor_json(content: &str, source: Value) -> Result<Vec<ParsedCandidate
                 metadata: json!({ "credentialKind": "cursor_sdk_api_key" }),
             };
             candidates.push(ParsedCandidate {
-                summary: candidate_summary(&account, Vec::new()),
+                summary: candidate_summary(
+                    &account,
+                    vec![
+                        "Picode uses the official @cursor/sdk-backed pi-cursor-sdk for this API key. The first activation may install the package and requires Node.js 22.19 or later; restart Picode afterward."
+                            .to_string(),
+                    ],
+                ),
                 account,
             });
             continue;
@@ -906,10 +930,20 @@ fn parse_cursor_json(content: &str, source: Value) -> Result<Vec<ParsedCandidate
         let access = first_string(
             &value,
             &[
+                &["access"],
                 &["access_token"],
                 &["accessToken"],
                 &["token"],
                 &["cursor_access_token"],
+                &["CURSOR_ACCESS_TOKEN"],
+                &["credentials", "access"],
+                &["credentials", "access_token"],
+                &["credentials", "accessToken"],
+                &["tokens", "access_token"],
+                &["tokens", "accessToken"],
+                &["cursor", "access"],
+                &["cursor", "access_token"],
+                &["cursor", "accessToken"],
             ],
         );
         if let Some(access) = access {
@@ -918,16 +952,52 @@ fn parse_cursor_json(content: &str, source: Value) -> Result<Vec<ParsedCandidate
                 first_string(
                     &value,
                     &[
+                        &["refresh"],
                         &["refresh_token"],
                         &["refreshToken"],
                         &["cursor_refresh_token"],
+                        &["CURSOR_REFRESH_TOKEN"],
+                        &["credentials", "refresh"],
+                        &["credentials", "refresh_token"],
+                        &["credentials", "refreshToken"],
+                        &["tokens", "refresh_token"],
+                        &["tokens", "refreshToken"],
+                        &["cursor", "refresh"],
+                        &["cursor", "refresh_token"],
+                        &["cursor", "refreshToken"],
                     ],
                 ),
                 first_string(
                     &value,
-                    &[&["auth_id"], &["authId"], &["workos_id"], &["workosId"]],
+                    &[
+                        &["auth_id"],
+                        &["authId"],
+                        &["workos_id"],
+                        &["workosId"],
+                        &["metadata", "authId"],
+                        &["cursor", "authId"],
+                    ],
                 ),
-                first_string(&value, &[&["email"], &["cachedEmail"], &["cursor_email"]]),
+                first_string(
+                    &value,
+                    &[
+                        &["email"],
+                        &["cachedEmail"],
+                        &["cursor_email"],
+                        &["metadata", "email"],
+                        &["cursor", "email"],
+                    ],
+                ),
+                first_u64(
+                    &value,
+                    &[
+                        &["expires"],
+                        &["expires_at"],
+                        &["expiresAt"],
+                        &["credentials", "expires"],
+                        &["cursor", "expires"],
+                    ],
+                ),
                 source.clone(),
             ));
         }
@@ -944,6 +1014,7 @@ fn cursor_desktop_candidate(
     refresh: Option<String>,
     auth_id: Option<String>,
     email: Option<String>,
+    expires: Option<u64>,
     source: Value,
 ) -> ParsedCandidate {
     let identity = auth_id
@@ -954,6 +1025,27 @@ fn cursor_desktop_candidate(
     let label = email
         .clone()
         .unwrap_or_else(|| format!("Cursor {}", &id[id.len().saturating_sub(8)..]));
+    let mut warnings = vec![
+        "Experimental Cursor OAuth uses the unofficial @rahularya01/pi-cursor extension and reverse-engineered Cursor protocols. Cursor may change or block it at any time."
+            .to_string(),
+        "Activating this account installs executable third-party Pi extension code and requires Node.js 22 or later. Restart Picode before using Cursor models."
+            .to_string(),
+    ];
+    if refresh.is_none() {
+        warnings.push(
+            "This Cursor JSON has no refresh token; chat will stop when the access token expires."
+                .to_string(),
+        );
+    }
+    let expires = expires
+        .or_else(|| jwt_expiry_ms(&access))
+        .unwrap_or_else(|| {
+            if refresh.is_some() {
+                0
+            } else {
+                now_ms().saturating_add(60 * 60 * 1000)
+            }
+        });
     let account = StoredAccount {
         id,
         provider: "cursor".to_string(),
@@ -961,25 +1053,27 @@ fn cursor_desktop_candidate(
         label: label.clone(),
         email: email.clone(),
         auth_kind: "oauth".to_string(),
-        chat_compatible: false,
+        chat_compatible: true,
         imported_at: now_ms(),
         source,
         endpoint: None,
         credentials: json!({
-            "accessToken": access,
-            "refreshToken": refresh,
-            "authId": auth_id,
+            "type": "oauth",
+            "access": access,
+            "refresh": refresh.clone().unwrap_or_default(),
+            "expires": expires,
         }),
-        metadata: json!({ "credentialKind": "cursor_desktop_session" }),
+        metadata: json!({
+            "credentialKind": "cursor_ide_cli_oauth",
+            "integration": "@rahularya01/pi-cursor",
+            "integrationVersion": "1.4.0",
+            "experimental": true,
+            "authId": auth_id,
+            "hasRefreshToken": refresh.is_some(),
+        }),
     };
     ParsedCandidate {
-        summary: candidate_summary(
-            &account,
-            vec![
-                "Cursor Desktop/CLI OAuth cannot be used by pi-cursor-sdk. Import is available for account backup, but chat requires a Cursor SDK API Key."
-                    .to_string(),
-            ],
-        ),
+        summary: candidate_summary(&account, warnings),
         account,
     }
 }
@@ -1263,7 +1357,7 @@ mod tests {
     }
 
     #[test]
-    fn cursor_desktop_oauth_is_storable_but_not_claimed_as_sdk_compatible() {
+    fn cursor_desktop_oauth_uses_pi_oauth_shape_for_experimental_chat() {
         let candidate = parse_cursor_json(
             r#"{
               "cachedEmail": "cursor@example.com",
@@ -1275,12 +1369,38 @@ mod tests {
         )
         .unwrap()
         .remove(0);
-        assert!(!candidate.account.chat_compatible);
+        assert!(candidate.account.chat_compatible);
         assert_eq!(
             candidate.account.metadata["credentialKind"],
-            "cursor_desktop_session"
+            "cursor_ide_cli_oauth"
         );
+        assert_eq!(candidate.account.credentials["type"], "oauth");
+        assert_eq!(candidate.account.credentials["access"], "desktop-access");
+        assert_eq!(candidate.account.credentials["refresh"], "desktop-refresh");
         assert!(!candidate.summary.warnings.is_empty());
+    }
+
+    #[test]
+    fn imports_cursor_pi_auth_json_and_environment_aliases() {
+        let mut candidates = parse_cursor_json(
+            r#"[
+              {"cursor":{"type":"oauth","access":"pi-access","refresh":"pi-refresh","expires":2000000000000}},
+              {"CURSOR_ACCESS_TOKEN":"env-access","CURSOR_REFRESH_TOKEN":"env-refresh"}
+            ]"#,
+            source(),
+        )
+        .unwrap();
+        assert_eq!(candidates.len(), 2);
+        let pi_auth = candidates.remove(0);
+        assert_eq!(pi_auth.account.credentials["access"], "pi-access");
+        assert_eq!(pi_auth.account.credentials["refresh"], "pi-refresh");
+        assert_eq!(
+            pi_auth.account.credentials["expires"],
+            2_000_000_000_000_u64
+        );
+        let env = candidates.remove(0);
+        assert_eq!(env.account.credentials["access"], "env-access");
+        assert_eq!(env.account.credentials["refresh"], "env-refresh");
     }
 
     #[test]

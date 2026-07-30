@@ -1,9 +1,10 @@
 {
-  "name": "picot",
+  "name": "picode",
   "version": "0.3.0",
   "description": "Local Codex-style desktop GUI for the Pi coding agent",
   "keywords": [
-    "picot",
+    "picode",
+    "picot-compatibility",
     "pi",
     "coding-agent",
     "desktop",
@@ -12,10 +13,6 @@
   ],
   "author": "deflating",
   "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/shixin-guo/picot.git"
-  },
   "scripts": {
     "tauri": "tauri",
     "dev": "bun run fetch:pi && PATH=\"$HOME/.cargo/bin:$PATH\" tauri dev",

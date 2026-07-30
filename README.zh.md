@@ -1,277 +1,142 @@
-# Picot （π-cot(e)）
+# Picode
 
-[English](./README.md) | **中文**
+[English](./README.md) | **简体中文**
 
-本地桌面 GUI，专为 [Pi](https://github.com/badlogic/pi-mono) 编程 Agent 打造。无需云端，无需账号，完全在本机运行。
+Picode 是一个面向 [Pi coding agent](https://github.com/earendil-works/pi) 的轻量桌面工作台，也是 [Picot](https://github.com/shixin-guo/picot) 的持续维护 fork。它在 Picot 的基础上，重点扩展了多 AI 服务接入、长项目任务状态、聊天迁移备份和结构化 Agent 工作流。
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
-[![Latest release](https://img.shields.io/github/v/release/shixin-guo/picot?include_prereleases&label=release)](https://github.com/shixin-guo/picot/releases)
-[![Platform](https://img.shields.io/badge/platform-macOS-lightgrey.svg)](#%E5%AE%89%E8%A3%85)
+Picode 保留 Pi 作为 Agent 内核，桌面宿主采用 Tauri 2 与 Rust。项目目标是在 Windows、Linux 和 macOS 上提供接近原生应用的体验，同时尽量保持 Pi 小巧、快速的核心优势。
 
-Picot 将 `pi` 运行时**直接打包进 .app**，无需单独安装 `pi`，无需配置 PATH，也不存在版本不一致的问题。
+> Picode 目前仍在积极开发中。用于重要工程前，请备份聊天记录，并审查 Agent 即将执行的操作。
 
-<p align="center">
-  <img width="1200" alt="Picot 主界面" src="docs/images/hero.webp" />
-</p>
+## 为什么开发 Picode
 
----
+许多官方 Agent 客户端能力很强，但运行开销较大，而且账号、聊天和项目通常彼此隔离。Picode 希望为个人开发者提供一个统一且低开销的本地入口：
 
-## 安装
+- 在 Pi 中使用 Codex、Claude、Cursor 和自定义兼容 API；
+- 同时管理多个聊天和项目，并持续保留任务上下文；
+- 按需选择导入本机聊天，而不是盲目导入全部内容；
+- 更换服务账号时保留聊天、计划和任务状态；
+- 可以选择极简对话，也可以选择结构化开发 Harness；
+- 查看主 Agent、子 Agent、资源消耗、等待状态和疑似卡死情况。
 
-**无需单独安装 `pi` CLI** — Picot 内置了自己的 pi 运行时。
+## 当前能力
 
-### 一键安装（推荐）
+### 账号与模型
 
-**macOS / Linux：**
-```bash
-curl -fsSL https://raw.githubusercontent.com/shixin-guo/picot/main/scripts/install.sh | bash
+- 手动导入受支持的本机 Codex、Claude 和 Cursor 账号配置。
+- 手动选择 JSON 凭据文件，并在激活前进行预览确认。
+- 支持 Codex 官方 OAuth 和 OpenAI 兼容反代配置。
+- 支持自定义 OpenAI 兼容与 Anthropic 兼容 API。
+- 模型选择会显示所属服务，同名模型不会被错误合并。
+- 可以保存多个账号，但同一服务同时只激活一个账号。
+- 更换账号后保留聊天和任务状态，只有用户明确输入“继续”才会恢复执行。
+- Cursor Desktop/CLI OAuth 实验通道与官方 Cursor SDK API Key 通道彼此独立。
+
+Picode 不会自动扫描或导入凭据。导入后的密钥进入受保护的 Account Vault，不会把原始 JSON 文件当作凭据仓库保存。
+
+### 聊天迁移与备份
+
+- 按需扫描本机 Codex、Cursor 和 Claude 聊天记录。
+- 导入列表显示标题、最近聊天摘要、时间、大小、来源和归档状态，并支持筛选排序。
+- 对来源聊天去重，并规范 Windows、Linux、macOS 的工作区路径。
+- 新导入聊天必须先绑定当前电脑上真实存在的工作区，才能执行工具。
+- 可以选择全量导入思考过程；摘要默认不显示，完整浏览时默认折叠。
+- 提供只读完整上下文浏览器，兼容 Codex、Cursor 和 Claude。
+- 支持无损聊天备份，可选加密且默认启用加密。
+- 支持生成适合长项目迁移的压缩上下文包。
+
+聊天备份不会打包项目文件。
+
+### 任务与 Agent 工作流
+
+- **Simple Task**：无需选择项目即可创建，使用 Picode 管理的安全 Scratch Space。
+- **Harness Task**：绑定真实工作区，并加入结构化计划、证据、验证和可选 Git 隔离。
+- 持久保存任务状态和账号接管状态。
+- 用户可以配置适合简单、边界明确工作的子 Agent 模型。
+- Runtime Monitor 可查看 Agent、子 Agent、资源使用、等待原因和疑似停滞。
+- 全局扩展和任务绑定扩展均采用延迟发现、按需加载。
+- 用户明确调用的 Skill 可以覆盖当前任务的默认 Picode 工作流。
+
+Picode 不会把启动程序时继承的目录作为默认工作区。空白启动会进入应用自有 Scratch Space，从而避开 `C:\Windows\System32` 等危险位置。
+
+### 桌面体验
+
+- Rust 宿主管理内置的 `pi --mode rpc` 运行时。
+- 多聊天、多项目以及隔离的 Pi 进程。
+- 流式 Markdown、工具调用、Diff、思考块、附件和消息队列。
+- 聊天搜索、改名、收藏、标签、归档和费用信息。
+- XML 语言包，内置英语和简体中文。
+- Pi 包管理与扩展兼容能力。
+- 继承自 Picot 的局域网和移动端访问能力，并计划以扩展形式提供远程控制。
+
+## 架构
+
+```text
+Picode 桌面端
+├─ Tauri 2 / Rust 宿主
+│  ├─ Pi 进程与聊天生命周期
+│  ├─ Account Vault 与服务激活
+│  ├─ 任务、Harness、扩展和运行监控服务
+│  └─ 聊天迁移、备份与工作区安全
+├─ WebView 界面
+│  ├─ 聊天、设置、账号、模型和导入
+│  └─ 任务与 Runtime Monitor 面板
+└─ 内置 Pi 运行时
+   ├─ pi --mode rpc
+   ├─ Picode Bridge 扩展
+   └─ 用户与项目 Pi 扩展
 ```
 
-**Windows（PowerShell）：**
-```powershell
-irm https://raw.githubusercontent.com/shixin-guo/picot/main/scripts/install.ps1 | iex
-```
+桌面界面通过本地 RPC/WebSocket Bridge 与 Pi 通信，Agent 的实际执行仍留在运行 Picode 的本机。
 
-脚本会自动识别系统和架构，下载对应安装包并完成安装。macOS 下还会自动清除 Gatekeeper 检疫属性，无需手动点击「仍要打开」。
+## 从源代码构建
 
-安装指定版本：
-```bash
-# macOS / Linux
-curl -fsSL https://raw.githubusercontent.com/shixin-guo/picot/main/scripts/install.sh | bash -s -- --version v0.3.0
+### 环境要求
 
-# Windows — 企业 MSI 部署
-& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/shixin-guo/picot/main/scripts/install.ps1'))) -Version v0.3.0 -MSI
-```
-
-### 手动下载
-
-[从 GitHub Releases 下载](https://github.com/shixin-guo/picot/releases)
-
-| 平台 | 文件 |
-|------|------|
-| macOS Apple Silicon | `Picot_*_aarch64.dmg` |
-| macOS Intel | `Picot_*_x64.dmg` |
-| Linux x86\_64（Debian/Ubuntu） | `Picot_*_amd64.deb` |
-| Linux arm64（Debian/Ubuntu） | `Picot_*_arm64.deb` |
-| Linux x86\_64（RHEL/Fedora） | `Picot-*-1.x86_64.rpm` |
-| Linux arm64（RHEL/Fedora） | `Picot-*-1.aarch64.rpm` |
-| Windows x64 | `Picot_*_x64-setup.exe` |
-| Windows arm64 | `Picot_*_arm64-setup.exe` |
-
-### macOS 未签名提示
-
-Picot 目前发布的 macOS 版本未经 Apple 开发者 ID 签名/公证。
-使用一键安装脚本会自动处理此问题。如需手动安装：
-
-1. 将 `Picot.app` 拖入 `/Applications`
-2. 右键点击 → **打开**
-3. 若仍被阻止：**系统设置 → 隐私与安全性 → 仍要打开**
-
-<p align="center">
-  <img width="420" alt="macOS Gatekeeper 未验证提示" src="docs/images/gatekeeper-warning-zh.webp" />
-</p>
-
-点击**完成**：
-
-<p align="center">
-  <img width="960" alt="在 macOS 设置中允许打开 Picot" src="docs/images/gatekeeper-allow.webp" />
-</p>
-
----
-
-## 它能做什么
-
-Picot 为 Pi 提供完整的可视化界面。打开任意项目文件夹，与 Agent 对话，浏览会话和文件——无需打开终端。多个项目可以并行运行，每个项目有独立窗口和独立 Agent 进程。
-
----
-
-## 功能特性
-
-### 📸 界面预览
-
-<p align="center">
-  <img width="1200" alt="Picot 工作区与项目界面" src="docs/images/workspace.webp" />
-</p>
-
-### 💬 对话
-
-- 完整 Markdown 渲染，代码块语法高亮
-- **流式响应**，实时打字效果（基于 remend）
-- 图片附件支持——粘贴、拖放或按钮上传
-- 编辑工具调用的**内联 Diff 视图**（红绿行对比）
-- 工具调用卡片和**思考块**实时渲染
-- 一键复制任意消息
-- 滚动到底部按钮，含未读消息提示
-- **消息队列** — Agent 工作时可继续输入，消息以气泡形式排队，完成后自动依序发送
-
-### 🗂️ 多会话 & 多 Agent
-
-- **多 Agent 并行** — 每个会话启动独立的 headless pi 进程，不弹新窗口，不中断已有会话
-- 从侧边栏浏览并恢复任意历史会话
-- 跨所有会话历史**全文搜索**，高亮匹配片段
-- 会话按创建时间排序，活跃会话显示绿点
-- 内联重命名、收藏、标签和筛选
-
-### 🗃️ 项目与工作区
-
-- **多项目** — 每个项目独立窗口、工作目录、会话历史和 Agent
-- 项目头部显示**当前 Git 分支**
-- **在外部编辑器中打开** — 直接从 Picot 启动 VS Code、Cursor 等
-- 原生文件夹选择器，无需使用终端打开项目
-
-### 📱 移动端 & 局域网访问
-
-<p align="center">
-  <img width="900" alt="局域网与移动端访问面板" src="docs/images/lan-mobile-panel.webp" />
-</p>
-<p align="center">
-  <img width="360" alt="移动端上的 Picot" src="docs/images/mobile.webp" />
-</p>
-
-- **局域网二维码** — 扫码即可在同网络的任意设备上访问 Picot
-- 移动端 URL 优化处理，支持 PWA 安装（iOS/Android 可添加到主屏幕）
-
-### 📦 包管理器
-
-<p align="center">
-  <img width="1200" alt="内置包管理器界面" src="docs/images/package-manager.webp" />
-</p>
-
-- 在 UI 内浏览、安装和删除社区包
-- 基于 `pi install`，无需额外命令
-
-### 💰 费用 & 用量面板
-
-<p align="center">
-  <img width="1200" alt="费用面板总览" src="docs/images/cost-dashboard.webp" />
-</p>
-<p align="center">
-  <img width="1200" alt="按模型与趋势拆解" src="docs/images/cost-breakdown.webp" />
-</p>
-
-- 每个会话实时 Token 用量和费用追踪
-- 完整费用面板，含信息栏、趋势图和按模型分类
-- **上下文窗口可视化** — 点击 Token 气泡查看已缓存 Token、新输入和可用空间
-
-### 🎨 主题 & 外观
-
-- 六款内置主题：**Dusk（默认）**、Dawn、Midnight、Clean、Terracotta、Sage
-- 毛玻璃头部和输入栏（`backdrop-filter: blur`）
-- macOS 原生标题栏 overlay 集成
-- 支持从顶部**拖动窗口**，媲美原生 App 体验
-
-### 🎤 语音输入
-
-- 输入框中的麦克风按钮，调用 Web Speech API（本地语音识别）
-- 实时转录到输入框，录音时红色脉冲动画
-
-### 🗄️ 文件浏览器
-
-- 右侧边栏懒加载文件树
-- 浏览目录，原生方式打开文件
-- 拖拽文件到输入框以插入路径
-
-### ⚙️ 设置 & 控制
-
-<p align="center">
-  <img width="1200" alt="设置与控制面板" src="docs/images/settings.webp" />
-</p>
-
-- 模型选择器，支持搜索/筛选和键盘操作
-- 思考级别切换（关闭 / 低 / 中 / 高）
-- 自动和手动**上下文压缩**，含状态显示
-- 推送通知开关
-- **自动更新** — 设置 → 通用 → 更新，一键应用内升级
-
----
-
-## 集成的 Pi 能力
-
-Picot 不重新实现 Agent 逻辑——它内嵌 Pi 并通过原生 UI 暴露其运行时能力。
-
-- **内嵌 `pi --mode rpc` 运行时** — 每个工作区一个独立的托管进程
-- **流式 RPC 桥接** — 逐 Token 输出、工具调用事件和思考块实时渲染
-- **会话生命周期 API** — 创建、切换、恢复会话，完整的按项目历史
-- **WebSocket Broker** — 多个 UI 客户端可同时连接同一个 pi 进程
-- **扩展兼容** — 自动加载 `~/.pi/agent/extensions/` 和 `.pi/extensions/` 中的用户扩展
-- **凭证复用** — 读取 Pi 已有的 `~/.pi/agent/auth.json`，无需单独登录
-
----
-
-## 工作原理
-
-```
-┌──────────────────────────────────────────────────────┐
-│ Picot .app                                       │
-│                                                      │
-│   Tauri + PiManager (Rust)                           │
-│      ├─► 启动  pi --mode rpc  (项目 A, :3001)        │
-│      ├─► 启动  pi --mode rpc  (项目 B, :3002)        │
-│      └─► 每个项目一个 OS 窗口 ──► WebView ──► HTTP   │
-│                                                      │
-│   resources/                                         │
-│      ├─ public/             (前端)                   │
-│      ├─ extensions/         (embedded-server.mjs)    │
-│      └─ pi/                 (bun 编译的 pi 二进制)   │
-└──────────────────────────────────────────────────────┘
-                       │
-                       ▼ 读取 / 写入
-              ~/.pi/agent/
-                 ├─ sessions/   (对话历史)
-                 ├─ auth.json   (API 密钥)
-                 └─ settings.json
-```
-
-嵌入的 pi 进程启动时加载 `embedded-server.mjs`。该扩展负责 Tauri WebView 所通信的 HTTP + WebSocket 层：静态资源、`/api/sessions`、`/api/cost-dashboard`、提示词 RPC 桥接等。Picot 的 Rust 层负责进程生命周期、端口分配和窗口管理。
-
----
-
-## 使用方法
-
-1. 启动 **Picot**
-2. 点击项目气泡或选择一个文件夹
-3. 开始对话 — 嵌入的 pi Agent 会自动在该工作区启动
-
-通过任意工作区内的 `pi /login` 提供模型凭证，或直接写入 `~/.pi/agent/auth.json`。Picot 本身不管理凭证。
-
----
-
-## 从源码构建
+- [Rust](https://www.rust-lang.org/tools/install)
+- [Bun](https://bun.sh/)
+- 当前操作系统对应的 Tauri 2 构建依赖
+- Git
 
 ```bash
-git clone https://github.com/shixin-guo/picot.git
-cd picot
+git clone https://github.com/awangs1986/picode.git
+cd picode
 bun install --frozen-lockfile
-bun run dev      # 下载内嵌 pi 二进制 + 启动 tauri dev 热重载
+bun run dev
 ```
 
-发布构建：
+构建桌面安装包：
 
 ```bash
-bun run build    # 下载内嵌 pi 二进制，然后运行 tauri build
+bun run build
 ```
 
-修改 `src-tauri/` 下的文件后：
+运行主要检查：
 
 ```bash
-bun run check:rust   # cargo check + clippy + fmt（快速，无需完整构建）
+bun test
+cd src-tauri
+cargo test
+cargo clippy --all-targets -- -D warnings
+cargo fmt -- --check
 ```
 
-升级内嵌 pi 版本：编辑 `scripts/pi-version.json`，运行 `bun run fetch:pi`，冒烟测试后提交。
+## 项目状态
 
----
+Picode 当前主要面向个人开发使用，并优先在 Windows 上验证。Linux 与 macOS 的可移植性是架构要求，但在稳定发布前仍需要更多平台测试。
 
-## 上游关系
+实现路线和架构决策记录在 [`docs/`](./docs/) 中。
 
-Picot 是 **Tau** 的维护性 fork，专为 Pi 优先的本地开发工作流定制。主要增强：
+## 上游与致谢
 
-- **Tauri 原生 PiManager** — 每个项目窗口启动一个独立的 `pi --mode rpc` 进程
-- **内嵌 pi 运行时** — 无需全局安装，Picot 自带二进制
-- **多会话不开新窗口** — headless pi 进程，当前 WebView 直接切换
-- **局域网 + 移动端访问** — 二维码、PWA 支持、多客户端 WebSocket broker
+Picode 是 [Picot](https://github.com/shixin-guo/picot) 的 fork 和衍生项目。Picot 提供了桌面交互模型、Tauri 基础、聊天界面，以及大量让本项目得以成立的早期集成工作。在此真诚感谢 Picot 的维护者和所有贡献者。
 
----
+Picode 由 [Pi coding agent](https://github.com/earendil-works/pi) 驱动。Pi 提供了本项目核心的轻量 Agent 运行时、RPC 模式、聊天格式、模型/服务接入和扩展生态。在此同样真诚感谢 Pi 的维护者和所有贡献者。
 
-## License
+在条件允许时，Picode 会尽量保持改动边界清晰并记录设计决定，以便继续吸收 Picot 上游的有用改进。
 
-MIT
+Picode 是独立的社区项目，与 OpenAI、Anthropic 或 Cursor 不存在官方隶属或背书关系。
+
+## 许可证
+
+Picode 按照 [MIT License](./LICENSE) 发布，与 Picot 的许可证保持一致。第三方组件和随附依赖继续遵守各自的许可证与声明。

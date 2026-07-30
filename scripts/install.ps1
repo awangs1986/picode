@@ -1,4 +1,4 @@
-# Picot installer — Windows (PowerShell 5.1+)
+# Picode installer — Windows (PowerShell 5.1+)
 # Usage:
 #   irm https://raw.githubusercontent.com/shixin-guo/picot/main/scripts/install.ps1 | iex
 # Or with a pinned version:
@@ -15,7 +15,7 @@ param(
 
 if ($Help) {
   Write-Host @"
-Picot Windows Installer
+Picode Windows Installer
 
 Usage: install.ps1 [-Version <tag>] [-MSI]
   -Version   Install a specific release tag (e.g. v0.3.0). Defaults to latest.
@@ -45,7 +45,7 @@ $ArchNorm = switch ($CpuArch) {
 $Repo       = "shixin-guo/picot"
 $ApiBase    = "https://api.github.com/repos/$Repo/releases"
 $DlBase     = "https://github.com/$Repo/releases/download"
-$AppName    = "Picot"
+$AppName    = "Picode"
 
 # ── Resolve version ───────────────────────────────────────────────────────────
 Write-Header "🎯  $AppName Installer (Windows)"

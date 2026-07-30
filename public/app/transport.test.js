@@ -142,11 +142,22 @@ describe("WsTransport", () => {
     const ws = fakeWsClient();
     const transport = new WsTransport(ws, {});
 
-    await transport.prepareChatPrompt("session-a", "openai-codex", "继续");
+    await transport.prepareChatPrompt("session-a", "openai-codex", "继续", {
+      taskId: "task-a",
+      model: "gpt-5",
+      sourcePort: 47821,
+    });
 
     expect(ws.sendControl).toHaveBeenCalledWith(
       "chat_prepare_prompt",
-      { sessionId: "session-a", piProvider: "openai-codex", message: "继续" },
+      {
+        sessionId: "session-a",
+        piProvider: "openai-codex",
+        message: "继续",
+        taskId: "task-a",
+        model: "gpt-5",
+        sourcePort: 47821,
+      },
       {},
     );
   });
@@ -156,11 +167,28 @@ describe("WsTransport", () => {
     const transport = new WsTransport(ws, {});
 
     await transport.scanLocalChats(["codex", "cursor"]);
-    await transport.importLocalChats("scan-1", ["chat-2"], { "workspace-1": "C:\\work" });
+    await transport.openChatMigrationContext("scan-1", "chat-2");
+    await transport.readChatMigrationContext("scan-1", "chat-2", "cursor-2");
+    await transport.importLocalChats(
+      "scan-1",
+      ["chat-2"],
+      { "workspace-1": "C:\\work" },
+      { includeReasoning: true },
+    );
 
     expect(ws.sendControl).toHaveBeenCalledWith(
       "chat_migration_scan",
       { sources: ["codex", "cursor"] },
+      { timeoutMs: 120_000 },
+    );
+    expect(ws.sendControl).toHaveBeenCalledWith(
+      "chat_migration_context_open",
+      { scanId: "scan-1", candidateId: "chat-2", port: 47821 },
+      {},
+    );
+    expect(ws.sendControl).toHaveBeenCalledWith(
+      "chat_migration_context_page",
+      { scanId: "scan-1", candidateId: "chat-2", cursor: "cursor-2" },
       { timeoutMs: 120_000 },
     );
     expect(ws.sendControl).toHaveBeenCalledWith(
@@ -169,6 +197,7 @@ describe("WsTransport", () => {
         scanId: "scan-1",
         candidateIds: ["chat-2"],
         workspaceBindings: { "workspace-1": "C:\\work" },
+        includeReasoning: true,
       },
       { timeoutMs: 0 },
     );
@@ -245,6 +274,67 @@ describe("WsTransport", () => {
     expect(transport.hasUpdater).toBe(false);
   });
 
+  test("task control uses the broker for durable task and exact-run operations", async () => {
+    const ws = fakeWsClient();
+    const transport = new WsTransport(ws, {});
+
+    await transport.taskSnapshot();
+    await transport.createSimpleTask("chat-a", "Discuss design");
+    await transport.registerWorkspace("windows", "D:\\old", "D:\\game");
+    await transport.createHarnessTask("chat-b", "Build game", "workspace-a");
+    await transport.continueTask("task-a", "继续", {
+      provider: "codex",
+      accountId: "account-b",
+      channel: "openai",
+      model: "gpt-5",
+    });
+    await transport.cancelAgentRun("run-a");
+    await transport.reviewHarness("task-a");
+    await transport.confirmHarness("task-a", ["package.test"]);
+    await transport.runHarnessAction("task-a", "package.test", {}, true);
+
+    expect(ws.sendControl).toHaveBeenCalledWith("task_snapshot", {}, {});
+    expect(ws.sendControl).toHaveBeenCalledWith(
+      "task_create_simple",
+      { chatId: "chat-a", goal: "Discuss design" },
+      {},
+    );
+    expect(ws.sendControl).toHaveBeenCalledWith(
+      "task_register_workspace",
+      { sourcePlatform: "windows", sourcePath: "D:\\old", localPath: "D:\\game" },
+      {},
+    );
+    expect(ws.sendControl).toHaveBeenCalledWith(
+      "task_create_harness",
+      { chatId: "chat-b", goal: "Build game", workspaceId: "workspace-a" },
+      {},
+    );
+    expect(ws.sendControl).toHaveBeenCalledWith(
+      "task_continue",
+      {
+        taskId: "task-a",
+        command: "继续",
+        provider: "codex",
+        accountId: "account-b",
+        channel: "openai",
+        model: "gpt-5",
+      },
+      {},
+    );
+    expect(ws.sendControl).toHaveBeenCalledWith("agent_cancel", { runId: "run-a" }, {});
+    expect(ws.sendControl).toHaveBeenCalledWith("harness_review", { taskId: "task-a" }, {});
+    expect(ws.sendControl).toHaveBeenCalledWith(
+      "harness_confirm",
+      { taskId: "task-a", selectedIds: ["package.test"] },
+      {},
+    );
+    expect(ws.sendControl).toHaveBeenCalledWith(
+      "harness_run_action",
+      { taskId: "task-a", actionId: "package.test", parameters: {}, riskApproved: true },
+      { timeoutMs: 0 },
+    );
+  });
+
   test("downloadAndInstallUpdate forwards the progress callback with no timeout", async () => {
     const ws = fakeWsClient();
     const transport = new WsTransport(ws, {});
@@ -256,6 +346,45 @@ describe("WsTransport", () => {
       "download_and_install_update",
       {},
       { onProgress, timeoutMs: 0 },
+    );
+  });
+
+  test("professional extensions remain manual, scoped, and broker-controlled", async () => {
+    const ws = fakeWsClient();
+    const transport = new WsTransport(ws, {});
+
+    await transport.previewExternalCapabilityImport("cursor", "D:\\project");
+    await transport.applyExternalCapabilityImport("preview-a", ["rule-a"], { task: "task-a" });
+    await transport.previewMcpImport('{"mcpServers":{}}');
+    await transport.applyMcpImport("preview-m", { memory: {} }, { task: "task-a" });
+    await transport.startProfessionalExtension("review", "task-a", "run-a", 5000);
+    await transport.launchDap(
+      "task-a",
+      "run-a",
+      { adapter: "csharp-ls", arguments: [], request: "launch", target: "game.exe" },
+      true,
+      5000,
+    );
+
+    expect(ws.sendControl).toHaveBeenCalledWith(
+      "external_import_preview",
+      { source: "cursor", root: "D:\\project" },
+      {},
+    );
+    expect(ws.sendControl).toHaveBeenCalledWith(
+      "external_import_apply",
+      { previewId: "preview-a", candidateIds: ["rule-a"], scope: { task: "task-a" } },
+      {},
+    );
+    expect(ws.sendControl).toHaveBeenCalledWith(
+      "extension_start",
+      { extensionId: "review", taskId: "task-a", agentRunId: "run-a", timeoutMs: 5000 },
+      { timeoutMs: 0 },
+    );
+    expect(ws.sendControl).toHaveBeenCalledWith(
+      "dap_launch",
+      expect.objectContaining({ taskId: "task-a", explicitlyAuthorized: true }),
+      { timeoutMs: 0 },
     );
   });
 

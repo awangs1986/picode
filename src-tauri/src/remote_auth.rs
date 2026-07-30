@@ -113,6 +113,7 @@ mod tests {
             !String::from_utf8_lossy(&fs::read(temp.join("picot.sqlite3")).unwrap())
                 .contains(&device_token)
         );
+        drop(auth);
         fs::remove_dir_all(temp).unwrap();
     }
 
@@ -129,6 +130,7 @@ mod tests {
         let token = auth.exchange(&pairing.token, "phone", 3_001).unwrap();
         auth.revoke("phone").unwrap();
         assert!(!auth.authorize(&token).unwrap());
+        drop(auth);
         fs::remove_dir_all(temp).unwrap();
     }
 }

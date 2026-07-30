@@ -625,4 +625,59 @@ describe("settings API key model refresh", () => {
     ).toBe(true);
     expect(scrollContainer.scrollTop).toBe(320);
   });
+
+  test("lets a Codex reverse proxy switch between recommended, all, and manual catalogs", async () => {
+    let mode = "recommended";
+    const rpcCommand = vi.fn(async (command) => {
+      if (command.type === "list_model_catalog") {
+        return {
+          success: true,
+          data: {
+            providers: [
+              {
+                provider: "openai",
+                displayName: "Codex reverse proxy",
+                configured: true,
+                source: "stored",
+                catalogPolicy: "codex-proxy",
+                catalogMode: mode,
+                endpointLabel: "proxy.example",
+                models: [],
+              },
+            ],
+          },
+        };
+      }
+      if (command.type === "set_model_catalog_mode") {
+        mode = command.mode;
+        return { success: true };
+      }
+      throw new Error(`Unexpected command: ${command.type}`);
+    });
+    const onModelConfigurationChanged = vi.fn();
+    const { loadApiKeysPanel } = setupSettingsEditors({
+      rpcCommand,
+      closeSettings: vi.fn(),
+      onModelConfigurationChanged,
+      clearSettingsSaveMessage: vi.fn(),
+      setSettingsSaveButtonSaving: vi.fn(),
+      showSettingsSaveError: vi.fn(),
+      showSettingsSaveSuccess: vi.fn(),
+    });
+
+    await loadApiKeysPanel();
+    const select = document.querySelector(".api-model-catalog-mode select");
+    expect(select.value).toBe("recommended");
+    expect(select.parentElement.textContent).toContain("proxy.example");
+    select.value = "manual";
+    select.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+
+    await vi.waitFor(() => expect(onModelConfigurationChanged).toHaveBeenCalledTimes(1));
+    expect(rpcCommand).toHaveBeenCalledWith({
+      type: "set_model_catalog_mode",
+      provider: "openai",
+      mode: "manual",
+    });
+    expect(document.querySelector(".api-model-manual-form")).not.toBeNull();
+  });
 });
