@@ -1,12 +1,12 @@
 [package]
-name = "picot"
+name = "picode"
 version = "0.3.0"
-description = "Pi Agent Desktop - session manager for pi coding agent"
+description = "Picode - desktop GUI and session manager for the Pi coding agent"
 authors = ["Pi Desktop"]
 edition = "2021"
 
 [[bin]]
-name = "picot"
+name = "picode"
 path = "src/main.rs"
 
 [build-dependencies]
@@ -22,6 +22,11 @@ tauri-plugin-process = "2"
 tauri-plugin-log = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+aes-gcm = "0.10"
+argon2 = "0.5"
+base64 = "0.22"
+keyring = { version = "3.6.3", default-features = false, features = ["apple-native", "windows-native", "sync-secret-service"] }
+rand = "0.8"
 tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", features = ["json"] }
 dirs = "5"
@@ -33,8 +38,13 @@ percent-encoding = "2"
 rusqlite = { version = "0.32", features = ["bundled"] }
 sha2 = "0.10"
 uuid = { version = "1", features = ["v4"] }
+zeroize = "1"
+toml = "0.8"
 axum = { version = "0.8", features = ["ws"] }
 tower-http = { version = "0.6", features = ["fs"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_ProcessStatus", "Win32_System_Threading"] }
 
 [profile.dev]
 incremental = true

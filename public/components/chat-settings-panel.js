@@ -2,7 +2,7 @@
  * <chat-settings-panel> Web Component
  *
  * The "Agent Inbox" tab inside Settings. The normal Telegram setup flow only asks
- * for a bot token; Picot validates the bot, waits for the user's first DM, and
+ * for a bot token; Picode validates the bot, waits for the user's first DM, and
  * writes the full internal ~/.pi/agent/chat/config.json automatically.
  */
 
@@ -17,7 +17,7 @@ class ChatSettingsPanel extends HTMLElement {
           <div class="settings-row" id="setting-super-agent">
             <span class="settings-label settings-label-stack">
               <span class="settings-label-main">Start automatically</span>
-              <span class="settings-label-sub">Launch Agent Inbox when Picot opens</span>
+              <span class="settings-label-sub">Launch Agent Inbox when Picode opens</span>
             </span>
             <button class="settings-toggle" id="toggle-super-agent"></button>
           </div>
@@ -26,11 +26,11 @@ class ChatSettingsPanel extends HTMLElement {
         <div class="settings-section">
           <div class="settings-section-title">Telegram</div>
           <p class="settings-help">
-            Paste a Telegram bot token from <code>@BotFather</code>. Picot will detect your
+              Paste a Telegram bot token from <code>@BotFather</code>. Picode will detect your
             Telegram DM automatically after you send <code>/start</code> to the bot.
           </p>
           <p class="settings-help telegram-safety-note">
-            Telegram messages enter Agent Inbox first. Picot keeps project-agent dispatch
+              Telegram messages enter Agent Inbox first. Picode keeps project-agent dispatch
             behind local approval.
           </p>
           <div class="telegram-setup-card">
@@ -208,7 +208,7 @@ class ChatSettingsPanel extends HTMLElement {
   }
 
   async _disconnectTelegram() {
-    if (!window.confirm("Disconnect Telegram from Picot?")) return;
+    if (!window.confirm("Disconnect Telegram from Picode?")) return;
     try {
       const config = JSON.parse(this._textarea.value || "{}");
       const accounts = Object.entries(config.accounts || {}).filter(

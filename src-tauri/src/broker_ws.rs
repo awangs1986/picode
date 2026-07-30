@@ -12,6 +12,7 @@ use tokio_tungstenite::tungstenite::Message;
 const PROTOCOL_VERSION: u8 = 1;
 
 type Tx = mpsc::UnboundedSender<String>;
+pub type UpstreamEventObserver = Arc<dyn Fn(u16, Value) + Send + Sync>;
 
 /// Emits an intermediate progress frame for an in-flight `broker_control`
 /// request (e.g. updater download chunks). The broker wires this to the
@@ -24,7 +25,9 @@ pub type ProgressSink = Arc<dyn Fn(Value) + Send + Sync>;
 /// lifecycle and native ops on behalf of any client (desktop WebView, remote,
 /// mobile) without main.rs and broker_ws forming a circular dependency.
 pub type ControlHandler = Arc<
-    dyn Fn(String, Value, ProgressSink) -> BoxFuture<'static, Result<Value, String>> + Send + Sync,
+    dyn Fn(String, Value, ProgressSink, bool) -> BoxFuture<'static, Result<Value, String>>
+        + Send
+        + Sync,
 >;
 
 #[derive(Default)]
@@ -36,6 +39,7 @@ struct BrokerInner {
     active_port: Mutex<Option<u16>>,
     next_client_id: AtomicU64,
     control_handler: Mutex<Option<ControlHandler>>,
+    upstream_event_observer: Mutex<Option<UpstreamEventObserver>>,
 }
 
 #[derive(Clone)]
@@ -89,6 +93,15 @@ impl BrokerWs {
         *self.inner.active_port.lock().unwrap()
     }
 
+    pub fn port_for_session(&self, session_id: &str) -> Option<u16> {
+        self.inner
+            .routes
+            .lock()
+            .unwrap()
+            .get(session_id.trim())
+            .copied()
+    }
+
     /// Number of pi upstream connections the broker is currently maintaining.
     /// Used to detect when a global `active_port` fallback would be ambiguous:
     /// with more than one live pi process (multi-window / multi-workspace) the
@@ -98,10 +111,42 @@ impl BrokerWs {
         self.inner.upstreams.lock().unwrap().len()
     }
 
+    /// Send a host-originated extension command through the same WebSocket
+    /// transport used by the UI. Extension-only commands are not understood by
+    /// pi's stdin RPC protocol, so they must be wrapped as a broker command.
+    pub fn send_command_to_port(&self, port: u16, payload: Value) -> Result<(), String> {
+        self.ensure_upstream(port);
+        let upstream_tx = self
+            .inner
+            .upstreams
+            .lock()
+            .unwrap()
+            .get(&port)
+            .cloned()
+            .ok_or_else(|| format!("Pi process on port {port} is unavailable"))?;
+        let request_id = self.inner.next_client_id.fetch_add(1, Ordering::Relaxed);
+        upstream_tx
+            .send(
+                json!({
+                    "type": "broker_command",
+                    "protocolVersion": PROTOCOL_VERSION,
+                    "requestId": format!("host-{request_id}"),
+                    "sourcePort": port,
+                    "payload": payload,
+                })
+                .to_string(),
+            )
+            .map_err(|_| format!("Pi process on port {port} is unavailable"))
+    }
+
     /// Install the handler used to execute `broker_control` requests. Called
     /// once from main.rs after PiManager + BrokerWs exist.
     pub fn set_control_handler(&self, handler: ControlHandler) {
         *self.inner.control_handler.lock().unwrap() = Some(handler);
+    }
+
+    pub fn set_upstream_event_observer(&self, observer: UpstreamEventObserver) {
+        *self.inner.upstream_event_observer.lock().unwrap() = Some(observer);
     }
 
     pub fn register_session(&self, port: u16, session_id: &str) {
@@ -166,10 +211,12 @@ impl BrokerWs {
     async fn run(self, listener: TcpListener) {
         loop {
             match listener.accept().await {
-                Ok((stream, _)) => {
+                Ok((stream, peer)) => {
                     let broker = self.clone();
                     tauri::async_runtime::spawn(async move {
-                        broker.handle_ui_client(stream).await;
+                        broker
+                            .handle_ui_client(stream, peer.ip().is_loopback())
+                            .await;
                     });
                 }
                 Err(err) => {
@@ -180,7 +227,7 @@ impl BrokerWs {
         }
     }
 
-    async fn handle_ui_client(self, stream: TcpStream) {
+    async fn handle_ui_client(self, stream: TcpStream, local_client: bool) {
         let ws = match tokio_tungstenite::accept_async(stream).await {
             Ok(ws) => ws,
             Err(err) => {
@@ -220,7 +267,7 @@ impl BrokerWs {
 
         while let Some(item) = reader.next().await {
             match item {
-                Ok(Message::Text(text)) => self.route_ui_message(&text, &tx),
+                Ok(Message::Text(text)) => self.route_ui_message(&text, &tx, local_client),
                 Ok(Message::Close(_)) => break,
                 Ok(_) => {}
                 Err(err) => {
@@ -234,7 +281,7 @@ impl BrokerWs {
         writer_task.abort();
     }
 
-    fn route_ui_message(&self, text: &str, client_tx: &Tx) {
+    fn route_ui_message(&self, text: &str, client_tx: &Tx, local_client: bool) {
         let Ok(value) = serde_json::from_str::<Value>(text) else {
             log::warn!("[broker-ws] invalid UI message");
             return;
@@ -244,7 +291,7 @@ impl BrokerWs {
         // process/window lifecycle or native ops handled by the host (Rust).
         // Dispatch to the injected control handler and reply to this client only.
         if value.get("type").and_then(Value::as_str) == Some("broker_control") {
-            self.dispatch_control(&value, client_tx);
+            self.dispatch_control(&value, client_tx, local_client);
             return;
         }
 
@@ -305,7 +352,7 @@ impl BrokerWs {
         );
     }
 
-    fn dispatch_control(&self, value: &Value, client_tx: &Tx) {
+    fn dispatch_control(&self, value: &Value, client_tx: &Tx, local_client: bool) {
         let request_id = value
             .get("requestId")
             .and_then(Value::as_str)
@@ -355,7 +402,7 @@ impl BrokerWs {
             request_id
         );
         tauri::async_runtime::spawn(async move {
-            let response = match handler(command.clone(), args, sink).await {
+            let response = match handler(command.clone(), args, sink, local_client).await {
                 Ok(result) => json!({
                     "type": "control_response",
                     "requestId": request_id,
@@ -529,6 +576,9 @@ impl BrokerWs {
             // learn path (`new_session_core` does not call register_session) —
             // evicts the previous session's now-defunct route on this port.
             self.set_route(port, session_id);
+        }
+        if let Some(observer) = self.inner.upstream_event_observer.lock().unwrap().clone() {
+            observer(port, payload.clone());
         }
         let workspace_id = payload.get("workspaceId").cloned().unwrap_or(Value::Null);
         let session_id = payload.get("sessionId").cloned().unwrap_or(Value::Null);
@@ -711,6 +761,34 @@ mod tests {
                 "payload": { "type": "mirror_sync_request" }
             })),
             Some(47824)
+        );
+    }
+
+    #[test]
+    fn host_extension_command_is_wrapped_for_the_upstream_websocket() {
+        let broker = BrokerWs {
+            port: 49000,
+            inner: Arc::new(BrokerInner::default()),
+        };
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        broker.inner.upstreams.lock().unwrap().insert(47821, tx);
+
+        broker
+            .send_command_to_port(47821, json!({ "type": "picot_reload_accounts" }))
+            .unwrap();
+
+        let message: Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
+        assert_eq!(
+            message.get("type").and_then(Value::as_str),
+            Some("broker_command")
+        );
+        assert_eq!(
+            message.get("sourcePort").and_then(Value::as_u64),
+            Some(47821)
+        );
+        assert_eq!(
+            message.pointer("/payload/type").and_then(Value::as_str),
+            Some("picot_reload_accounts")
         );
     }
 }

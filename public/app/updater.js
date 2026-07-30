@@ -69,7 +69,7 @@ export function createAppUpdater({
         visible: true,
         label: "Update",
         tone: "ok",
-        title: `Download and install Picot ${pendingUpdate.version}`,
+        title: `Download and install Picode ${pendingUpdate.version}`,
       });
       return;
     }
@@ -106,7 +106,7 @@ export function createAppUpdater({
     }
     updateInstallRow.hidden = false;
     const from = update.currentVersion ? ` (from ${update.currentVersion})` : "";
-    updateInstallLabel.textContent = `Picot ${update.version}${from}`;
+    updateInstallLabel.textContent = `Picode ${update.version}${from}`;
     installUpdateBtn.disabled = false;
     installUpdateBtn.textContent = "Download & install";
   }
@@ -278,7 +278,7 @@ export function createAppUpdater({
       setTimeout(() => {
         transport?.relaunchApp?.().catch((err) => {
           console.error("[updater] relaunch failed:", err);
-          setUpdateStatus("Please restart Picot to finish updating.", "warn");
+          setUpdateStatus("Please restart Picode to finish updating.", "warn");
           updateCheckFailed = true;
           syncSidebarUpdateButton();
         });

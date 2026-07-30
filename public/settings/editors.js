@@ -1,3 +1,5 @@
+import { t } from "../i18n/index.js";
+
 export function setupSettingsEditors({
   rpcCommand,
   closeSettings,
@@ -145,6 +147,7 @@ export function setupSettingsEditors({
     }
 
     const modelList = hasConfiguredModels ? buildModelList(p) : null;
+    const catalogControls = p.catalogPolicy === "codex-proxy" ? buildCatalogControls(p) : null;
     header.appendChild(toggle);
     header.appendChild(info);
     if (hasConfiguredModels) {
@@ -155,6 +158,7 @@ export function setupSettingsEditors({
     }
     header.appendChild(actions);
     row.appendChild(header);
+    if (catalogControls) row.appendChild(catalogControls);
     if (modelList) {
       const isExpanded = providerExpansionState.get(p.provider) ?? true;
       modelList.classList.toggle("collapsed", !isExpanded);
@@ -184,6 +188,87 @@ export function setupSettingsEditors({
       toggle.hidden = true;
     }
     return row;
+  }
+
+  function buildCatalogControls(p) {
+    const controls = document.createElement("div");
+    controls.className = "api-model-catalog-controls";
+
+    const label = document.createElement("label");
+    label.className = "api-model-catalog-mode";
+    const caption = document.createElement("span");
+    caption.textContent = p.endpointLabel
+      ? t(
+          "models.catalogEndpoint",
+          { endpoint: p.endpointLabel },
+          `Model catalog · ${p.endpointLabel}`,
+        )
+      : t("models.catalog", {}, "Model catalog");
+    const select = document.createElement("select");
+    select.setAttribute("aria-label", `Model catalog for ${p.displayName || p.provider}`);
+    for (const [value, text] of [
+      ["recommended", t("models.catalogRecommended", {}, "Codex recommended")],
+      ["all", t("models.catalogAll", {}, "All proxy models")],
+      ["manual", t("models.catalogManual", {}, "Manual selection")],
+    ]) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = text;
+      select.appendChild(option);
+    }
+    select.value = p.catalogMode || "recommended";
+    select.addEventListener("change", async () => {
+      select.disabled = true;
+      const response = await rpcCommand({
+        type: "set_model_catalog_mode",
+        provider: p.provider,
+        mode: select.value,
+      });
+      if (response?.success) {
+        await onModelConfigurationChanged?.();
+        await loadApiKeysPanel({ preserveUi: true });
+      } else {
+        select.disabled = false;
+      }
+    });
+    label.append(caption, select);
+    controls.appendChild(label);
+
+    if (p.catalogMode === "manual") {
+      const form = document.createElement("form");
+      form.className = "api-model-manual-form";
+      const input = document.createElement("input");
+      input.type = "text";
+      input.placeholder = t("models.exactId", {}, "Exact model ID");
+      input.setAttribute("aria-label", `Add model for ${p.displayName || p.provider}`);
+      const add = document.createElement("button");
+      add.type = "submit";
+      add.textContent = t("models.add", {}, "Add");
+      form.append(input, add);
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const modelId = input.value.trim();
+        if (!modelId) return;
+        input.disabled = true;
+        add.disabled = true;
+        const response = await rpcCommand({
+          type: "set_manual_catalog_model",
+          provider: p.provider,
+          modelId,
+          enabled: true,
+        });
+        if (response?.success) {
+          await loadApiKeysPanel({ preserveUi: true });
+        } else {
+          input.disabled = false;
+          add.disabled = false;
+          input.setCustomValidity(response?.error || "Model is not advertised by this provider");
+          input.reportValidity();
+        }
+      });
+      controls.appendChild(form);
+    }
+    return controls;
   }
 
   function buildModelList(p) {
@@ -222,7 +307,7 @@ export function setupSettingsEditors({
     wrap.appendChild(columnLabels);
 
     for (const model of models) {
-      wrap.appendChild(buildModelRow(model));
+      wrap.appendChild(buildModelRow(model, p));
     }
     return wrap;
   }
@@ -268,7 +353,7 @@ export function setupSettingsEditors({
     await loadApiKeysPanel({ preserveUi: true });
   }
 
-  function buildModelRow(model) {
+  function buildModelRow(model, provider) {
     const row = document.createElement("div");
     row.className = "api-model-row";
     row.dataset.provider = model.provider;
@@ -293,6 +378,26 @@ export function setupSettingsEditors({
 
     const actions = document.createElement("div");
     actions.className = "api-model-actions";
+
+    if (provider.catalogMode === "manual") {
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "api-model-manual-remove";
+      remove.textContent = t("models.remove", {}, "Remove");
+      remove.setAttribute("aria-label", `Remove ${model.name || model.id} from manual catalog`);
+      remove.addEventListener("click", async () => {
+        remove.disabled = true;
+        const response = await rpcCommand({
+          type: "set_manual_catalog_model",
+          provider: model.provider,
+          modelId: model.id,
+          enabled: false,
+        });
+        if (response?.success) await loadApiKeysPanel({ preserveUi: true });
+        else remove.disabled = false;
+      });
+      actions.appendChild(remove);
+    }
 
     const visibilityLabel = document.createElement("label");
     visibilityLabel.className = "api-model-visibility";

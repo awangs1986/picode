@@ -124,7 +124,368 @@ export class WsTransport {
     return this._control("remove_pi_package", { source }, { timeoutMs: PACKAGE_TIMEOUT_MS });
   }
 
+  // ── Local account vault / manual imports ──────────────────────────────────
+
+  listAccounts() {
+    return this._control("account_list", {});
+  }
+
+  previewLocalAccountImport(provider) {
+    return this._control("account_preview_local", { provider });
+  }
+
+  previewJsonAccountImport(provider, content, sourceName = null) {
+    return this._control("account_preview_json", { provider, content, sourceName });
+  }
+
+  applyAccountImport(previewId, candidateIds, activateCandidateId = null) {
+    return this._control("account_apply_import", {
+      previewId,
+      candidateIds,
+      activateCandidateId,
+    });
+  }
+
   // ── Native-only ops (need an OS host; reject when capabilities.native=false) ─
+
+  activateAccount(accountId) {
+    return this._control("account_activate", { accountId });
+  }
+
+  deactivateAccount(provider) {
+    return this._control("account_deactivate", { provider });
+  }
+
+  discoverCustomProviderModels(baseUrl, api, apiKey) {
+    return this._control(
+      "custom_provider_discover",
+      { baseUrl, api, apiKey },
+      { timeoutMs: 30_000 },
+    );
+  }
+
+  prepareChatPrompt(sessionId, piProvider, message, task = {}) {
+    return this._control("chat_prepare_prompt", {
+      sessionId,
+      piProvider,
+      message,
+      ...(task.taskId ? { taskId: task.taskId } : {}),
+      ...(task.model ? { model: task.model } : {}),
+      ...(Number.isFinite(task.sourcePort) ? { sourcePort: task.sourcePort } : {}),
+    });
+  }
+
+  taskSnapshot() {
+    return this._control("task_snapshot", {});
+  }
+
+  createSimpleTask(chatId, goal) {
+    return this._control("task_create_simple", { chatId, goal });
+  }
+
+  registerWorkspace(sourcePlatform, sourcePath, localPath = null) {
+    return this._control("task_register_workspace", {
+      sourcePlatform,
+      sourcePath,
+      localPath,
+    });
+  }
+
+  bindWorkspace(workspaceId, localPath) {
+    return this._control("task_bind_workspace", { workspaceId, localPath });
+  }
+
+  createHarnessTask(chatId, goal, workspaceId) {
+    return this._control("task_create_harness", { chatId, goal, workspaceId });
+  }
+
+  startTask(taskId, { provider, accountId, channel, model }) {
+    return this._control("task_start", { taskId, provider, accountId, channel, model });
+  }
+
+  continueTask(taskId, command, { provider, accountId, channel, model }) {
+    return this._control("task_continue", {
+      taskId,
+      command,
+      provider,
+      accountId,
+      channel,
+      model,
+    });
+  }
+
+  cancelAgentRun(runId) {
+    return this._control("agent_cancel", { runId });
+  }
+
+  cancelBackgroundJob(jobId) {
+    return this._control("background_job_cancel", { jobId });
+  }
+
+  startBackgroundJob(taskId, agentRunId, executable, argumentsList = [], timeoutMs) {
+    return this._control("background_job_start", {
+      taskId,
+      agentRunId,
+      executable,
+      arguments: argumentsList,
+      timeoutMs,
+    });
+  }
+
+  saveTaskGraph(graph) {
+    return this._control("task_graph_save", { graph });
+  }
+
+  createTaskCheckpoint(taskId, goal, constraints = [], workspaceFacts = {}) {
+    return this._control("task_checkpoint", { taskId, goal, constraints, workspaceFacts });
+  }
+
+  spawnSubagent(request, piProvider, useConfiguredPolicy = false) {
+    return this._control(
+      "subagent_spawn",
+      { request, piProvider, useConfiguredPolicy },
+      { timeoutMs: NO_TIMEOUT },
+    );
+  }
+
+  getSubagentPolicy() {
+    return this._control("subagent_policy_get", {});
+  }
+
+  setSubagentPolicy(policy) {
+    return this._control("subagent_policy_set", { policy });
+  }
+
+  inspectTaskGit(taskId) {
+    return this._control("git_snapshot", { taskId });
+  }
+
+  createSafeWorktree(taskId, baseRef, branch, targetPath, explicitlyAuthorized) {
+    return this._control(
+      "git_worktree_create",
+      { taskId, baseRef, branch, targetPath, explicitlyAuthorized },
+      { timeoutMs: NO_TIMEOUT },
+    );
+  }
+
+  reviewSafeWorktree(worktreeId) {
+    return this._control("git_worktree_review", { worktreeId });
+  }
+
+  installProfessionalExtension(manifest) {
+    return this._control("extension_install", { manifest });
+  }
+
+  migrateProfessionalExtension(extensionId, manifest, permissionExpansionApproved = false) {
+    return this._control("extension_migrate", {
+      extensionId,
+      manifest,
+      permissionExpansionApproved,
+    });
+  }
+
+  setProfessionalExtensionEnabled(extensionId, enabled) {
+    return this._control("extension_set_enabled", { extensionId, enabled });
+  }
+
+  startProfessionalExtension(extensionId, taskId, agentRunId, timeoutMs) {
+    return this._control(
+      "extension_start",
+      { extensionId, taskId, agentRunId, timeoutMs },
+      { timeoutMs: NO_TIMEOUT },
+    );
+  }
+
+  cancelProfessionalExtension(runId) {
+    return this._control("extension_cancel", { runId });
+  }
+
+  previewExternalCapabilityImport(source, root) {
+    return this._control("external_import_preview", { source, root });
+  }
+
+  applyExternalCapabilityImport(previewId, candidateIds, scope) {
+    return this._control("external_import_apply", { previewId, candidateIds, scope });
+  }
+
+  activateImportedCapability(importedId, taskId, sourcePort = currentPort(this.env)) {
+    return this._control("external_import_activate", { importedId, taskId, sourcePort });
+  }
+
+  previewMcpImport(content) {
+    return this._control("mcp_import_preview", { content });
+  }
+
+  applyMcpImport(previewId, selected, scope) {
+    return this._control("mcp_import_apply", { previewId, selected, scope });
+  }
+
+  startMcpServer(serverId, taskId, agentRunId, timeoutMs) {
+    return this._control(
+      "mcp_start",
+      { serverId, taskId, agentRunId, timeoutMs },
+      { timeoutMs: NO_TIMEOUT },
+    );
+  }
+
+  activateMcpServer(serverId, taskId, sourcePort = currentPort(this.env)) {
+    return this._control("mcp_activate", { serverId, taskId, sourcePort });
+  }
+
+  registerProjectAdapter(adapter) {
+    return this._control("adapter_register", { adapter });
+  }
+
+  setProjectAdapterEnabled(adapterId, enabled) {
+    return this._control("adapter_set_enabled", { adapterId, enabled });
+  }
+
+  discoverProjectAdapters(taskId) {
+    return this._control("adapter_discover", { taskId });
+  }
+
+  launchDap(taskId, agentRunId, config, explicitlyAuthorized, timeoutMs) {
+    return this._control(
+      "dap_launch",
+      { taskId, agentRunId, config, explicitlyAuthorized, timeoutMs },
+      { timeoutMs: NO_TIMEOUT },
+    );
+  }
+
+  cancelTaskExtensions(taskId) {
+    return this._control("extension_cancel_task", { taskId });
+  }
+
+  addDiagnostic(finding) {
+    return this._control("diagnostic_add", { finding });
+  }
+
+  requestAdvisory(request) {
+    return this._control("advisory_request", request);
+  }
+
+  completeAdvisory(advisoryId, candidateOutput) {
+    return this._control("advisory_complete", { advisoryId, candidateOutput });
+  }
+
+  recordRegression(run) {
+    return this._control("regression_record", run);
+  }
+
+  compareRegressions(beforeId, afterId) {
+    return this._control("regression_compare", { beforeId, afterId });
+  }
+
+  reviewHarness(taskId) {
+    return this._control("harness_review", { taskId });
+  }
+
+  confirmHarness(taskId, selectedIds) {
+    return this._control("harness_confirm", { taskId, selectedIds });
+  }
+
+  runHarnessAction(taskId, actionId, parameters = {}, riskApproved = false) {
+    return this._control(
+      "harness_run_action",
+      { taskId, actionId, parameters, riskApproved },
+      { timeoutMs: NO_TIMEOUT },
+    );
+  }
+
+  scanLocalChats(sources) {
+    return this._control("chat_migration_scan", { sources }, { timeoutMs: PACKAGE_TIMEOUT_MS });
+  }
+
+  openChatMigrationContext(scanId, candidateId) {
+    return this._control("chat_migration_context_open", {
+      scanId,
+      candidateId,
+      port: currentPort(this.env),
+    });
+  }
+
+  readChatMigrationContext(scanId, candidateId, cursor = null) {
+    return this._control(
+      "chat_migration_context_page",
+      { scanId, candidateId, cursor },
+      { timeoutMs: PACKAGE_TIMEOUT_MS },
+    );
+  }
+
+  importLocalChats(scanId, candidateIds, workspaceBindings, { includeReasoning = false } = {}) {
+    return this._control(
+      "chat_migration_import",
+      { scanId, candidateIds, workspaceBindings, includeReasoning },
+      { timeoutMs: NO_TIMEOUT },
+    );
+  }
+
+  scanBackupSessions() {
+    return this._control("chat_backup_scan", {}, { timeoutMs: PACKAGE_TIMEOUT_MS });
+  }
+
+  pickBackupSavePath() {
+    return this._control("chat_backup_pick_save", {}, { timeoutMs: NO_TIMEOUT });
+  }
+
+  pickBackupOpenPath() {
+    return this._control("chat_backup_pick_open", {}, { timeoutMs: NO_TIMEOUT });
+  }
+
+  createChatBackup({ scanId, candidateIds, flags, encrypted, password, destination }) {
+    return this._control(
+      "chat_backup_create",
+      { scanId, candidateIds, flags, encrypted, password, destination },
+      { timeoutMs: NO_TIMEOUT },
+    );
+  }
+
+  probeChatBackup(path) {
+    return this._control("chat_backup_probe", { path }, { timeoutMs: PACKAGE_TIMEOUT_MS });
+  }
+
+  inspectChatBackup(path, password = "") {
+    return this._control("chat_backup_inspect", { path, password }, { timeoutMs: NO_TIMEOUT });
+  }
+
+  restoreChatBackup(restoreId, candidateIds, workspaceBindings) {
+    return this._control(
+      "chat_backup_restore",
+      { restoreId, candidateIds, workspaceBindings },
+      { timeoutMs: NO_TIMEOUT },
+    );
+  }
+
+  reviewContextCompression(scanId, candidateIds, provider, modelId) {
+    return this._control(
+      "context_compression_review",
+      { scanId, candidateIds, provider, modelId },
+      { timeoutMs: PACKAGE_TIMEOUT_MS },
+    );
+  }
+
+  pickContextPackageSavePath() {
+    return this._control("context_compression_pick_save", {}, { timeoutMs: NO_TIMEOUT });
+  }
+
+  createContextPackage({ reviewId, encrypted, password, destination }) {
+    return this._control(
+      "context_compression_create",
+      { reviewId, encrypted, password, destination },
+      { timeoutMs: NO_TIMEOUT },
+    );
+  }
+
+  saveCustomProvider({ providerId, displayName, baseUrl, api, apiKey, modelIds }) {
+    return this._control("custom_provider_save", {
+      providerId,
+      displayName,
+      baseUrl,
+      api,
+      apiKey,
+      modelIds,
+    });
+  }
 
   pickFolder() {
     return this._control("pick_folder", {}, { timeoutMs: NO_TIMEOUT });

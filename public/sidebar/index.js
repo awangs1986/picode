@@ -149,6 +149,46 @@ export class SessionSidebar {
     this.render();
   }
 
+  archiveImportedSessions(filePaths) {
+    const known = new Set(this.archived);
+    const additions = [];
+    for (const filePath of filePaths || []) {
+      if (!filePath || known.has(filePath)) continue;
+      known.add(filePath);
+      additions.push(filePath);
+    }
+    if (additions.length === 0) return;
+    this.archived.push(...additions);
+    this.saveArchived();
+    this.render();
+  }
+
+  applyRestoredOrganization(chats) {
+    const archived = new Set(this.archived);
+    const favourites = new Set(this.favourites);
+    let archivedChanged = false;
+    let favouritesChanged = false;
+    for (const chat of chats || []) {
+      if (chat.archived && chat.sessionFile && !archived.has(chat.sessionFile)) {
+        archived.add(chat.sessionFile);
+        archivedChanged = true;
+      }
+      if (chat.favourite && chat.sessionFile && !favourites.has(chat.sessionFile)) {
+        favourites.add(chat.sessionFile);
+        favouritesChanged = true;
+      }
+    }
+    if (archivedChanged) {
+      this.archived = Array.from(archived);
+      this.saveArchived();
+    }
+    if (favouritesChanged) {
+      this.favourites = Array.from(favourites);
+      this.saveFavourites();
+    }
+    if (archivedChanged || favouritesChanged) this.render();
+  }
+
   async deleteAllArchived() {
     const paths = [...this.archived];
     if (paths.length === 0) return;

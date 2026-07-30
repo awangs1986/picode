@@ -450,10 +450,10 @@ export default function (pi: ExtensionAPI) {
 
   function buildRemoteHelp(): string {
     return [
-      "Picot Super Agent is connected.",
+      "Picode Super Agent is connected.",
       "",
       "Send a normal message here to create a Super Agent intake item.",
-      "Picot keeps project-agent dispatch behind local approval.",
+      "Picode keeps project-agent dispatch behind local approval.",
       "",
       "Commands:",
       "/status - show current model, queue, and context status",
@@ -463,7 +463,7 @@ export default function (pi: ExtensionAPI) {
       "/models - list current and available models",
       "/health - show Telegram, task, instance, and model health",
       "/errors - show the 10 most recent full operations errors",
-      "/new - start a new pi session after confirmation in Picot",
+      "/new - start a new pi session after confirmation in Picode",
       "/compact - compact the current session",
       "/stop - abort the current turn",
     ].join("\n");

@@ -9,6 +9,13 @@ import { initTransport } from "./app/transport.js";
 import { createAppUpdater } from "./app/updater.js";
 import { setupVoiceInput } from "./app/voice-input.js";
 import { resolveWebSocketUrl, WebSocketClient } from "./app/websocket-client.js";
+import { formatNumber, t } from "./i18n/index.js";
+import {
+  filterModelsByProvider,
+  modelOptionLabel,
+  modelProviderLabel,
+  summarizeModelProviders,
+} from "./models/provider-view.js";
 import { selectModel } from "./models/selection.js";
 import { renderPackageInstallFailure } from "./packages/install-status.js";
 import { getOnboardingState } from "./session/onboarding.js";
@@ -19,6 +26,11 @@ import {
   shouldSpawnForCrossWorkspaceSelection,
 } from "./session/routing.js";
 import { anchorHistoryToBottom } from "./session/scroll-anchor.js";
+import { setupAccountSettings } from "./settings/accounts.js";
+import { setupChatBackup } from "./settings/chat-backup.js";
+import { setupChatMigration } from "./settings/chat-migration.js";
+import { setupContextCompression } from "./settings/context-compression.js";
+import { setupCustomProviderSettings } from "./settings/custom-providers.js";
 import { setupSettingsEditors } from "./settings/editors.js";
 import {
   clearSettingsSaveMessage,
@@ -44,6 +56,12 @@ import {
   markTaskFinished,
   normalizeSuperAgentTasks,
 } from "./super-agent/task-state.js";
+import {
+  activePromptContext,
+  clearActiveTask,
+  loadActiveTask,
+  rememberActiveTask,
+} from "./tasks/active-task.js";
 import { applyTheme, getCurrentTheme, themes } from "./themes.js";
 import { DialogHandler } from "./ui/dialogs.js";
 import { setupMessagesInsets } from "./ui/layout-insets.js";
@@ -60,7 +78,8 @@ import {
 } from "./workspace/actions.js";
 import { FileBrowser } from "./workspace/file-browser.js";
 
-const COMPOSER_PLACEHOLDER = "Type a message, or use / to call a skill…";
+const composerPlaceholder = () =>
+  t("chat.placeholder", {}, "Type a message, or use / to call a skill…");
 
 const fetchInstances = async () => {
   try {
@@ -215,6 +234,37 @@ document.addEventListener("sa-dispatch", (e) => dispatchSuperAgentTask(e.detail)
 document.addEventListener("sa-ask", (e) => notifySuperAgentClarification(e.detail));
 document.addEventListener("sa-prompt-task", (e) => insertTaskPrompt(e.detail));
 document.addEventListener("sa-view-session", (e) => viewSuperAgentChildSession(e.detail));
+
+const picodeTaskDialog = document.getElementById("picode-task-dialog");
+const picodeRuntimeMonitor = document.getElementById("picode-runtime-monitor");
+const picodeHarnessReview = document.getElementById("picode-harness-review");
+let activePicodeTask = loadActiveTask(window.sessionStorage);
+document.getElementById("picode-new-task-btn")?.addEventListener("click", () => {
+  picodeTaskDialog?.open({
+    chatId: sidebar.activeSessionFile || `chat-${crypto.randomUUID()}`,
+  });
+});
+document.getElementById("picode-runtime-btn")?.addEventListener("click", () => {
+  picodeRuntimeMonitor?.open();
+});
+document.getElementById("picode-rail-settings-btn")?.addEventListener("click", () => {
+  document.getElementById("settings-btn")?.click();
+});
+document.addEventListener("picode-task-created", (event) => {
+  activePicodeTask = rememberActiveTask(window.sessionStorage, event.detail);
+  document.body.dataset.taskKind = activePicodeTask.kind;
+  newSession().catch((error) => messageRenderer.renderError(String(error)));
+  if (activePicodeTask.kind === "harness") {
+    picodeHarnessReview?.open(activePicodeTask);
+  }
+});
+document.addEventListener("picode-open-chat", (event) => {
+  const target = sidebar.projects
+    .flatMap((project) => (project.sessions || []).map((session) => ({ project, session })))
+    .find(({ session }) => session.filePath === event.detail?.chatId);
+  if (target) handleSessionSelect(target.session, target.project);
+  picodeRuntimeMonitor?.close();
+});
 
 // <sa-chat-header> service buttons open Settings > Chat tab
 window.__saOpenSettings = () => {
@@ -425,7 +475,7 @@ let lastUsage = null; // Full usage object for context visualiser
 let mirrorActiveSessionFile = null; // The live session file path from the TUI
 let viewingActiveSession = true; // Whether we're viewing the live session or a historical one
 let isMirrorMode = false; // Set when mirror_sync received
-let liveInstances = []; // All running Picot instances [{port, sessionFile, cwd}]
+let liveInstances = []; // All running Picode instances [{port, sessionFile, cwd}]
 let workspaceLaunchInProgress = false;
 // When true, the next foreground message lifecycle events should reload the
 // sidebar until the newly persisted session file appears in the list.
@@ -480,7 +530,7 @@ document
 const gitBranchEl = document.createElement("div");
 gitBranchEl.id = "git-branch-indicator";
 gitBranchEl.className = "pill git-branch-indicator hidden";
-gitBranchEl.title = "Current git branch";
+gitBranchEl.title = t("workspace.currentBranch", {}, "Current git branch");
 document
   .querySelector(".header-right")
   ?.insertBefore(gitBranchEl, document.querySelector("#context-viz"));
@@ -494,7 +544,7 @@ function updateGitBranchIndicator(branch = "") {
   }
   gitBranchEl.classList.remove("hidden");
   gitBranchEl.textContent = name;
-  gitBranchEl.title = `Branch: ${name}`;
+  gitBranchEl.title = t("workspace.branchNamed", { name }, `Branch: ${name}`);
 }
 
 async function refreshGitBranch() {
@@ -571,7 +621,9 @@ function setWorkspaceLaunchInProgress(inProgress) {
   if (openFolderBtn) {
     openFolderBtn.disabled = inProgress;
     openFolderBtn.setAttribute("aria-busy", inProgress ? "true" : "false");
-    openFolderBtn.title = inProgress ? "Opening workspace..." : "Open folder as workspace";
+    openFolderBtn.title = inProgress
+      ? t("workspace.opening", {}, "Opening workspace...")
+      : t("sidebar.openFolderWorkspace", {}, "Open folder as workspace");
   }
 }
 
@@ -1276,7 +1328,10 @@ function handleCompactionStart() {
   const el = document.createElement("div");
   el.className = "system-message compaction-message";
   el.id = "compaction-indicator";
-  el.innerHTML = '<span class="compaction-spinner">⟳</span> Compacting context…';
+  const spinner = document.createElement("span");
+  spinner.className = "compaction-spinner";
+  spinner.textContent = "⟳";
+  el.append(spinner, ` ${t("chat.compacting", {}, "Compacting context…")}`);
   messagesContainer.appendChild(el);
   scrollToBottom();
 }
@@ -1384,7 +1439,7 @@ function handleCompactionEnd(event) {
   const indicator = document.getElementById("compaction-indicator");
   if (indicator) {
     const summary = event.summary ? ` — ${event.summary}` : "";
-    indicator.innerHTML = `✓ Context compacted${summary}`;
+    indicator.textContent = `✓ ${t("chat.compacted", {}, "Context compacted")}${summary}`;
     indicator.classList.add("compaction-done");
   }
   // Reset token tracking — next message will update
@@ -1446,6 +1501,16 @@ function handleAgentStart(event = null) {
   lastTurnErrored = false;
   updateUI();
   const live = getCurrentLiveSessionFile(event);
+  if (
+    live &&
+    activePicodeTask &&
+    (!event?.__broker?.sourcePort || event.__broker.sourcePort === foregroundPort)
+  ) {
+    activePicodeTask = rememberActiveTask(window.sessionStorage, {
+      ...activePicodeTask,
+      chatId: live,
+    });
+  }
   if (live) sidebar.setStreaming(live, true);
 }
 
@@ -1460,9 +1525,13 @@ function handleAutoRetryStart(event = null) {
   const attempt = event?.attempt;
   const maxAttempts = event?.maxAttempts;
   if (attempt && maxAttempts) {
-    statusText.textContent = `Retrying (${attempt}/${maxAttempts})...`;
+    statusText.textContent = t(
+      "common.retryingProgress",
+      { attempt, maxAttempts },
+      `Retrying (${attempt}/${maxAttempts})...`,
+    );
   } else {
-    statusText.textContent = "Retrying…";
+    statusText.textContent = t("common.retrying", {}, "Retrying…");
   }
   updateUI();
 }
@@ -1807,7 +1876,7 @@ async function addImageFiles(files) {
       const img = await processImageFile(file);
       pendingImages.push(img);
     } catch (e) {
-      console.error("[Picot] Image processing failed:", e);
+      console.error("[Picode] Image processing failed:", e);
     }
   }
   renderImagePreviews();
@@ -1898,11 +1967,48 @@ function refreshSidebarAfterUserPrompt() {
   setTimeout(refresh, 1500);
 }
 
-function sendMessage() {
+let isPreparingPrompt = false;
+
+async function sendMessage() {
   if (!currentOnboardingState().canQuery) return;
+  if (isPreparingPrompt) return;
 
   const message = messageInput.value.trim();
   if (!message) return;
+
+  const sessionId = wsClient.sessionId || activePicodeTask?.chatId || "";
+  if (sessionId && currentModelProvider && transport.available) {
+    isPreparingPrompt = true;
+    try {
+      const decision = await transport.prepareChatPrompt(
+        sessionId,
+        currentModelProvider,
+        message,
+        activePromptContext(activePicodeTask, foregroundPort, currentModelId),
+      );
+      if (decision?.allowed === false) {
+        messageRenderer.renderError(
+          t(
+            "chat.accountContinueRequired",
+            { provider: decision.logicalProvider || currentModelProvider },
+            `This chat used another ${decision.logicalProvider || currentModelProvider} account. Type 继续 to bind it to the active account and continue.`,
+          ),
+        );
+        return;
+      }
+    } catch (error) {
+      messageRenderer.renderError(
+        t(
+          "chat.accountBindingFailed",
+          { error: error?.message || "unknown error" },
+          `Could not verify the chat account: ${error?.message || "unknown error"}`,
+        ),
+      );
+      return;
+    } finally {
+      isPreparingPrompt = false;
+    }
+  }
 
   messageInput.value = "";
   messageInput.style.height = "auto";
@@ -1914,7 +2020,7 @@ function sendMessage() {
 
   if (pendingImages.length > 0) {
     cmd.images = pendingImages.map((img) => {
-      console.log(`[Picot] Sending image: mimeType=${img.mimeType}, dataLen=${img.data?.length}`);
+      console.log(`[Picode] Sending image: mimeType=${img.mimeType}, dataLen=${img.data?.length}`);
       return {
         type: "image",
         data: img.data,
@@ -2069,16 +2175,16 @@ async function rpcCommand(cmd, statusMsg, silent = false) {
     });
     const data = await resp.json();
     if (data.success && !silent) {
-      statusText.textContent = "Done";
+      statusText.textContent = t("common.done", {}, "Done");
       setTimeout(() => {
-        statusText.textContent = "Connected";
+        statusText.textContent = t("common.connected", {}, "Connected");
       }, 2000);
     } else if (!data.success) {
       console.error("rpcCommand failed:", cmd.type, data.error);
       if (!silent) {
-        statusText.textContent = data.error || "Failed";
+        statusText.textContent = data.error || t("common.failed", {}, "Failed");
         setTimeout(() => {
-          statusText.textContent = "Connected";
+          statusText.textContent = t("common.connected", {}, "Connected");
         }, 3000);
       }
     }
@@ -2086,20 +2192,24 @@ async function rpcCommand(cmd, statusMsg, silent = false) {
   } catch (e) {
     console.error("rpcCommand error:", cmd.type, e);
     if (!silent) {
-      statusText.textContent = "Error";
+      statusText.textContent = t("common.error", {}, "Error");
       setTimeout(() => {
-        statusText.textContent = "Connected";
+        statusText.textContent = t("common.connected", {}, "Connected");
       }, 3000);
     }
   }
 }
 
 async function rpcExportHtml() {
-  const data = await rpcCommand({ type: "export_html" }, "Exporting…");
+  const data = await rpcCommand({ type: "export_html" }, t("chat.exporting", {}, "Exporting…"));
   if (data?.success && data.data?.path) {
-    statusText.textContent = `Exported: ${data.data.path}`;
+    statusText.textContent = t(
+      "chat.exportedPath",
+      { path: data.data.path },
+      `Exported: ${data.data.path}`,
+    );
     setTimeout(() => {
-      statusText.textContent = "Connected";
+      statusText.textContent = t("common.connected", {}, "Connected");
     }, 4000);
   }
 }
@@ -2130,14 +2240,23 @@ const modelDropdownLabel = document.getElementById("model-dropdown-label");
 const modelDropdownMenu = document.getElementById("model-dropdown-menu");
 const thinkingBtn = document.getElementById("thinking-btn");
 function formatCompactThinkingLevelLabel(level) {
-  return `Think ${level || "off"}`;
+  const localizedLevel = localizedThinkingLevel(level);
+  return t("settings.thinkLevel", { level: localizedLevel }, `Think ${level || "off"}`);
 }
 function updateThinkingBtn() {
   thinkingBtn.textContent = formatCompactThinkingLevelLabel(currentThinkingLevel);
-  thinkingBtn.title = "Thinking effort controls reasoning depth. Click to cycle.";
+  thinkingBtn.title = t(
+    "settings.thinkingControlHelp",
+    {},
+    "Thinking effort controls reasoning depth. Click to cycle.",
+  );
   thinkingBtn.setAttribute(
     "aria-label",
-    `Thinking effort: ${currentThinkingLevel}. Click to cycle reasoning depth.`,
+    t(
+      "settings.thinkingControlValue",
+      { level: localizedThinkingLevel(currentThinkingLevel) },
+      `Thinking effort: ${currentThinkingLevel}. Click to cycle reasoning depth.`,
+    ),
   );
   thinkingBtn.classList.toggle("off", currentThinkingLevel === "off");
   renderThinkingEffort(currentThinkingLevel || "off", {
@@ -2146,7 +2265,14 @@ function updateThinkingBtn() {
     thinkingName: thinkingEffortName,
   });
 }
+
+function localizedThinkingLevel(level) {
+  const normalized = ["off", "minimal", "low", "medium", "high"].includes(level) ? level : "off";
+  const suffix = normalized[0].toUpperCase() + normalized.slice(1);
+  return t(`settings.thinking${suffix}`, {}, normalized);
+}
 let currentModelId = "";
+let currentModelProvider = "";
 let availableModels = [];
 let hasLoadedAvailableModels = false;
 let didAutoOpenEmptyModelsDropdown = false;
@@ -2202,8 +2328,12 @@ async function fetchModelInfo() {
     }
     if (stateData.success && stateData.data?.model) {
       currentModelId = stateData.data.model.id || "";
+      currentModelProvider = stateData.data.model.provider || "";
 
-      const model = availableModels.find((m) => m.id === currentModelId);
+      const model = availableModels.find(
+        (m) =>
+          m.id === currentModelId && (!currentModelProvider || m.provider === currentModelProvider),
+      );
       if (!model && availableModels.length > 0) {
         const fallbackModel = availableModels[0];
         const resp = await rpcCommand({
@@ -2213,6 +2343,7 @@ async function fetchModelInfo() {
         });
         if (resp?.success) {
           currentModelId = fallbackModel.id;
+          currentModelProvider = fallbackModel.provider || "";
           if (fallbackModel.contextWindow) {
             contextWindowSize = fallbackModel.contextWindow;
             updateTokenUsage();
@@ -2253,8 +2384,9 @@ function maybeAutoOpenEmptyModelsDropdown() {
 }
 
 function updateModelLabel() {
-  const shortName = currentModelId.replace(/^claude-/, "").replace(/-\d{8}$/, "");
-  modelDropdownLabel.textContent = shortName || "model";
+  modelDropdownLabel.textContent = currentModelId
+    ? modelOptionLabel({ id: currentModelId, provider: currentModelProvider })
+    : t("common.model", {}, "model");
 }
 
 function toggleModelDropdown() {
@@ -2268,18 +2400,65 @@ function toggleModelDropdown() {
 
 function openModelDropdown() {
   modelDropdownMenu.innerHTML = "";
+  let selectedProvider = "";
 
   // Search input
   const search = document.createElement("input");
   search.className = "model-dropdown-search";
-  search.placeholder = "Search models…";
+  search.placeholder = t("models.search", {}, "Search models…");
   search.type = "text";
   modelDropdownMenu.appendChild(search);
+
+  const providerFilters = document.createElement("div");
+  providerFilters.className = "model-dropdown-provider-filters";
+  providerFilters.setAttribute("aria-label", t("models.providerFilter", {}, "Model provider"));
+  modelDropdownMenu.appendChild(providerFilters);
 
   // Items container
   const itemsContainer = document.createElement("div");
   itemsContainer.className = "model-dropdown-items";
   modelDropdownMenu.appendChild(itemsContainer);
+
+  const moreModelsButton = document.createElement("button");
+  moreModelsButton.type = "button";
+  moreModelsButton.className = "model-dropdown-more";
+  moreModelsButton.innerHTML = `
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+      <circle cx="12" cy="12" r="3"></circle>
+      <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21H9.6v-.09A1.7 1.7 0 0 0 8.5 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.1-.4H3V9.6h.09A1.7 1.7 0 0 0 4.6 8.5a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.1V3h4v.09A1.7 1.7 0 0 0 15.5 4.6a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9c.16.38.37.72.6 1 .3.35.68.55 1.1.6H21v4h-.09A1.7 1.7 0 0 0 19.4 15Z"></path>
+    </svg>
+    <span>${escapeHtml(t("models.moreSettings", {}, "More model settings"))}</span>`;
+  moreModelsButton.addEventListener("click", () => {
+    closeModelDropdown();
+    openConfigurationSettings().catch(() => {});
+  });
+  modelDropdownMenu.appendChild(moreModelsButton);
+
+  function renderProviderFilters() {
+    providerFilters.replaceChildren();
+    const options = [
+      {
+        provider: "",
+        label: t("models.providerAll", {}, "All"),
+        count: availableModels.length,
+      },
+      ...summarizeModelProviders(availableModels),
+    ];
+    for (const option of options) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `model-dropdown-provider-filter${selectedProvider === option.provider ? " active" : ""}`;
+      button.dataset.provider = option.provider;
+      button.setAttribute("aria-pressed", String(selectedProvider === option.provider));
+      button.textContent = `${option.label} ${option.count}`;
+      button.addEventListener("click", () => {
+        selectedProvider = option.provider;
+        renderProviderFilters();
+        renderItems(search.value);
+      });
+      providerFilters.appendChild(button);
+    }
+  }
 
   function renderItems(filter) {
     itemsContainer.innerHTML = "";
@@ -2292,35 +2471,29 @@ function openModelDropdown() {
       empty.className = "model-dropdown-empty";
       empty.innerHTML = `
         <div style="padding:14px;color:var(--text-dim);font-size:12px;line-height:1.5">
-          <div style="color:var(--text-primary);margin-bottom:6px">No models available</div>
-          <div>No API keys configured. Set a key in Settings &rarr; Configuration.</div>
-          <button type="button" class="btn-primary" style="margin-top:10px">Open Settings</button>
+          <div style="color:var(--text-primary);margin-bottom:6px">${escapeHtml(t("models.none", {}, "No models available"))}</div>
+          <div>${escapeHtml(t("models.configureHelp", {}, "No API keys configured. Set a key in Settings → Configuration."))}</div>
         </div>`;
-      empty.querySelector("button").addEventListener("click", () => {
-        closeModelDropdown();
-        openConfigurationSettings().catch(() => {});
-      });
       itemsContainer.appendChild(empty);
       return;
     }
-    availableModels.forEach((m) => {
+    filterModelsByProvider(availableModels, selectedProvider).forEach((m) => {
       const shortName = m.id.replace(/-\d{8}$/, "");
       const providerStr = m.provider || "";
+      const providerDisplay = modelProviderLabel(providerStr);
       if (
         query &&
         !shortName.toLowerCase().includes(query) &&
-        !providerStr.toLowerCase().includes(query)
+        !providerStr.toLowerCase().includes(query) &&
+        !providerDisplay.toLowerCase().includes(query)
       )
         return;
 
       const el = document.createElement("div");
-      el.className = `model-dropdown-item${m.id === currentModelId ? " active" : ""}`;
+      el.className = `model-dropdown-item${m.id === currentModelId && m.provider === currentModelProvider ? " active" : ""}`;
       const ctxK = m.contextWindow ? `${(m.contextWindow / 1000).toFixed(0)}k` : "";
-      const providerLabel =
-        m.provider && m.provider !== "anthropic"
-          ? `<span class="model-dropdown-item-provider">${m.provider}</span>`
-          : "";
-      el.innerHTML = `<span>${shortName}${providerLabel}</span><span class="model-dropdown-item-ctx">${ctxK}</span>`;
+      const providerLabel = `<span class="model-dropdown-item-provider">${escapeHtml(providerDisplay)}</span>`;
+      el.innerHTML = `<span class="model-dropdown-item-name">${shortName}${providerLabel}</span><span class="model-dropdown-item-ctx">${ctxK}</span>`;
       el.addEventListener("click", async () => {
         closeModelDropdown();
         // If the session is stuck auto-retrying the current (failing) model, or
@@ -2347,6 +2520,7 @@ function openModelDropdown() {
           refreshModelInfo: fetchModelInfo,
           applySelectedModel: (selectedModel) => {
             currentModelId = selectedModel.id;
+            currentModelProvider = selectedModel.provider || "";
             updateModelLabel();
             if (selectedModel.contextWindow) {
               contextWindowSize = selectedModel.contextWindow;
@@ -2362,6 +2536,7 @@ function openModelDropdown() {
     });
   }
 
+  renderProviderFilters();
   renderItems("");
 
   search.addEventListener("input", () => renderItems(search.value));
@@ -2766,6 +2941,11 @@ async function handleNewProjectChat(project) {
 // Public entry point: serializes selections so overlapping clicks don't
 // interleave their awaits and corrupt shared routing state.
 function handleSessionSelect(session, project) {
+  if (activePicodeTask && activePicodeTask.chatId !== session?.filePath) {
+    clearActiveTask(window.sessionStorage);
+    activePicodeTask = null;
+    delete document.body.dataset.taskKind;
+  }
   const run = sessionSelectChain.then(() => handleSessionSelectImpl(session, project));
   // Keep the chain alive even if this selection rejects.
   sessionSelectChain = run.catch(() => {});
@@ -3136,6 +3316,7 @@ function handleMirrorSync(data) {
   // Update model display
   if (data.model) {
     currentModelId = data.model.id || "";
+    currentModelProvider = data.model.provider || "";
     updateModelLabel();
     if (data.model.contextWindow) {
       contextWindowSize = data.model.contextWindow;
@@ -3210,11 +3391,15 @@ function updateMirrorInputState() {
   const inputArea = document.querySelector(".input-area");
   if (viewingActiveSession) {
     messageInput.disabled = false;
-    messageInput.placeholder = COMPOSER_PLACEHOLDER;
+    messageInput.placeholder = composerPlaceholder();
     inputArea?.classList.remove("mirror-readonly");
   } else {
     messageInput.disabled = true;
-    messageInput.placeholder = "Viewing historical session (read-only)";
+    messageInput.placeholder = t(
+      "chat.historyReadOnly",
+      {},
+      "Viewing historical session (read-only)",
+    );
     inputArea?.classList.add("mirror-readonly");
   }
 }
@@ -3409,8 +3594,8 @@ function showCompactButton() {
   const btn = document.createElement("button");
   btn.id = "compact-btn";
   btn.className = "compact-btn";
-  btn.textContent = "Compact";
-  btn.title = "Context is over 80% — compact to save tokens";
+  btn.textContent = t("chat.compact", {}, "Compact");
+  btn.title = t("chat.compactHelp", {}, "Context is over 80% — compact to save tokens");
   btn.addEventListener("click", () => {
     rpcCommand({ type: "compact" }, "Compacting…");
     hideCompactButton();
@@ -3472,7 +3657,9 @@ async function openLanQrModal() {
     }
     if (lanQrLoading) lanQrLoading.style.display = "none";
   } catch {
-    if (lanQrLoading) lanQrLoading.textContent = "QR code unavailable";
+    if (lanQrLoading) {
+      lanQrLoading.textContent = t("mobile.qrUnavailable", {}, "QR code unavailable");
+    }
   }
 }
 
@@ -3507,10 +3694,10 @@ async function refreshLanUrl() {
     lanUrl = typeof data?.lanUrl === "string" ? data.lanUrl : "";
     if (!lanUrl && lanUrls.length > 0) lanUrl = lanUrls[0];
     if (tailscaleUrl) {
-      statusText.textContent = "Connected • TS";
+      statusText.textContent = t("common.connectedNetwork", { network: "TS" }, "Connected • TS");
       statusText.title = tailscaleUrl;
     } else if (lanUrl) {
-      statusText.textContent = "Connected • LAN";
+      statusText.textContent = t("common.connectedNetwork", { network: "LAN" }, "Connected • LAN");
       statusText.title = lanUrl;
     }
     updateLanQrButton(lanUrl);
@@ -3524,13 +3711,13 @@ function updateConnectionStatus(status) {
 
   if (status === "connected") {
     if (tailscaleUrl) {
-      statusText.textContent = "Connected • TS";
+      statusText.textContent = t("common.connectedNetwork", { network: "TS" }, "Connected • TS");
       statusText.title = tailscaleUrl;
     } else if (lanUrl) {
-      statusText.textContent = "Connected • LAN";
+      statusText.textContent = t("common.connectedNetwork", { network: "LAN" }, "Connected • LAN");
       statusText.title = lanUrl;
     } else {
-      statusText.textContent = "Connected";
+      statusText.textContent = t("common.connected", {}, "Connected");
       statusText.title = "";
     }
     // Fetch network link metadata on first connect
@@ -3538,7 +3725,7 @@ function updateConnectionStatus(status) {
       void refreshLanUrl();
     }
   } else if (status === "disconnected") {
-    statusText.textContent = "Disconnected";
+    statusText.textContent = t("common.disconnected", {}, "Disconnected");
   }
 }
 
@@ -3551,11 +3738,11 @@ function updateUI() {
   if (isStreaming) {
     statusIndicator.classList.add("streaming");
     statusIndicator.classList.remove("connected");
-    statusText.textContent = "Working…";
+    statusText.textContent = t("common.working", {}, "Working…");
   } else {
     statusIndicator.classList.remove("streaming");
     statusIndicator.classList.add("connected");
-    statusText.textContent = "Connected";
+    statusText.textContent = t("common.connected", {}, "Connected");
   }
 
   messageInput.disabled = !onboarding.canType;
@@ -3576,9 +3763,9 @@ function updateUI() {
     messageInput.disabled = true;
     sendBtn.disabled = true;
     abortBtn.classList.add("hidden");
-    messageInput.placeholder = "Waiting for current session to finish…";
+    messageInput.placeholder = t("chat.waiting", {}, "Waiting for current session to finish…");
   } else if (onboarding.canQuery) {
-    messageInput.placeholder = COMPOSER_PLACEHOLDER;
+    messageInput.placeholder = composerPlaceholder();
   }
 }
 
@@ -3616,6 +3803,7 @@ let piVersionInflight = null;
 let loadInlineConfigEditor = async () => {};
 let loadInlineModelsEditor = async () => {};
 let loadApiKeysPanel = async () => {};
+let loadAccounts = async () => {};
 
 async function handleSuperAgentEnabledChanged(enabled) {
   if (!enabled) {
@@ -3636,6 +3824,7 @@ function selectSettingsTab(tabKey = "general") {
     tab.classList.toggle("active", tab.dataset.settingsPanel === targetTabKey);
   });
   if (targetTabKey === "configuration") {
+    loadAccounts();
     loadApiKeysPanel();
     loadInlineConfigEditor();
     loadInlineModelsEditor();
@@ -3678,7 +3867,11 @@ async function loadPiVersion() {
           piVersionCache = version;
           piVersionValue.textContent = piVersionCache;
         } else {
-          piVersionValue.textContent = "Unavailable (empty version)";
+          piVersionValue.textContent = t(
+            "settings.versionUnavailableEmpty",
+            {},
+            "Unavailable (empty version)",
+          );
         }
       } else {
         const data = await rpcCommand({ type: "get_pi_version" });
@@ -3688,13 +3881,21 @@ async function loadPiVersion() {
         } else {
           const reason = formatPiVersionError(data?.error, "version missing in response");
           console.error("[settings] failed to load pi version:", data);
-          piVersionValue.textContent = `Unavailable (${reason})`;
+          piVersionValue.textContent = t(
+            "settings.versionUnavailableReason",
+            { reason },
+            `Unavailable (${reason})`,
+          );
         }
       }
     } catch (err) {
       const reason = formatPiVersionError(err);
       console.error("[settings] failed to load pi version:", err);
-      piVersionValue.textContent = `Unavailable (${reason})`;
+      piVersionValue.textContent = t(
+        "settings.versionUnavailableReason",
+        { reason },
+        `Unavailable (${reason})`,
+      );
     } finally {
       piVersionInflight = null;
     }
@@ -3752,8 +3953,7 @@ async function loadBrowsePackages(force = false) {
     return;
   }
   browseLoading = true;
-  browseListEl.innerHTML =
-    '<div class="settings-api-keys-loading pkg-browse-full-row">Loading packages...</div>';
+  browseListEl.innerHTML = `<div class="settings-api-keys-loading pkg-browse-full-row">${escapeHtml(t("packages.loading", {}, "Loading packages..."))}</div>`;
   try {
     const [packages, installed] = await Promise.all([
       fetchBrowsePackages(),
@@ -3764,8 +3964,10 @@ async function loadBrowsePackages(force = false) {
     browseLoaded = true;
     renderBrowsePackages();
   } catch (err) {
-    const message = String(err?.message || err || "Failed to load packages");
-    browseListEl.innerHTML = `<div class="settings-api-keys-empty pkg-browse-full-row">${escapeHtml(message)} <button type="button" class="settings-value-btn" id="pkg-browse-retry">Retry</button></div>`;
+    const message = String(
+      err?.message || err || t("packages.loadFailed", {}, "Failed to load packages"),
+    );
+    browseListEl.innerHTML = `<div class="settings-api-keys-empty pkg-browse-full-row">${escapeHtml(message)} <button type="button" class="settings-value-btn" id="pkg-browse-retry">${escapeHtml(t("common.retry", {}, "Retry"))}</button></div>`;
     const retry = document.getElementById("pkg-browse-retry");
     if (retry) retry.addEventListener("click", () => loadBrowsePackages(true));
   } finally {
@@ -3925,18 +4127,25 @@ function renderBrowsePackages() {
 
   if (browseCountEl) {
     if (results.length === 0) {
-      browseCountEl.textContent = `0 of ${results.length}`;
+      browseCountEl.textContent = t(
+        "packages.resultRange",
+        { start: 0, end: 0, total: results.length },
+        `0 of ${results.length}`,
+      );
     } else {
       const rangeStart = start + 1;
       const rangeEnd = start + pageResults.length;
-      browseCountEl.textContent = `${rangeStart}–${rangeEnd} of ${results.length}`;
+      browseCountEl.textContent = t(
+        "packages.resultRange",
+        { start: rangeStart, end: rangeEnd, total: results.length },
+        `${rangeStart}–${rangeEnd} of ${results.length}`,
+      );
     }
   }
 
   browseListEl.innerHTML = "";
   if (!results.length) {
-    browseListEl.innerHTML =
-      '<div class="settings-api-keys-empty pkg-browse-full-row">No packages match your filters.</div>';
+    browseListEl.innerHTML = `<div class="settings-api-keys-empty pkg-browse-full-row">${escapeHtml(t("packages.noMatches", {}, "No packages match your filters."))}</div>`;
     renderBrowsePagination(totalPages);
     return;
   }
@@ -4031,7 +4240,11 @@ function createBrowseRow(pkg) {
   }
   const downloads = document.createElement("span");
   downloads.className = "pkg-browse-meta";
-  downloads.textContent = `${(pkg.downloads || 0).toLocaleString()}/mo`;
+  downloads.textContent = t(
+    "packages.downloadsPerMonth",
+    { count: formatNumber(pkg.downloads || 0) },
+    `${formatNumber(pkg.downloads || 0)}/mo`,
+  );
   badges.appendChild(downloads);
   info.appendChild(badges);
 
@@ -4051,17 +4264,30 @@ function createBrowseRow(pkg) {
   const canManage = nativeAvailable();
   if (!canManage) {
     button.disabled = true;
-    setExtensionActionButton(button, "Desktop only");
+    setExtensionActionButton(button, t("packages.desktopOnly", {}, "Desktop only"));
   } else {
-    setExtensionActionButton(button, installed ? "Uninstall" : "Install");
+    setExtensionActionButton(
+      button,
+      installed ? t("packages.uninstall", {}, "Uninstall") : t("packages.install", {}, "Install"),
+    );
     button.addEventListener("click", async () => {
       button.disabled = true;
       button.classList.add("loading");
-      const previous = installed ? "Uninstall" : "Install";
-      setExtensionActionButton(button, installed ? "Uninstalling…" : "Installing…", true);
+      const previous = installed
+        ? t("packages.uninstall", {}, "Uninstall")
+        : t("packages.install", {}, "Install");
+      setExtensionActionButton(
+        button,
+        installed
+          ? t("packages.uninstalling", {}, "Uninstalling…")
+          : t("packages.installing", {}, "Installing…"),
+        true,
+      );
       status.hidden = false;
       status.classList.remove("is-error");
-      status.textContent = installed ? "Removing…" : "Installing…";
+      status.textContent = installed
+        ? t("packages.removing", {}, "Removing…")
+        : t("packages.installing", {}, "Installing…");
       status.title = status.textContent;
       try {
         if (installed) {
@@ -4220,7 +4446,7 @@ async function openSettings(tabKey = "general", options = {}) {
   selectSettingsTab(targetTabKey);
   buildThemeGrid();
   if (piVersionValue) {
-    piVersionValue.textContent = piVersionCache || "Loading…";
+    piVersionValue.textContent = piVersionCache || t("common.loading", {}, "Loading…");
   }
   setTimeout(() => {
     if (!settingsPanel.classList.contains("hidden")) loadPiVersion();
@@ -4321,6 +4547,14 @@ setupSettingsToggles({
   onSuperAgentEnabledChanged: handleSuperAgentEnabledChanged,
 });
 
+({ loadAccounts } = setupAccountSettings({
+  transport,
+  onAccountsChanged: async () => {
+    await fetchModelInfo();
+    updateUI();
+  },
+}));
+
 ({ loadApiKeysPanel, loadInlineConfigEditor, loadInlineModelsEditor } = setupSettingsEditors({
   rpcCommand,
   closeSettings,
@@ -4333,6 +4567,42 @@ setupSettingsToggles({
   showSettingsSaveError,
   showSettingsSaveSuccess,
 }));
+
+setupCustomProviderSettings({
+  transport,
+  onChanged: async () => {
+    await fetchModelInfo();
+    await loadApiKeysPanel({ preserveUi: true });
+    await loadInlineModelsEditor();
+    updateUI();
+  },
+});
+
+setupChatMigration({
+  transport,
+  onImported: async (result) => {
+    sidebar.archiveImportedSessions(
+      (result.chats || []).filter((chat) => chat.archived).map((chat) => chat.sessionFile),
+    );
+    await sidebar.loadSessions({ quiet: true });
+  },
+});
+
+setupChatBackup({
+  transport,
+  onRestored: async (result) => {
+    sidebar.applyRestoredOrganization(result.chats || []);
+    await sidebar.loadSessions({ quiet: true });
+  },
+});
+
+setupContextCompression({
+  transport,
+  getSelectedModel: () => ({
+    provider: currentModelProvider,
+    modelId: currentModelId,
+  }),
+});
 
 // Restore saved theme
 const savedTheme = getCurrentTheme();
@@ -4375,7 +4645,7 @@ if (isMobile()) {
   });
 }
 
-// Make the Picot icon in sidebar switch back to chat
+// Make the Picode icon in sidebar switch back to chat
 document.querySelector(".mode-link:first-child")?.addEventListener("click", () => {
   closeSettings();
 });
@@ -4404,6 +4674,15 @@ async function handleOpenFolder() {
 openFolderBtn?.addEventListener("click", handleOpenFolder);
 
 window.addEventListener("hashchange", restorePageFromHash);
+window.addEventListener("picot:locale-changed", () => {
+  updateThinkingBtn();
+  updateModelLabel();
+  updateGitBranchIndicator(gitBranchEl.textContent || "");
+  setWorkspaceLaunchInProgress(false);
+  if (browseLoaded) renderBrowsePackages();
+  updateUI();
+  if (document.querySelector(".welcome")) renderWorkspaceWelcome({ force: true });
+});
 restorePageFromHash();
 
 wsClient.connect();
@@ -4436,4 +4715,4 @@ if (splash) {
   });
 }
 
-console.log("🚀 Picot initialized");
+console.log("🚀 Picode initialized");

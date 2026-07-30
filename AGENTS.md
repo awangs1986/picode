@@ -1,15 +1,15 @@
-# Picot
+# Picode
 
 ## Product
 
-**Picot** is a local desktop GUI for the Pi coding agent. It is a Tauri app that bundles its own `pi` runtime — there is no separate install of `pi` to manage.
+**Picode** is a local desktop GUI for the Pi coding agent. It is a Tauri app that bundles its own `pi` runtime — there is no separate install of `pi` to manage.
 
 ### Architecture
 
 Tauri wraps the web UI. A Rust `PiManager` (`src-tauri/src/pi_manager.rs`) spawns one `pi --mode rpc` subprocess per workspace, each on its own port, using the embedded pi binary shipped in `src-tauri/resources/pi/` (downloaded by `scripts/fetch-pi-binary.js` from pi-mono releases at the version pinned in `scripts/pi-version.json`). Each workspace gets its own OS window. Workspaces are opened via the native folder picker ("Open Folder"); clicking it opens or focuses a workspace window. Multi-project, multi-agent, no terminal required.
 
 ```
-Picot .app
+Picode app
   resources/
     public/                       (frontend)
     extensions/embedded-server.mjs (HTTP + WS server, runs inside pi)
@@ -33,7 +33,7 @@ Tauri IPC commands (invoked via `window.tauriNative` in `public/tauri-bridge.js`
 - Local desktop GUI: all projects and agents visible in one app
 - Multi-project: each project has its own window, isolated working directory, session history, and running agent
 - Multi-agent: spawn new agents per project; switch between sessions without leaving the app
-- Multi-task: a `pi --mode rpc` process can only drive **one active session at a time** (switching/forking inside one process *replaces* the active session — the old `.jsonl` is preserved on disk, but it stops being the live, running session). So every concurrently-running session structurally needs its own `pi` process. Picot handles this without spawning OS windows: both "+ New Session" (header) and "start new chat" (sidebar project tile) spawn a fresh **headless** pi for the target cwd and navigate the current window's WebView to it. The previously-attached pi process keeps running in the background (PiManager retains it; reachable from the running-instances list / launcher / sidebar). Net effect: no new OS window, no interruption of the previously-running session, and you can still run multiple agents in parallel against the same project.
+- Multi-task: a `pi --mode rpc` process can only drive **one active session at a time** (switching/forking inside one process *replaces* the active session — the old `.jsonl` is preserved on disk, but it stops being the live, running session). So every concurrently-running session structurally needs its own `pi` process. Picode handles this without spawning OS windows: both "+ New Session" (header) and "start new chat" (sidebar project tile) spawn a fresh **headless** pi for the target cwd and navigate the current window's WebView to it. The previously-attached pi process keeps running in the background (PiManager retains it; reachable from the running-instances list / launcher / sidebar). Net effect: no new OS window, no interruption of the previously-running session, and you can still run multiple agents in parallel against the same project.
 - Visualization: streaming chat, tool-call cards, thinking blocks, token/cost tracking per session
 - Fully self-contained desktop app: zero dependency on the user's PATH / shell environment / globally installed pi
 
@@ -68,6 +68,23 @@ Issues and PRDs are tracked in GitHub Issues via the `gh` CLI. See `docs/agents/
 ### Domain docs
 
 This repo uses the single-context domain docs layout: root `CONTEXT.md` plus ADRs under `docs/adr/`. See `docs/agents/domain.md`.
+
+### Capability sourcing
+
+Before implementing a capability Picode does not already have, follow the Capability Source Ladder in order:
+
+1. Search for a compatible existing Pi extension or package and prefer integration over reimplementation.
+2. If none is suitable, inspect Oh My Pi for the equivalent mechanism and adapt only the smallest required capability.
+3. If OMP has no suitable mechanism, inspect comparable open-source agents such as OpenCode or legally reusable Claude-style implementations for an implementation approach.
+4. Write a Picode-specific implementation only after the earlier levels have been searched and rejected with reasons.
+
+Record a Capability Source Review in the issue or implementation document. Pin the examined project version or commit, verify license compatibility, preserve required notices, and evaluate maintenance, security, permissions, runtime cost, and Pi compatibility. Never copy code without a license that permits it; unlicensed, proprietary, source-available, or reverse-engineered material may inform behavior and architecture only and requires an independent implementation.
+
+### Explicit skill precedence
+
+When the user imports and explicitly invokes a Skill for the current task, follow that Skill's capability and workflow instead of conflicting Picode default strategy. A merely installed, discovered, recommended, or automatically matched Skill has no override precedence.
+
+The override is task-scoped and cannot silently change global settings or the project Harness Profile. For a Harness Task it may create a visible Task Override covering workflow, actions, Git strategy, or Completion Gates; record the source and resulting completion label rather than pretending the template was unchanged. The underlying tool and API layer still enforces its actual capability limits, permissions, and destructive-operation confirmations. More specific or later user instructions win; irreconcilable conflicts between explicitly invoked Skills require user direction.
 
 ## Package manager
 

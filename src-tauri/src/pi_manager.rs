@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fs;
 use std::io::Write;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -8,9 +9,22 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::native_pi_manager::NativeLaunchSpec;
+use serde_json::Value;
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+const CURSOR_OAUTH_PACKAGE: &str = "npm:@rahularya01/pi-cursor@1.4.0";
+const CURSOR_OAUTH_PACKAGE_NAME: &str = "@rahularya01/pi-cursor";
+const CURSOR_SDK_PACKAGE: &str = "npm:pi-cursor-sdk@0.1.61";
+const CURSOR_SDK_PACKAGE_NAME: &str = "pi-cursor-sdk";
+const MATT_POCOCK_SKILLS_PACKAGE: &str = "git:github.com/mattpocock/skills";
+const CURSOR_BRIDGE_ORIGINAL: &str = "spawn(process.execPath,[";
+const CURSOR_BRIDGE_PATCHED: &str = "spawn(process.env.PICODE_CURSOR_NODE||\"node\",[";
+const CURSOR_OAUTH_REFRESH_ORIGINAL: &str =
+    "async refreshModels(M){if(!M.allowNetwork||M.signal?.aborted)return r.map(Bt);";
+const CURSOR_OAUTH_REFRESH_PATCHED: &str =
+    "async refreshModels(M){if(M.signal?.aborted)return r.map(Bt);";
 
 struct PiProcess {
     child: Child,
@@ -71,7 +85,7 @@ pub fn locked_pi_version() -> &'static str {
 #[cfg(target_os = "windows")]
 fn configure_child_process_for_windows(command: &mut Command) {
     // Prevent child `pi.exe` processes from creating a visible console window
-    // when Picot runs as a GUI app on Windows.
+    // when Picode runs as a GUI app on Windows.
     command.creation_flags(CREATE_NO_WINDOW);
 }
 
@@ -204,7 +218,7 @@ fn log_child_path_diagnostics(context: &str, path: &str) {
 /// `\\?\UNC\`) from a path string.
 ///
 /// Tauri's `resource_dir()` returns extended-length paths (e.g.
-/// `\\?\C:\Users\...\Picot\pi\pi.exe`). The embedded pi (Bun 1.3.10,
+/// `\\?\C:\Users\...\Picode\pi\pi.exe`). The embedded pi (Bun 1.3.10,
 /// Windows arm64, compiled standalone) segfaults (`Segmentation fault at
 /// address 0x18`) when it is launched with — or asked to load an
 /// `--extension` from — a `\\?\`-prefixed path. Passing the plain
@@ -225,7 +239,7 @@ fn strip_verbatim_prefix(path: &str) -> String {
 /// `--extension` argument to the embedded pi binary.
 ///
 /// On Windows the Bun-compiled pi binary truncates `--extension` values at the
-/// first space (e.g. `C:\...\Picot\...\embedded-server.mjs` is loaded as
+/// first space (e.g. `C:\...\Picode\...\embedded-server.mjs` is loaded as
 /// `C:\...\Pi`), which then fails to load and segfaults the process. Since Pi
 /// Studio always installs under a space-containing path, we mirror the
 /// extension file into a space-free directory under the system temp dir and
@@ -314,6 +328,83 @@ fn mirror_is_up_to_date(src: &Path, dest: &Path) -> bool {
         (Ok(src_mtime), Ok(dest_mtime)) => dest_mtime >= src_mtime,
         _ => false,
     }
+}
+
+fn package_source_contains(source: &str, package_name: &str) -> bool {
+    let source = source.trim().strip_prefix("npm:").unwrap_or(source.trim());
+    source == package_name
+        || source
+            .strip_prefix(package_name)
+            .is_some_and(|suffix| suffix.starts_with('@'))
+}
+
+fn missing_default_package_sources(sources: &[String]) -> Vec<&'static str> {
+    if sources.iter().any(|source| {
+        let normalized = source.trim().trim_end_matches(".git").to_ascii_lowercase();
+        normalized == "git:github.com/mattpocock/skills"
+            || normalized == "https://github.com/mattpocock/skills"
+            || normalized.starts_with("git:github.com/mattpocock/skills@")
+            || normalized.starts_with("https://github.com/mattpocock/skills@")
+    }) {
+        Vec::new()
+    } else {
+        vec![MATT_POCOCK_SKILLS_PACKAGE]
+    }
+}
+
+fn node_version_at_least_22_19(output: &str) -> bool {
+    let mut parts = output.trim().trim_start_matches('v').split('.');
+    let Some(major) = parts.next().and_then(|value| value.parse::<u64>().ok()) else {
+        return false;
+    };
+    let minor = parts
+        .next()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0);
+    major > 22 || (major == 22 && minor >= 19)
+}
+
+fn patch_cursor_bridge_contents(contents: &str) -> Result<Option<String>, String> {
+    if contents.contains(CURSOR_BRIDGE_PATCHED) {
+        return Ok(None);
+    }
+    let matches = contents.matches(CURSOR_BRIDGE_ORIGINAL).count();
+    if matches != 1 {
+        return Err(format!(
+            "The pinned Cursor OAuth extension has an unexpected bridge layout ({matches} matches); refusing to modify third-party code"
+        ));
+    }
+    Ok(Some(contents.replacen(
+        CURSOR_BRIDGE_ORIGINAL,
+        CURSOR_BRIDGE_PATCHED,
+        1,
+    )))
+}
+
+fn patch_cursor_oauth_model_refresh_contents(contents: &str) -> Result<Option<String>, String> {
+    if contents.contains(CURSOR_OAUTH_REFRESH_PATCHED) {
+        return Ok(None);
+    }
+    let matches = contents.matches(CURSOR_OAUTH_REFRESH_ORIGINAL).count();
+    if matches != 1 {
+        return Err(format!(
+            "The pinned Cursor OAuth extension has an unexpected model refresh layout ({matches} matches); refusing to modify third-party code"
+        ));
+    }
+    Ok(Some(contents.replacen(
+        CURSOR_OAUTH_REFRESH_ORIGINAL,
+        CURSOR_OAUTH_REFRESH_PATCHED,
+        1,
+    )))
+}
+
+fn pi_agent_dir() -> Result<PathBuf, String> {
+    if let Some(path) = std::env::var_os("PI_CODING_AGENT_DIR").filter(|value| !value.is_empty()) {
+        return Ok(PathBuf::from(path));
+    }
+    dirs::home_dir()
+        .map(|home| home.join(".pi").join("agent"))
+        .ok_or_else(|| "Cannot find the current user's home directory".to_string())
 }
 
 impl PiManager {
@@ -437,7 +528,7 @@ impl PiManager {
             "Could not find embedded pi binary. Tried:\n{}\n\n\
              For dev: run `bun run fetch:pi` from the repo root.\n\
              For release: the .app bundle is missing `resources/pi/{}`. \
-             Reinstall Picot.",
+             Reinstall Picode.",
             tried_str, bin_name
         ))
     }
@@ -448,7 +539,7 @@ impl PiManager {
     ///
     /// 1. `PI_STUDIO_EXTENSION` env var (explicit override; useful for tests).
     /// 2. Bundled `extensions/embedded-server.mjs` next to `static_dir`. This
-    ///    is what shipped Picot installs use; the bundle is produced by
+    ///    is what shipped Picode installs use; the bundle is produced by
     ///    `scripts/build-extensions.js` and is fully self-contained (no
     ///    `node_modules` lookup at runtime).
     /// 3. Source `extensions/embedded-server.ts` next to `static_dir`. Used
@@ -563,6 +654,28 @@ impl PiManager {
     }
 
     pub fn spawn(&self, cwd: &str, port: u16, session_path: Option<&str>) -> Result<(), String> {
+        self.spawn_inner(cwd, port, session_path, false)
+    }
+
+    /// Start an isolated Pi runtime that never creates a session in the user's
+    /// chat history. Used for explicit, one-shot semantic processing jobs.
+    pub fn spawn_ephemeral(&self, cwd: &str, port: u16) -> Result<(), String> {
+        self.spawn_inner(cwd, port, None, true)
+    }
+
+    fn spawn_inner(
+        &self,
+        cwd: &str,
+        port: u16,
+        session_path: Option<&str>,
+        ephemeral: bool,
+    ) -> Result<(), String> {
+        // Existing OAuth installs may predate the live model refresh patch.
+        // Apply it on the next explicit Picode start without scanning or
+        // importing any system credentials.
+        if let Err(error) = self.patch_existing_cursor_oauth_integration() {
+            log::warn!("[cursor] could not prepare live model refresh: {}", error);
+        }
         let pi_bin = self.resolve_bundled_pi()?;
         // Tauri resolves resource paths as `\\?\`-prefixed extended-length
         // paths. Bun (the embedded pi runtime) segfaults on Windows arm64 when
@@ -587,10 +700,10 @@ impl PiManager {
 
         // The embedded pi (Bun-compiled standalone) mis-parses `--extension`
         // paths that contain spaces on Windows: it truncates at the first
-        // space, so `...\Picot\extensions\embedded-server.mjs` is loaded
+        // space, so `...\Picode\extensions\embedded-server.mjs` is loaded
         // as `...\Pi`, which then fails to load and crashes the process
         // (segfault) during extension-load error handling. The primary fix is
-        // the space-free `productName` ("Picot") so the install dir has no
+        // the space-free `productName` ("Picode") so the install dir has no
         // space; this mirroring remains as a defensive fallback for paths that
         // can still contain spaces out of our control (e.g. a Windows username
         // like `C:\Users\Shi Xin\...`). Work around it by mirroring the
@@ -623,6 +736,10 @@ impl PiManager {
 
         args.extend(["--mode".to_string(), "rpc".to_string()]);
 
+        if ephemeral {
+            args.push("--no-session".to_string());
+        }
+
         if let Some(session) = session_path {
             args.push("--session".to_string());
             args.push(session.to_string());
@@ -649,6 +766,15 @@ impl PiManager {
             .env("PI_STUDIO_STATIC_DIR", &static_dir)
             .env("PI_STUDIO_PORT", port.to_string())
             .env("PI_STUDIO_PI_VERSION", locked_pi_version())
+            // Cursor credentials are never scraped implicitly. The only path
+            // into Picode's Pi auth store is the explicit import/activation UI.
+            .env("PI_CURSOR_SYSTEM_CREDENTIALS", "0")
+            // pi-cursor-sdk caches its discovered catalog for 24 hours by
+            // default. Picode refreshes the catalog after explicit account
+            // activation, so keep the provider cache disabled to avoid
+            // showing yesterday's Cursor model list in the GUI.
+            .env("PI_CURSOR_SDK_DISABLE_MODEL_CACHE", "1")
+            .env("PICODE_CURSOR_NODE", "node")
             .stdin(Stdio::piped())
             // Drop stdout: pi emits RPC frames on it that we don't consume here, and
             // letting it fill an unread pipe would eventually block the child.
@@ -663,7 +789,7 @@ impl PiManager {
             format!(
                 "Failed to spawn embedded pi ({}): {}. \
                  The bundled binary may be corrupted or unsupported on this OS/arch. \
-                 Reinstall Picot, or for dev rerun `bun run fetch:pi`.",
+                 Reinstall Picode, or for dev rerun `bun run fetch:pi`.",
                 pi_bin.display(),
                 e,
             )
@@ -696,6 +822,25 @@ impl PiManager {
         proc.stdin
             .write_all(line.as_bytes())
             .map_err(|e| e.to_string())
+    }
+
+    pub fn ports(&self) -> Vec<u16> {
+        self.processes.lock().unwrap().keys().copied().collect()
+    }
+
+    /// Return the OS process identity owned by this host for one exact Pi
+    /// source port. Runtime controls use the pair rather than guessing via the
+    /// broker's active port or accepting an arbitrary live PID.
+    pub fn process_id(&self, port: u16) -> Option<u32> {
+        self.processes
+            .lock()
+            .ok()?
+            .get(&port)
+            .map(|process| process.child.id())
+    }
+
+    pub fn owns_process(&self, port: u16, process_id: u32) -> bool {
+        self.process_id(port) == Some(process_id)
     }
 
     /// Returns `Some(exit_status_string)` if the process has already exited, `None` if still running.
@@ -854,6 +999,136 @@ impl PiManager {
         Ok(sources)
     }
 
+    /// Install Picode's default skill bundle once. Pi records the source in
+    /// the user's own settings and loads it for subsequent runtimes; existing
+    /// package entries, including version-pinned entries, are left untouched.
+    pub fn ensure_default_packages(&self) -> Result<Vec<String>, String> {
+        let sources = self.list_configured_package_sources()?;
+        let missing = missing_default_package_sources(&sources);
+        for source in &missing {
+            self.install_package_source(source)?;
+        }
+        Ok(missing.into_iter().map(str::to_owned).collect())
+    }
+
+    /// Ensure the Cursor provider package selected by an explicitly activated
+    /// account is installed. Cursor API-key accounts use the official
+    /// `@cursor/sdk`-backed Pi package; imported Desktop/CLI OAuth accounts
+    /// use the separately marked, unofficial bridge. Both packages register
+    /// provider id `cursor`, so silently installing both would make provider
+    /// behavior depend on load order.
+    pub fn ensure_cursor_integration(&self, metadata: &Value) -> Result<(), String> {
+        let credential_kind = metadata
+            .get("credentialKind")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let wants_oauth = credential_kind == "cursor_ide_cli_oauth";
+        let sources = self.list_configured_package_sources()?;
+        let official_installed = sources
+            .iter()
+            .any(|source| package_source_contains(source, CURSOR_SDK_PACKAGE_NAME));
+        let oauth_installed = sources
+            .iter()
+            .any(|source| package_source_contains(source, CURSOR_OAUTH_PACKAGE_NAME));
+
+        if wants_oauth {
+            if official_installed {
+                return Err(
+                    "Cursor OAuth cannot be activated while the official pi-cursor-sdk package is installed. Keep the official SDK for API-key accounts, or remove it explicitly before trying the experimental OAuth integration."
+                        .to_string(),
+                );
+            }
+            self.require_node_22()?;
+            if !oauth_installed {
+                self.install_package_source(CURSOR_OAUTH_PACKAGE)?;
+            }
+            self.patch_installed_cursor_oauth_bridge()?;
+        } else {
+            if oauth_installed {
+                return Err(
+                    "Cursor SDK API-key accounts cannot be activated while the experimental pi-cursor OAuth package is installed. Remove that package explicitly before using the official SDK."
+                        .to_string(),
+                );
+            }
+            self.require_node_22()?;
+            if !official_installed {
+                self.install_package_source(CURSOR_SDK_PACKAGE)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn require_node_22(&self) -> Result<(), String> {
+        let augmented_path = build_augmented_path();
+        let mut command = Command::new("node");
+        configure_child_process_for_windows(&mut command);
+        let output = command
+            .arg("--version")
+            .env("PATH", augmented_path)
+            .output()
+            .map_err(|_| {
+                "Cursor SDK integration requires Node.js 22.19 or later. Install Node.js and restart Picode."
+                    .to_string()
+            })?;
+        if !output.status.success() {
+            return Err(
+                "Cursor SDK integration requires Node.js 22.19 or later. Install Node.js and restart Picode."
+                    .to_string(),
+            );
+        }
+        let version = String::from_utf8_lossy(&output.stdout);
+        if node_version_at_least_22_19(&version) {
+            Ok(())
+        } else {
+            Err(format!(
+                "Cursor SDK integration requires Node.js 22.19 or later; found {}. Upgrade Node.js and restart Picode.",
+                version.trim()
+            ))
+        }
+    }
+
+    fn patch_installed_cursor_oauth_bridge(&self) -> Result<(), String> {
+        let package_path = pi_agent_dir()?
+            .join("npm")
+            .join("node_modules")
+            .join("@rahularya01")
+            .join("pi-cursor")
+            .join("dist")
+            .join("index.js");
+        let contents = fs::read_to_string(&package_path).map_err(|error| {
+            format!(
+                "Cursor OAuth package was installed but its compiled extension could not be read ({}): {error}",
+                package_path.display()
+            )
+        })?;
+        let bridge_patched = patch_cursor_bridge_contents(&contents)?;
+        let refresh_patched = patch_cursor_oauth_model_refresh_contents(
+            bridge_patched.as_deref().unwrap_or(&contents),
+        )?;
+        let Some(patched) = refresh_patched.or(bridge_patched) else {
+            return Ok(());
+        };
+        fs::write(&package_path, patched).map_err(|error| {
+            format!(
+                "Cursor OAuth package was installed but its Bun/Node bridge compatibility patch could not be saved: {error}"
+            )
+        })
+    }
+
+    fn patch_existing_cursor_oauth_integration(&self) -> Result<(), String> {
+        let package_path = pi_agent_dir()?
+            .join("npm")
+            .join("node_modules")
+            .join("@rahularya01")
+            .join("pi-cursor")
+            .join("dist")
+            .join("index.js");
+        if package_path.exists() {
+            self.patch_installed_cursor_oauth_bridge()?;
+        }
+        Ok(())
+    }
+
     pub fn install_package_source(&self, source: &str) -> Result<(), String> {
         let args = vec!["install".to_string(), source.to_string()];
         let _ = self.run_pi_command(&args)?;
@@ -902,7 +1177,9 @@ mod tests {
 
     #[test]
     fn augmented_path_includes_pi_extension_npm_bin() {
-        let home = std::env::var("HOME").expect("HOME must be set for this test");
+        let home = std::env::var("USERPROFILE")
+            .or_else(|_| std::env::var("HOME"))
+            .expect("a home directory environment variable must be set for this test");
         let expected = Path::new(&home)
             .join(".pi")
             .join("agent")
@@ -927,5 +1204,63 @@ mod tests {
         let port = listener.local_addr().expect("listener addr").port();
 
         assert!(is_port_in_use(port));
+    }
+
+    #[test]
+    fn cursor_package_source_matching_handles_npm_versions() {
+        assert!(package_source_contains(
+            "npm:pi-cursor-sdk@0.1.61",
+            CURSOR_SDK_PACKAGE_NAME
+        ));
+        assert!(package_source_contains(
+            "npm:@rahularya01/pi-cursor@1.4.0",
+            CURSOR_OAUTH_PACKAGE_NAME
+        ));
+        assert!(!package_source_contains(
+            "npm:other-package@1.0.0",
+            CURSOR_SDK_PACKAGE_NAME
+        ));
+    }
+
+    #[test]
+    fn matt_pocock_skills_are_only_installed_when_missing() {
+        assert_eq!(
+            missing_default_package_sources(&[]),
+            vec![MATT_POCOCK_SKILLS_PACKAGE]
+        );
+        assert!(missing_default_package_sources(&[
+            "git:github.com/mattpocock/skills@v1".to_owned()
+        ])
+        .is_empty());
+    }
+
+    #[test]
+    fn cursor_bridge_patch_is_explicit_and_idempotent() {
+        let original = "const n=spawn(process.execPath,[bi],{stdio:[\"pipe\"]});";
+        let patched = patch_cursor_bridge_contents(original)
+            .unwrap()
+            .expect("first patch should modify the source");
+        assert!(patched.contains(CURSOR_BRIDGE_PATCHED));
+        assert!(patch_cursor_bridge_contents(&patched).unwrap().is_none());
+    }
+
+    #[test]
+    fn cursor_oauth_model_refresh_patch_allows_live_registry_refresh() {
+        let original =
+            "async refreshModels(M){if(!M.allowNetwork||M.signal?.aborted)return r.map(Bt);";
+        let patched = patch_cursor_oauth_model_refresh_contents(original)
+            .unwrap()
+            .expect("first patch should modify the model refresh guard");
+        assert!(patched.contains(CURSOR_OAUTH_REFRESH_PATCHED));
+        assert!(patch_cursor_oauth_model_refresh_contents(&patched)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn node_version_check_requires_22_19() {
+        assert!(!node_version_at_least_22_19("v22.18.0"));
+        assert!(node_version_at_least_22_19("v22.19.0"));
+        assert!(node_version_at_least_22_19("v24.0.0"));
     }
 }

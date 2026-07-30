@@ -22,7 +22,7 @@ export default function picotBridge(pi: ExtensionAPI) {
   projectTrust(pi);
 
   pi.registerCommand("picot-capabilities", {
-    description: "Describe the namespaced Picot bridge operations",
+    description: "Describe the namespaced Picode bridge operations",
     handler: async (_args, ctx) => {
       ctx.ui.notify(JSON.stringify(PICOT_BRIDGE_CAPABILITIES), "info");
     },

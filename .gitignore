@@ -1,4 +1,5 @@
 node_modules/
+.tools/
 .npm-cache/
 .worktrees/
 .DS_Store

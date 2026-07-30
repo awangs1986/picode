@@ -218,8 +218,8 @@ class SuperAgentRuntime extends HTMLElement {
       },
       routingConfidence: "user_selected",
       routingReason: project
-        ? `Selected in Picot Runtime panel from project registry (${project.name}).`
-        : "Selected in Picot Runtime panel.",
+        ? `Selected in Picode Runtime panel from project registry (${project.name}).`
+        : "Selected in Picode Runtime panel.",
     };
     this._renderTasks();
   }

@@ -37,6 +37,7 @@ struct HostState {
 pub struct HostServer {
     origin: String,
     shutdown: Option<oneshot::Sender<()>>,
+    task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl HostServer {
@@ -78,12 +79,12 @@ impl HostServer {
             .with_state(state);
         let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
             .await
-            .map_err(|error| format!("Cannot bind Picot Host: {error}"))?;
+            .map_err(|error| format!("Cannot bind Picode Host: {error}"))?;
         let address = listener
             .local_addr()
-            .map_err(|error| format!("Cannot read Picot Host address: {error}"))?;
+            .map_err(|error| format!("Cannot read Picode Host address: {error}"))?;
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             if let Err(error) = axum::serve(listener, app)
                 .with_graceful_shutdown(async {
                     let _ = shutdown_rx.await;
@@ -96,6 +97,7 @@ impl HostServer {
         Ok(Self {
             origin: format!("http://{address}"),
             shutdown: Some(shutdown_tx),
+            task: Some(task),
         })
     }
 
@@ -103,9 +105,12 @@ impl HostServer {
         &self.origin
     }
 
-    pub fn stop(mut self) {
+    pub async fn stop(mut self) {
         if let Some(shutdown) = self.shutdown.take() {
             let _ = shutdown.send(());
+        }
+        if let Some(task) = self.task.take() {
+            let _ = task.await;
         }
     }
 }
@@ -114,6 +119,9 @@ impl Drop for HostServer {
     fn drop(&mut self) {
         if let Some(shutdown) = self.shutdown.take() {
             let _ = shutdown.send(());
+        }
+        if let Some(task) = self.task.take() {
+            task.abort();
         }
     }
 }
@@ -688,6 +696,24 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    async fn remove_temp_dir(path: &std::path::Path) {
+        let mut last_error = None;
+        for _ in 0..50 {
+            match fs::remove_dir_all(path) {
+                Ok(()) => return,
+                Err(error) => {
+                    last_error = Some(error);
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            }
+        }
+        panic!(
+            "cannot remove test directory {}: {}",
+            path.display(),
+            last_error.unwrap()
+        );
+    }
+
     #[tokio::test]
     async fn serves_health_and_static_assets_from_one_origin() {
         let nonce = SystemTime::now()
@@ -697,7 +723,7 @@ mod tests {
         let temp = std::env::temp_dir().join(format!("picot-host-{nonce}"));
         let public = temp.join("public");
         fs::create_dir_all(&public).unwrap();
-        fs::write(public.join("index.html"), "<h1>Picot native host</h1>").unwrap();
+        fs::write(public.join("index.html"), "<h1>Picode native host</h1>").unwrap();
         let metadata = MetadataStore::open(&temp.join("picot.sqlite3")).unwrap();
         let auth = Arc::new(Mutex::new(RemoteAuth::new(metadata)));
         let host = HostServer::start(public, NativePiManager::new(32), auth)
@@ -718,10 +744,10 @@ mod tests {
             .text()
             .await
             .unwrap();
-        assert!(index.contains("Picot native host"));
+        assert!(index.contains("Picode native host"));
 
-        host.stop();
-        fs::remove_dir_all(temp).unwrap();
+        host.stop().await;
+        remove_temp_dir(&temp).await;
     }
 
     #[tokio::test]
@@ -733,7 +759,7 @@ mod tests {
         let temp = std::env::temp_dir().join(format!("picot-host-ws-{nonce}"));
         let public = temp.join("public");
         fs::create_dir_all(&public).unwrap();
-        fs::write(public.join("index.html"), "Picot").unwrap();
+        fs::write(public.join("index.html"), "Picode").unwrap();
         let metadata = MetadataStore::open(&temp.join("picot.sqlite3")).unwrap();
         let auth = Arc::new(Mutex::new(RemoteAuth::new(metadata)));
         let runtimes = NativePiManager::new(32);
@@ -781,8 +807,9 @@ mod tests {
         assert_eq!(event["target"]["sessionId"], "session-a");
         assert_eq!(event["sequence"], 1);
 
-        host.stop();
-        fs::remove_dir_all(temp).unwrap();
+        socket.close(None).await.unwrap();
+        host.stop().await;
+        remove_temp_dir(&temp).await;
     }
 
     #[tokio::test]
@@ -794,7 +821,7 @@ mod tests {
         let temp = std::env::temp_dir().join(format!("picot-host-dialog-{nonce}"));
         let public = temp.join("public");
         fs::create_dir_all(&public).unwrap();
-        fs::write(public.join("index.html"), "Picot").unwrap();
+        fs::write(public.join("index.html"), "Picode").unwrap();
         let metadata = MetadataStore::open(&temp.join("picot.sqlite3")).unwrap();
         let auth = Arc::new(Mutex::new(RemoteAuth::new(metadata)));
         let runtimes = NativePiManager::new(32);
@@ -869,7 +896,8 @@ mod tests {
             })
         );
 
-        host.stop();
-        fs::remove_dir_all(temp).unwrap();
+        socket.close(None).await.unwrap();
+        host.stop().await;
+        remove_temp_dir(&temp).await;
     }
 }

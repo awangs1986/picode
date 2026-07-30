@@ -104,7 +104,7 @@ export class HostRuntimeAdapter {
 
   send(frame) {
     if (!this.#connected || !this.#socket) {
-      throw new Error("Picot Host runtime is disconnected");
+      throw new Error("Picode Host runtime is disconnected");
     }
     this.#socket.send(JSON.stringify(frame));
   }

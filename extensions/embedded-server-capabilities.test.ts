@@ -1,0 +1,56 @@
+import { describe, expect, test } from "vitest";
+import {
+  buildImportedWorkflowPrompt,
+  buildTaskCapabilityPrompt,
+  searchTaskCapabilities,
+  type TaskCapabilityContext,
+} from "./embedded-server.ts";
+
+const context: TaskCapabilityContext = {
+  taskId: "task-a",
+  taskKind: "harness",
+  catalogEnabled: true,
+  taskCapabilities: ["task-build"],
+  toolsDeclarationState: "bound",
+  compactPrompt: "Use lazy tools.",
+};
+
+describe("embedded Picode capability bridge", () => {
+  test("search is deterministic, bounded, and unavailable before explicit enablement", () => {
+    expect(searchTaskCapabilities({ ...context, catalogEnabled: false }, "rust", 5)).toEqual([]);
+    expect(searchTaskCapabilities(context, "rust symbols", 2)).toEqual([
+      expect.objectContaining({ id: "rust-lsp", activation: "onDemand" }),
+    ]);
+    expect(searchTaskCapabilities(context, "build verify", 1)).toEqual([
+      expect.objectContaining({ id: "task-build", scope: "task" }),
+    ]);
+  });
+
+  test("only an active task context contributes a compact system prompt", () => {
+    expect(buildTaskCapabilityPrompt(null)).toBe("");
+    expect(buildTaskCapabilityPrompt(context)).toContain("Use lazy tools.");
+    expect(buildTaskCapabilityPrompt(context)).toContain("task-a");
+  });
+
+  test("explicit imported workflows are task-bound, bounded, and take workflow precedence", () => {
+    const prompt = buildImportedWorkflowPrompt("task-a", [
+      {
+        id: "skill-tdd",
+        taskId: "task-a",
+        kind: "skill",
+        version: "sha256:a",
+        content: "Use red-green-refactor.",
+      },
+      {
+        id: "other-task",
+        taskId: "task-b",
+        kind: "rule",
+        version: "sha256:b",
+        content: "Must not leak.",
+      },
+    ]);
+    expect(prompt).toContain("Use red-green-refactor");
+    expect(prompt).toContain("workflow takes precedence");
+    expect(prompt).not.toContain("Must not leak");
+  });
+});

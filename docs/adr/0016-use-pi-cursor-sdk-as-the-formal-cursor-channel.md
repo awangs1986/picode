@@ -1,0 +1,3 @@
+# Use pi-cursor-sdk as Picode's formal Cursor channel
+
+Picode will use `fitchmultz/pi-cursor-sdk` (the `npm:pi-cursor-sdk` package) as its supported Cursor provider because it preserves Cursor's official `@cursor/sdk` local agent loop while exposing Pi-native authentication, model discovery, sessions, and replay events. Cursor Desktop/CLI OAuth remains a separately labeled, manually imported experimental path and never silently replaces the official API-key channel; both integrations are mutually exclusive because they register the same Pi provider id. Picode installs the selected package only during explicit account activation, disables automatic Cursor Desktop/CLI credential discovery in spawned Pi processes, and requires Node.js 22.19+.

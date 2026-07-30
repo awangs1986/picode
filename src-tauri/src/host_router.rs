@@ -90,7 +90,7 @@ impl HostRouter {
             return Err(RouterError::new(
                 "protocol_mismatch",
                 format!(
-                    "Picot protocol v{PROTOCOL_VERSION} is required; refresh or restart the app"
+                    "Picode protocol v{PROTOCOL_VERSION} is required; refresh or restart the app"
                 ),
             ));
         }
