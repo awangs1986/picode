@@ -296,7 +296,16 @@ impl BrokerWs {
         }
 
         let Some(port) = self.resolve_command_port(&value) else {
-            log::warn!("[broker-ws] no route for UI command: {}", value);
+            log::warn!(
+                "[broker-ws] no route for UI command={} request_id={:?} session_id={:?} source_port={:?}",
+                value
+                    .pointer("/payload/type")
+                    .and_then(Value::as_str)
+                    .unwrap_or_else(|| value.get("type").and_then(Value::as_str).unwrap_or("unknown")),
+                value.get("requestId").and_then(Value::as_str),
+                value.get("sessionId").and_then(Value::as_str),
+                value.get("sourcePort").and_then(Value::as_u64),
+            );
             self.notify_undeliverable(client_tx, &value, "no_route");
             return;
         };
@@ -442,6 +451,10 @@ impl BrokerWs {
             .get("sourcePort")
             .and_then(Value::as_u64)
             .and_then(|port| u16::try_from(port).ok());
+        let command = value
+            .pointer("/payload/type")
+            .and_then(Value::as_str)
+            .or_else(|| value.get("type").and_then(Value::as_str));
         if let Some(session_id) = session_id {
             if let Some(port) = self.inner.routes.lock().unwrap().get(session_id).copied() {
                 // The session route is authoritative — it is learned from real
@@ -460,6 +473,17 @@ impl BrokerWs {
                     }
                 }
                 return Some(port);
+            }
+
+            // Prompts are durable writes to a conversation. If the UI names a
+            // session that the broker cannot currently resolve, sourcePort may
+            // still point at the previously viewed chat while a dedicated Pi
+            // process is starting (or after a failed switch). Falling back in
+            // that state writes both the user message and assistant response to
+            // the wrong session. Fail closed and let command_undeliverable put
+            // the text back in the composer so the user can retry safely.
+            if !session_id.trim().is_empty() && command == Some("prompt") {
+                return None;
             }
         }
         if let Some(source_port) = source_port {
@@ -688,7 +712,7 @@ mod tests {
     }
 
     #[test]
-    fn evicted_session_id_does_not_override_source_port() {
+    fn evicted_session_id_does_not_override_source_port_for_non_prompt_commands() {
         let broker = BrokerWs {
             port: 49000,
             inner: Arc::new(BrokerInner::default()),
@@ -697,17 +721,42 @@ mod tests {
         broker.register_session(50001, "/tmp/session-a.jsonl");
         broker.register_session(50001, "/tmp/session-b.jsonl");
 
-        // A command still tagged with the defunct session A but carrying the
-        // correct live source port (50002) must fall back to source_port — the
-        // stale A route is gone, so it cannot hijack the command (F2).
+        // A non-chat command still tagged with the defunct session A but
+        // carrying the correct live source port (50002) may fall back to
+        // source_port — the stale A route is gone, so it cannot hijack the
+        // command (F2).
         assert_eq!(
             broker.resolve_command_port(&json!({
                 "type": "broker_command",
                 "sessionId": "/tmp/session-a.jsonl",
                 "sourcePort": 50002,
-                "payload": { "type": "prompt" }
+                "payload": { "type": "mirror_sync_request" }
             })),
             Some(50002)
+        );
+    }
+
+    #[test]
+    fn prompt_with_unknown_session_never_falls_back_to_another_source_port() {
+        let broker = BrokerWs {
+            port: 49000,
+            inner: Arc::new(BrokerInner::default()),
+        };
+        broker.register_session(47821, "/tmp/current-session.jsonl");
+
+        // This is the exact failure pattern from a dedicated session process
+        // that has not become ready yet: the UI already names the selected
+        // history session, while sourcePort still points at the previous live
+        // process. Sending the prompt to 47821 would append the user's message
+        // and the assistant response to the wrong chat.
+        assert_eq!(
+            broker.resolve_command_port(&json!({
+                "type": "broker_command",
+                "sessionId": "/tmp/selected-history-session.jsonl",
+                "sourcePort": 47821,
+                "payload": { "type": "prompt", "message": "hello" }
+            })),
+            None
         );
     }
 

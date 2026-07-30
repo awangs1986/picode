@@ -410,6 +410,9 @@
     <message id="subagentPolicy.help">Configuration never starts work. Only bounded, independently verifiable read tasks can qualify.</message>
     <message id="subagentPolicy.enabled">Allow qualified delegation</message>
     <message id="subagentPolicy.candidates">Eligible models</message>
+    <message id="subagentPolicy.modelPickerHelp">Uses the same enabled model list as chat. Selections apply only to qualified Subagent work.</message>
+    <message id="subagentPolicy.selectModels">Select Subagent models…</message>
+    <message id="subagentPolicy.selectedCount">{count} models selected</message>
     <message id="subagentPolicy.fallback">Unavailable-model fallback</message>
     <message id="subagentPolicy.doNotDelegate">Do not delegate</message>
     <message id="subagentPolicy.inheritMain">Inherit main model</message>

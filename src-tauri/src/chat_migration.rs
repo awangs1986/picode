@@ -17,7 +17,8 @@ const MAX_SCANS: usize = 8;
 const MAX_SCAN_CANDIDATES: usize = 5_000;
 const MAX_SOURCE_FILE_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_RECORD_TEXT_BYTES: usize = 8 * 1024 * 1024;
-const PREVIEW_HEAD_BYTES: u64 = 32 * 1024;
+const PREVIEW_FULL_FILE_BYTES: u64 = 96 * 1024;
+const PREVIEW_FIRST_RECORD_INITIAL_CAPACITY: usize = 32 * 1024;
 const PREVIEW_TAIL_BYTES: u64 = 64 * 1024;
 const CURSOR_PREVIEW_RANGE_SQL: &str = "SELECT value FROM cursorDiskKV
      WHERE key >= ?1 AND key < ?2
@@ -959,17 +960,29 @@ fn preview_json_values(path: &Path) -> Result<(u64, Vec<Value>), String> {
     let mut file = File::open(path)
         .map_err(|error| format!("Cannot open chat file {}: {error}", path.display()))?;
     let mut chunks = Vec::with_capacity(2);
-    if file_size <= PREVIEW_HEAD_BYTES + PREVIEW_TAIL_BYTES {
+    if file_size <= PREVIEW_FULL_FILE_BYTES {
         let mut bytes = Vec::with_capacity(file_size as usize);
         file.read_to_end(&mut bytes)
             .map_err(|error| format!("Cannot read {}: {error}", path.display()))?;
         chunks.push(bytes);
     } else {
-        let mut head = Vec::with_capacity(PREVIEW_HEAD_BYTES as usize);
-        Read::by_ref(&mut file)
-            .take(PREVIEW_HEAD_BYTES)
-            .read_to_end(&mut head)
-            .map_err(|error| format!("Cannot read the start of {}: {error}", path.display()))?;
+        let head_file = File::open(path)
+            .map_err(|error| format!("Cannot open chat file {}: {error}", path.display()))?;
+        let mut bounded_head = BufReader::new(head_file).take(MAX_RECORD_TEXT_BYTES as u64 + 1);
+        let mut head = Vec::with_capacity(PREVIEW_FIRST_RECORD_INITIAL_CAPACITY);
+        bounded_head.read_until(b'\n', &mut head).map_err(|error| {
+            format!(
+                "Cannot read the first record of {}: {error}",
+                path.display()
+            )
+        })?;
+        if head.len() == MAX_RECORD_TEXT_BYTES + 1 && !head.ends_with(b"\n") {
+            return Err(format!(
+                "The first chat record in {} exceeds the {} MiB safety limit",
+                path.display(),
+                MAX_RECORD_TEXT_BYTES / 1024 / 1024
+            ));
+        }
         chunks.push(head);
 
         let tail_start = file_size.saturating_sub(PREVIEW_TAIL_BYTES);
@@ -2371,6 +2384,64 @@ mod tests {
         assert_eq!(
             candidate.summary.last_message_snippet.as_deref(),
             Some("Finished without reading the middle")
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn codex_preview_keeps_complete_oversized_session_metadata() {
+        let (root, service) = test_service();
+        let source = service
+            .roots
+            .codex_sessions
+            .join("2026/07/oversized-meta.jsonl");
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
+        let mut file = File::create(&source).unwrap();
+        let metadata = json!({
+            "type": "session_meta",
+            "timestamp": "2026-07-01T00:00:00Z",
+            "payload": {
+                "id": "codex-oversized-meta",
+                "cwd": "D:\\otherproject\\petPI",
+                "title": "Oversized metadata chat",
+                "base_instructions": {
+                    "text": "x".repeat(PREVIEW_FIRST_RECORD_INITIAL_CAPACITY + 1024)
+                }
+            }
+        });
+        writeln!(file, "{metadata}").unwrap();
+        let middle = json!({
+            "type": "response_item",
+            "payload": {
+                "type": "function_call_output",
+                "output": "m".repeat(PREVIEW_TAIL_BYTES as usize + 4096)
+            }
+        });
+        writeln!(file, "{middle}").unwrap();
+        writeln!(
+            file,
+            "{}",
+            json!({
+                "type": "event_msg",
+                "timestamp": "2026-07-01T00:00:03Z",
+                "payload": {
+                    "type": "agent_message",
+                    "message": "Finished after the oversized metadata"
+                }
+            })
+        )
+        .unwrap();
+        drop(file);
+
+        let candidate = codex_candidate(&source, false).unwrap().unwrap();
+        assert_eq!(
+            candidate.summary.original_workspace.as_deref(),
+            Some("D:\\otherproject\\petPI")
+        );
+        assert_eq!(candidate.summary.title, "Oversized metadata chat");
+        assert_eq!(
+            candidate.summary.last_message_snippet.as_deref(),
+            Some("Finished after the oversized metadata")
         );
         let _ = fs::remove_dir_all(root);
     }

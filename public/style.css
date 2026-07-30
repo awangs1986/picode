@@ -6771,6 +6771,35 @@ picode-professional-extensions {
   font-size: var(--font-size-caption-lg);
 }
 
+.picode-policy-model-picker .model-dropdown-btn {
+  width: 100%;
+  justify-content: space-between;
+  padding: var(--space-2) var(--space-3);
+}
+
+.picode-policy-model-picker .model-dropdown-menu {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.picode-policy-model-picker .model-dropdown-item {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  font-family: inherit;
+  text-align: left;
+}
+
+.picode-policy-model-picker .model-dropdown-item.active {
+  background: var(--accent-subtle);
+}
+
+.picode-policy-model-picker .model-dropdown-empty {
+  padding: var(--space-3);
+  color: var(--text-dim);
+  font-size: var(--font-size-sm);
+}
+
 .picode-policy-actions {
   display: flex;
   align-items: center;

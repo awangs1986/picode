@@ -912,6 +912,23 @@ impl PiManager {
         }
     }
 
+    /// Stop and forget the dedicated process assigned to one session.
+    /// Used when startup never reaches the health endpoint so a later retry
+    /// can allocate a clean process instead of reusing a permanently bad one.
+    pub fn kill_session_dedicated(&self, session_file: &str) {
+        let port = self.session_ports.lock().unwrap().remove(session_file);
+        let Some(port) = port else {
+            return;
+        };
+
+        self.kill(port);
+        let mut workspaces = self.workspace_dedicated.lock().unwrap();
+        for ports in workspaces.values_mut() {
+            ports.retain(|candidate| *candidate != port);
+        }
+        workspaces.retain(|_, ports| !ports.is_empty());
+    }
+
     pub fn next_port(&self) -> u16 {
         let lock = self.processes.lock().unwrap();
         let mut port = 47821u16;

@@ -20,6 +20,12 @@ import { resolveBrokerWsUrl } from "./websocket-client.js";
 // the folder picker waits for the user, the updater download streams for a while.
 const NO_TIMEOUT = 0;
 const SPAWN_TIMEOUT_MS = 60000;
+// Opening a large history session can take noticeably longer than starting a
+// blank workspace because Pi restores and indexes the session before its HTTP
+// endpoint becomes ready. Keep this above the native host's 90-second health
+// deadline so the UI receives the real result instead of abandoning the
+// request while the host is still working.
+const SESSION_SPAWN_TIMEOUT_MS = 120000;
 const PACKAGE_TIMEOUT_MS = 120000;
 
 function currentPort(env = globalThis.window || globalThis) {
@@ -94,7 +100,7 @@ export class WsTransport {
     return this._control(
       "spawn_session_process",
       { sessionFile, cwd, workspacePort: currentPort(this.env) },
-      { timeoutMs: SPAWN_TIMEOUT_MS },
+      { timeoutMs: SESSION_SPAWN_TIMEOUT_MS },
     );
   }
 

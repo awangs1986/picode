@@ -263,7 +263,13 @@ async fn spawn_session_process_core(
     broker: &BrokerWs,
 ) -> Result<u16, String> {
     let port = manager.spawn_session_dedicated(workspace_port, session_file.to_string(), cwd)?;
-    wait_for_pi_health(port, 15).await?;
+    if let Err(error) = wait_for_pi_health(port, 90).await {
+        // A timed-out child must not remain cached as the dedicated runtime for
+        // this session. Otherwise every later selection reuses the same hung
+        // process and the chat can never recover without restarting Picode.
+        manager.kill_session_dedicated(session_file);
+        return Err(error);
+    }
     // Use track_background_session instead of register_session so the dedicated
     // process is routable by session ID but does NOT become the default
     // active_port — that would silently misroute commands from the session the

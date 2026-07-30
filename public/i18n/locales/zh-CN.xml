@@ -410,6 +410,9 @@
     <message id="subagentPolicy.help">仅设置不会启动任务。只有边界清晰、可独立验证的只读任务才可能被委派。</message>
     <message id="subagentPolicy.enabled">允许符合条件的委派</message>
     <message id="subagentPolicy.candidates">候选模型</message>
+    <message id="subagentPolicy.modelPickerHelp">使用与聊天一致的已启用模型列表；这里的选择只用于符合条件的子 Agent 工作。</message>
+    <message id="subagentPolicy.selectModels">选择子 Agent 模型…</message>
+    <message id="subagentPolicy.selectedCount">已选择 {count} 个模型</message>
     <message id="subagentPolicy.fallback">模型不可用时</message>
     <message id="subagentPolicy.doNotDelegate">不委派</message>
     <message id="subagentPolicy.inheritMain">继承主模型</message>
