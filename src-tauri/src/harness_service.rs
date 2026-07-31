@@ -1,7 +1,7 @@
 use crate::harness::{
     discover_actions, execute_action, ActionCandidate, ActionExecution, ActionKind, ActionRisk,
-    CompletionGate, DiscoverySource, EvidenceEntry, EvidenceLedger, EvidencePolicy, HarnessAction,
-    HarnessProfile, LocalSlot, Platform,
+    CompletionGate, DiscoverySource, EvidenceEntry, EvidenceLedger, EvidencePolicy,
+    GateValidityResult, HarnessAction, HarnessProfile, LocalSlot, Platform, StructuredTestResult,
 };
 use crate::safe_files::SafeFileStore;
 use rand::{rngs::OsRng, RngCore};
@@ -37,6 +37,16 @@ pub struct ConfirmedHarness {
 pub struct HarnessRunResult {
     pub passed: bool,
     pub execution: ActionExecution,
+    pub structured: StructuredTestResult,
+    pub evidence: EvidenceEntry,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GateValidityRunResult {
+    pub validity: GateValidityResult,
+    pub execution: Option<ActionExecution>,
+    pub structured: Option<StructuredTestResult>,
     pub evidence: EvidenceEntry,
 }
 
@@ -128,6 +138,7 @@ impl HarnessService {
                 id: format!("gate.{}", candidate.id),
                 action_id: candidate.id.clone(),
                 path_prefixes: Vec::new(),
+                red_probe_action_id: None,
             })
             .collect();
         let profile = HarnessProfile {
@@ -178,6 +189,7 @@ impl HarnessService {
         let execution =
             execute_action(&workspace, action, parameters, platform, risk_approved).await?;
         let passed = execution.exit_code == Some(0) && !execution.timed_out;
+        let structured = StructuredTestResult::from_execution(&execution);
         let evidence_content = format!(
             "action={}\nexit={:?}\ntimeout={}\nstdout:\n{}\nstderr:\n{}",
             action.id, execution.exit_code, execution.timed_out, execution.stdout, execution.stderr
@@ -192,6 +204,81 @@ impl HarnessService {
         Ok(HarnessRunResult {
             passed,
             execution,
+            structured,
+            evidence,
+        })
+    }
+
+    pub async fn validate_gate(
+        &self,
+        task_id: &str,
+        workspace: &Path,
+        gate_id: &str,
+        risk_approved: bool,
+    ) -> Result<GateValidityRunResult, String> {
+        let workspace = canonical_workspace(workspace)?;
+        let profile_path = workspace.join(".picode").join("harness.jsonc");
+        let profile = HarnessProfile::parse_jsonc(
+            &fs::read_to_string(&profile_path)
+                .map_err(|error| format!("read confirmed Harness Profile: {error}"))?,
+        )?;
+        let gate = profile
+            .gates
+            .iter()
+            .find(|gate| gate.id == gate_id)
+            .ok_or_else(|| "Harness Gate is not declared in the confirmed Profile".to_owned())?;
+        let Some(probe_action_id) = gate.red_probe_action_id.as_deref() else {
+            let validity = GateValidityResult::missing_probe(gate_id);
+            let evidence = self.record_external_evidence(
+                task_id,
+                &format!("gate-validity:{gate_id}"),
+                validity.reason.as_bytes(),
+                &[],
+                true,
+            )?;
+            return Ok(GateValidityRunResult {
+                validity,
+                execution: None,
+                structured: None,
+                evidence,
+            });
+        };
+        let action = profile
+            .actions
+            .iter()
+            .find(|action| action.id == probe_action_id)
+            .ok_or_else(|| "Gate red probe action is missing".to_owned())?;
+        let execution = execute_action(
+            &workspace,
+            action,
+            &BTreeMap::new(),
+            current_platform(),
+            risk_approved,
+        )
+        .await?;
+        let structured = StructuredTestResult::from_execution(&execution);
+        let validity = GateValidityResult::from_probe(gate_id, probe_action_id, &execution);
+        let evidence_content = format!(
+            "gate={} probe={} red_capable={} exit={:?} timeout={} stdout:\n{}\nstderr:\n{}",
+            gate_id,
+            probe_action_id,
+            validity.red_capable,
+            execution.exit_code,
+            execution.timed_out,
+            execution.stdout,
+            execution.stderr
+        );
+        let evidence = self.record_external_evidence(
+            task_id,
+            &format!("gate-validity:{gate_id}"),
+            evidence_content.as_bytes(),
+            &[],
+            true,
+        )?;
+        Ok(GateValidityRunResult {
+            validity,
+            execution: Some(execution),
+            structured: Some(structured),
             evidence,
         })
     }
@@ -378,7 +465,15 @@ mod tests {
             .unwrap();
         assert!(result.passed);
         assert!(result.execution.stdout.contains("harness-ok"));
+        assert!(!result.structured.structured);
+        assert!(result.structured.passed);
         assert!(result.evidence.encrypted);
+        let validity = service
+            .validate_gate("task-a", &workspace, "gate.package.verify", true)
+            .await
+            .unwrap();
+        assert!(!validity.validity.red_capable);
+        assert!(validity.validity.reason.contains("no declared"));
         fs::remove_dir_all(root).unwrap();
     }
 }

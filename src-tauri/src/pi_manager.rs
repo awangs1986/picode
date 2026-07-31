@@ -19,6 +19,8 @@ const CURSOR_OAUTH_PACKAGE_NAME: &str = "@rahularya01/pi-cursor";
 const CURSOR_SDK_PACKAGE: &str = "npm:pi-cursor-sdk@0.1.61";
 const CURSOR_SDK_PACKAGE_NAME: &str = "pi-cursor-sdk";
 const MATT_POCOCK_SKILLS_PACKAGE: &str = "git:github.com/mattpocock/skills";
+const PI_SUBAGENTS_PACKAGE: &str = "npm:pi-subagents@0.37.2";
+const PI_SUBAGENTS_PACKAGE_NAME: &str = "pi-subagents";
 const CURSOR_BRIDGE_ORIGINAL: &str = "spawn(process.execPath,[";
 const CURSOR_BRIDGE_PATCHED: &str = "spawn(process.env.PICODE_CURSOR_NODE||\"node\",[";
 const CURSOR_OAUTH_REFRESH_ORIGINAL: &str =
@@ -339,6 +341,7 @@ fn package_source_contains(source: &str, package_name: &str) -> bool {
 }
 
 fn missing_default_package_sources(sources: &[String]) -> Vec<&'static str> {
+    let mut missing = Vec::new();
     if sources.iter().any(|source| {
         let normalized = source.trim().trim_end_matches(".git").to_ascii_lowercase();
         normalized == "git:github.com/mattpocock/skills"
@@ -346,10 +349,17 @@ fn missing_default_package_sources(sources: &[String]) -> Vec<&'static str> {
             || normalized.starts_with("git:github.com/mattpocock/skills@")
             || normalized.starts_with("https://github.com/mattpocock/skills@")
     }) {
-        Vec::new()
+        // Already installed.
     } else {
-        vec![MATT_POCOCK_SKILLS_PACKAGE]
+        missing.push(MATT_POCOCK_SKILLS_PACKAGE);
     }
+    if !sources
+        .iter()
+        .any(|source| package_source_contains(source, PI_SUBAGENTS_PACKAGE_NAME))
+    {
+        missing.push(PI_SUBAGENTS_PACKAGE);
+    }
+    missing
 }
 
 fn node_version_at_least_22_19(output: &str) -> bool {
@@ -766,6 +776,9 @@ impl PiManager {
             .env("PI_STUDIO_STATIC_DIR", &static_dir)
             .env("PI_STUDIO_PORT", port.to_string())
             .env("PI_STUDIO_PI_VERSION", locked_pi_version())
+            // pi-subagents spawns child Pi processes. Pin those children to
+            // Picode's bundled runtime instead of consulting the user's PATH.
+            .env("PI_SUBAGENT_PI_BINARY", &pi_bin_str)
             // Cursor credentials are never scraped implicitly. The only path
             // into Picode's Pi auth store is the explicit import/activation UI.
             .env("PI_CURSOR_SYSTEM_CREDENTIALS", "0")
@@ -1243,10 +1256,23 @@ mod tests {
     fn matt_pocock_skills_are_only_installed_when_missing() {
         assert_eq!(
             missing_default_package_sources(&[]),
+            vec![MATT_POCOCK_SKILLS_PACKAGE, PI_SUBAGENTS_PACKAGE]
+        );
+        assert_eq!(
+            missing_default_package_sources(&["git:github.com/mattpocock/skills@v1".to_owned()]),
+            vec![PI_SUBAGENTS_PACKAGE]
+        );
+    }
+
+    #[test]
+    fn pi_subagents_is_pinned_and_only_installed_when_missing() {
+        assert_eq!(
+            missing_default_package_sources(&["npm:pi-subagents@0.37.2".to_owned()]),
             vec![MATT_POCOCK_SKILLS_PACKAGE]
         );
         assert!(missing_default_package_sources(&[
-            "git:github.com/mattpocock/skills@v1".to_owned()
+            "git:github.com/mattpocock/skills@v1".to_owned(),
+            "npm:pi-subagents@0.37.2".to_owned(),
         ])
         .is_empty());
     }

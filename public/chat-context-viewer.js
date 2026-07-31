@@ -156,7 +156,7 @@ export function setupChatContextViewer({ transport, env = window, root = documen
       const page = await transport.readChatMigrationContext(scanId, candidateId, cursor);
       renderCandidate(page.candidate);
       for (const record of page.records || []) {
-        messages.appendChild(createContextRecord(record, root));
+        messages.prepend(createContextRecord(record, root));
         loaded += 1;
       }
       cursor = page.nextCursor || null;

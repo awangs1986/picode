@@ -26,7 +26,35 @@ describe("picode-professional-extensions", () => {
           residentProcessCount: 0,
         },
       })),
+      capabilitySnapshot: vi.fn(async () => ({
+        capabilities: [
+          {
+            id: "firstmate-crew-orchestrator",
+            summary: "Optional external crew",
+            tier: "disabled",
+          },
+        ],
+      })),
+      listSkills: vi.fn(async () => [
+        {
+          name: "tdd",
+          description: "Test-driven development",
+          scope: "personal",
+          source: "git:github.com/mattpocock/skills",
+          origin: "package",
+        },
+        {
+          name: "grill-with-docs",
+          description: "Planning interview",
+          scope: "personal",
+          source: "git:github.com/mattpocock/skills",
+          origin: "package",
+        },
+      ]),
+      firstmateStatus: vi.fn(async () => ({ enabled: false, available: false, root: null })),
+      setCapabilityTier: vi.fn(async () => ({})),
       pickFolder: vi.fn(async () => "D:\\game"),
+      setFirstmateRoot: vi.fn(async () => ({})),
       previewExternalCapabilityImport: vi.fn(async () => ({
         id: "preview-a",
         candidates: [
@@ -49,9 +77,27 @@ describe("picode-professional-extensions", () => {
     await panel.refresh();
 
     expect(transport.taskSnapshot).toHaveBeenCalled();
+    expect(transport.capabilitySnapshot).toHaveBeenCalled();
+    expect(transport.listSkills).toHaveBeenCalled();
     expect(transport.previewExternalCapabilityImport).not.toHaveBeenCalled();
     expect(transport.setProfessionalExtensionEnabled).not.toHaveBeenCalled();
     expect(panel.textContent).toContain("0 resident processes");
+    expect(panel.querySelectorAll(".picode-skill-bundle")).toHaveLength(1);
+    expect(panel.querySelector(".picode-skill-bundle > summary")?.textContent).toContain(
+      "mattpocock/skills",
+    );
+    expect(panel.querySelectorAll(".picode-skill-bundle .picode-skill-row")).toHaveLength(2);
+    expect(panel.querySelector('[data-capability="firstmate-crew-orchestrator"]')).not.toBeNull();
+    expect(panel.querySelector("[data-firstmate-pick-root]")).not.toBeNull();
+
+    const tier = panel.querySelector('[data-capability-tier="firstmate-crew-orchestrator"]');
+    tier.value = "discoverable";
+    tier.dispatchEvent(new Event("change"));
+    await Promise.resolve();
+    expect(transport.setCapabilityTier).toHaveBeenCalledWith(
+      "firstmate-crew-orchestrator",
+      "discoverable",
+    );
 
     panel.querySelector("[data-pick-import-root]").click();
     await Promise.resolve();
@@ -72,5 +118,27 @@ describe("picode-professional-extensions", () => {
       ["rule-a"],
       "global",
     );
+  });
+
+  it("still renders optional capabilities when the task snapshot is unavailable", async () => {
+    const transport = {
+      taskSnapshot: vi.fn(async () => {
+        throw new Error("task snapshot timed out");
+      }),
+      capabilitySnapshot: vi.fn(async () => ({
+        capabilities: [
+          { id: "browser-automation", summary: "Local browser checks", tier: "discoverable" },
+        ],
+      })),
+    };
+    const Panel = customElements.get("picode-professional-extensions");
+    const panel = new Panel();
+    panel.transport = transport;
+    document.body.appendChild(panel);
+    await panel.refresh();
+
+    expect(panel.querySelector('[data-capability="browser-automation"]')).not.toBeNull();
+    expect(panel.textContent).toContain("Optional capabilities");
+    expect(panel.textContent).toContain("task snapshot timed out");
   });
 });

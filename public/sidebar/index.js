@@ -1,3 +1,4 @@
+import { t } from "../i18n/index.js";
 import { getSuperAgentProject, isSuperAgentProjectPath } from "../super-agent/session.js";
 import { isSuperAgentEnabled } from "../super-agent/settings.js";
 
@@ -13,6 +14,7 @@ export class SessionSidebar {
     this.onSessionSelect = onSessionSelect;
     this.onNewChat = onNewChat;
     this.onOpenProject = options.onOpenProject || null;
+    this.deleteSessions = options.deleteSessions || null;
     this.superAgentPath = options.superAgentPath || "";
     this.activeSessionFile = null;
     this.projects = [];
@@ -190,46 +192,86 @@ export class SessionSidebar {
   }
 
   async deleteAllArchived() {
-    const paths = [...this.archived];
+    const paths = this.archived.filter((path) => this.canDeleteArchivedSession(path));
     if (paths.length === 0) return;
 
     const count = paths.length;
     const ok = await this.confirmArchivedDeletion(count);
     if (!ok) return;
 
+    await this.deleteArchivedPaths(paths);
+  }
+
+  canDeleteArchivedSession(filePath) {
+    return (
+      Boolean(filePath) &&
+      this.isArchived(filePath) &&
+      filePath !== this.activeSessionFile &&
+      !this.isStreaming(filePath)
+    );
+  }
+
+  async deleteArchivedSession(session) {
+    const filePath = session?.filePath;
+    if (!this.canDeleteArchivedSession(filePath)) return;
+    const title =
+      session.name || session.firstMessage || t("sidebar.untitledChat", {}, "Untitled chat");
+    const ok = await this.confirmArchivedDeletion(1, title);
+    if (!ok) return;
+    await this.deleteArchivedPaths([filePath]);
+  }
+
+  async deleteArchivedPaths(paths) {
+    if (!paths.length) return;
+
     try {
-      const res = await fetch("/api/sessions/delete-batch", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ filePaths: paths }),
-      });
-      const data = await res.json();
+      if (!this.deleteSessions) throw new Error("Native chat deletion is unavailable");
+      const data = await this.deleteSessions(paths);
       const errorSet = new Set(data.errors || []);
       const deleted = new Set(paths.filter((p) => !errorSet.has(p)));
       this.archived = this.archived.filter((p) => !deleted.has(p));
+      this.favourites = this.favourites.filter((p) => !deleted.has(p));
+      for (const path of deleted) this.unread.delete(path);
       this.saveArchived();
+      this.saveFavourites();
+      this.saveUnread();
     } catch (err) {
-      console.error("[Sidebar] deleteAllArchived failed:", err);
+      console.error("[Sidebar] deleteArchivedPaths failed:", err);
     }
 
     await this.loadSessions();
   }
 
-  async confirmArchivedDeletion(count) {
-    const message = `Delete ${count} archived session${count === 1 ? "" : "s"} permanently? This cannot be undone.`;
-    return this.showFallbackConfirmDialog(message);
+  async confirmArchivedDeletion(count, title = "") {
+    const firstMessage = title
+      ? t("sidebar.deleteChatFirstConfirm", { title }, `Delete the archived chat “${title}”?`)
+      : t("sidebar.deleteChatsFirstConfirm", { count }, `Delete ${count} archived chats?`);
+    const first = await this.showFallbackConfirmDialog(firstMessage, {
+      confirmLabel: t("sidebar.continueDelete", {}, "Continue"),
+    });
+    if (!first) return false;
+
+    const finalMessage = t(
+      "sidebar.deleteFinalConfirm",
+      {},
+      "This permanently deletes the selected Picode chat data. This cannot be undone. Continue?",
+    );
+    return this.showFallbackConfirmDialog(finalMessage, {
+      confirmLabel: t("sidebar.deletePermanently", {}, "Delete permanently"),
+      dangerous: true,
+    });
   }
 
-  showFallbackConfirmDialog(message) {
+  showFallbackConfirmDialog(message, { confirmLabel = "Delete", dangerous = false } = {}) {
     return new Promise((resolve) => {
       const overlay = document.createElement("div");
       overlay.className = "sidebar-confirm-overlay";
       overlay.innerHTML = `
-        <div class="sidebar-confirm-dialog" role="dialog" aria-modal="true" aria-label="Delete archived sessions">
+        <div class="sidebar-confirm-dialog" role="dialog" aria-modal="true" aria-label="${this.escapeHtml(t("sidebar.deleteDialog", {}, "Delete archived chat"))}">
           <div class="sidebar-confirm-message">${this.escapeHtml(message)}</div>
           <div class="sidebar-confirm-actions">
-            <button type="button" class="sidebar-confirm-no">Cancel</button>
-            <button type="button" class="sidebar-confirm-yes">Delete</button>
+            <button type="button" class="sidebar-confirm-no">${this.escapeHtml(t("common.cancel", {}, "Cancel"))}</button>
+            <button type="button" class="sidebar-confirm-yes${dangerous ? " sidebar-confirm-danger" : ""}">${this.escapeHtml(confirmLabel)}</button>
           </div>
         </div>
       `;
@@ -494,14 +536,25 @@ export class SessionSidebar {
     const items = [
       {
         icon: isArchived ? "📤" : "🗄️",
-        label: isArchived ? "Unarchive" : "Archive",
+        label: isArchived
+          ? t("sidebar.unarchiveChat", {}, "Unarchive")
+          : t("sidebar.archiveChat", {}, "Archive"),
         action: () => this.toggleArchived(session.filePath),
       },
     ];
+    if (isArchived && this.canDeleteArchivedSession(session.filePath)) {
+      items.push({
+        icon: "🗑️",
+        label: t("sidebar.deletePermanently", {}, "Delete permanently"),
+        dangerous: true,
+        action: () => void this.deleteArchivedSession(session),
+      });
+    }
 
     for (const item of items) {
       const row = document.createElement("div");
       row.className = "context-menu-item";
+      if (item.dangerous) row.classList.add("context-menu-item--danger");
       row.innerHTML = `<span class="context-menu-icon">${item.icon}</span>${item.label}`;
       row.addEventListener("click", (ev) => {
         ev.stopPropagation();
@@ -598,7 +651,7 @@ export class SessionSidebar {
   // ═══════════════════════════════════════
 
   buildSessionItem(session, project, options = {}) {
-    const { showArchiveButton = true } = options;
+    const { showArchiveButton = true, showDeleteButton = false } = options;
     const item = document.createElement("div");
     item.className = "session-item";
     item.dataset.filePath = session.filePath;
@@ -634,6 +687,17 @@ export class SessionSidebar {
     const archiveButtonHtml = showArchiveButton
       ? `<button class="session-archive-btn" title="${archiveBtnLabel}" aria-label="${archiveBtnLabel}">${archiveBtnIcon}</button>`
       : "";
+    const deleteLabel = t("sidebar.deletePermanently", {}, "Delete permanently");
+    const deleteButtonHtml = showDeleteButton
+      ? `<button class="session-delete-btn" title="${this.escapeHtml(deleteLabel)}" aria-label="${this.escapeHtml(deleteLabel)}">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <polyline points="3 6 5 6 21 6"></polyline>
+            <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path>
+            <path d="M10 11v6"></path><path d="M14 11v6"></path>
+            <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path>
+          </svg>
+        </button>`
+      : "";
 
     item.innerHTML = `
       <div class="session-title-row">
@@ -643,6 +707,7 @@ export class SessionSidebar {
         <span class="session-action-slot">
           <span class="session-time">${time}</span>
           ${archiveButtonHtml}
+          ${deleteButtonHtml}
         </span>
       </div>
     `;
@@ -653,6 +718,13 @@ export class SessionSidebar {
       archiveBtn.addEventListener("click", (e) => {
         e.stopPropagation();
         this.toggleArchived(session.filePath);
+      });
+    }
+    const deleteBtn = item.querySelector(".session-delete-btn");
+    if (deleteBtn) {
+      deleteBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        void this.deleteArchivedSession(session);
       });
     }
 
@@ -898,9 +970,9 @@ export class SessionSidebar {
           <svg class="folder-closed-icon" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>
           <svg class="folder-open-icon" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m6 14l1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/></svg>
         </span>
-        <span>Archived</span>
+        <span>${this.escapeHtml(t("sidebar.archivedChats", {}, "Archived"))}</span>
         <span class="project-count">${archivedSessions.length}</span>
-        <button class="archived-delete-all-btn" title="Delete all archived sessions" aria-label="Delete all archived sessions">
+        <button class="archived-delete-all-btn" title="${this.escapeHtml(t("sidebar.deleteAllArchived", {}, "Delete all archived chats"))}" aria-label="${this.escapeHtml(t("sidebar.deleteAllArchived", {}, "Delete all archived chats"))}">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <polyline points="3 6 5 6 21 6"></polyline>
             <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path>
@@ -922,7 +994,10 @@ export class SessionSidebar {
       sessionsDiv.className = `project-sessions${this.archivedCollapsed ? " collapsed" : ""}`;
       for (const { session, project } of archivedSessions) {
         sessionsDiv.appendChild(
-          this.buildSessionItem(session, project, { showArchiveButton: false }),
+          this.buildSessionItem(session, project, {
+            showArchiveButton: false,
+            showDeleteButton: this.canDeleteArchivedSession(session.filePath),
+          }),
         );
       }
 

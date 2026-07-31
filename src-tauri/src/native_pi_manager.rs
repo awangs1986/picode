@@ -47,6 +47,10 @@ impl NativeLaunchSpec {
         }
         let environment = BTreeMap::from([
             ("PATH".into(), self.path_env.clone()),
+            (
+                "PI_SUBAGENT_PI_BINARY".into(),
+                self.binary.to_string_lossy().into_owned(),
+            ),
             ("PI_STUDIO_PI_VERSION".into(), self.pi_version.clone()),
         ]);
         LaunchDescription {
@@ -555,7 +559,7 @@ mod tests {
             cwd: PathBuf::from("/workspace"),
             session_path: Some(PathBuf::from("/sessions/a.jsonl")),
             extensions: vec![PathBuf::from("/extensions/picot-bridge.mjs")],
-            pi_version: "0.80.10".into(),
+            pi_version: "0.83.0".into(),
             path_env: "/usr/bin".into(),
         };
         let launch = spec.command_description();
@@ -566,6 +570,10 @@ mod tests {
             .windows(2)
             .any(|pair| pair == ["--session", "/sessions/a.jsonl"]));
         assert!(!launch.environment.contains_key("PI_STUDIO_PORT"));
+        assert_eq!(
+            launch.environment.get("PI_SUBAGENT_PI_BINARY"),
+            Some(&"/embedded/pi".to_string())
+        );
         assert!(!launch
             .args
             .iter()

@@ -56,6 +56,14 @@ import {
   observeTelegramPrivateDm,
   type TelegramBotIdentity,
 } from "./pi-chat-setup";
+import { BrowserAutomationRuntime, type BrowserRequest } from "./runtime/browser-runtime";
+import { type EvalCell, PersistentEvalRuntime } from "./runtime/eval-runtime";
+import {
+  backgroundShellInvocation,
+  PersistentShellPool,
+  type ShellRequest,
+} from "./runtime/shell-runtime";
+import { normalizeTaskToolInput, type TaskToolInput } from "./runtime/subagent-runtime";
 import { buildProjectSearchMatch } from "./session-search";
 
 // `pi` is compiled with `bun build --compile`. Inside that runtime,
@@ -1307,6 +1315,20 @@ const EMBEDDED_CAPABILITIES: Omit<TaskCapabilitySearchResult, "score">[] = [
     activation: "explicit",
     permissions: ["workspace.read", "process.exec"],
   },
+  {
+    id: "persistent-eval",
+    summary: "Persistent Python/JavaScript evaluation kernel for bounded development checks",
+    scope: "global",
+    activation: "onDemand",
+    permissions: ["workspace.read", "process.exec"],
+  },
+  {
+    id: "browser-automation",
+    summary: "Lazy CDP browser automation for local web smoke checks",
+    scope: "global",
+    activation: "onDemand",
+    permissions: ["process.exec", "network.local"],
+  },
 ];
 
 export function searchTaskCapabilities(
@@ -1338,6 +1360,28 @@ export function searchTaskCapabilities(
 export function buildTaskCapabilityPrompt(context: TaskCapabilityContext | null): string {
   if (!context?.compactPrompt.trim()) return "";
   return `\n\n[Picode task ${context.taskId}]\n${context.compactPrompt.trim()}`;
+}
+
+export function selectPiSubagentTools(
+  allToolNames: string[],
+  taskKind: "simple" | "harness" | null,
+): string[] {
+  if (taskKind !== "harness") return [];
+  const available = new Set(allToolNames);
+  return ["subagent", "subagent_wait"].filter((name) => available.has(name));
+}
+
+export function buildPiSubagentsPrompt(
+  allToolNames: string[],
+  taskKind: "simple" | "harness" | null,
+): string {
+  if (!selectPiSubagentTools(allToolNames, taskKind).includes("subagent")) return "";
+  return [
+    "",
+    "[Picode Subagent orchestration]",
+    "The managed pi-subagents extension is available for chains, parallel groups, fresh/fork context, background control, steering, resume, structured output, acceptance gates, and reusable workflows.",
+    "Use Picode's task tool only for bounded one-shot or parallel work that must use the GUI-configured Picode Subagent model policy.",
+  ].join("\n");
 }
 
 function normalizeTaskCapabilityContext(value: unknown): TaskCapabilityContext | null {
@@ -1424,6 +1468,9 @@ type SlashCommandLike = {
   source?: string;
   sourceInfo?: {
     scope?: string;
+    source?: string;
+    origin?: string;
+    path?: string;
   };
 };
 
@@ -1432,6 +1479,9 @@ export type SkillCommand = {
   name: string;
   description: string;
   scope: "personal" | "project" | "temporary";
+  source: string;
+  origin: string;
+  path: string;
 };
 
 export function normalizeSkillCommands(commands: SlashCommandLike[]): SkillCommand[] {
@@ -1450,6 +1500,9 @@ export function normalizeSkillCommands(commands: SlashCommandLike[]): SkillComma
           : command.sourceInfo?.scope === "temporary"
             ? "temporary"
             : "personal",
+      source: command.sourceInfo?.source || "unknown",
+      origin: command.sourceInfo?.origin || "top-level",
+      path: command.sourceInfo?.path || "",
     }));
 }
 
@@ -1461,6 +1514,106 @@ type UnifiedWS = {
   ping: () => void;
   isAlive?: boolean;
 };
+
+export type PiSubagentRuntimeRun = {
+  id: string;
+  processId?: number;
+  sessionId?: string;
+  mode?: string;
+  agent?: string;
+  agents: string[];
+  task?: string;
+  goal?: string;
+  cwd?: string;
+  state: string;
+  startedAt: number;
+  endedAt?: number;
+  summary?: string;
+};
+
+function eventRecord(payload: unknown): Record<string, unknown> {
+  return payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+}
+
+function eventString(payload: Record<string, unknown>, key: string): string | undefined {
+  const value = payload[key];
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function eventNumber(payload: Record<string, unknown>, key: string): number | undefined {
+  const value = payload[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+export function recordPiSubagentStarted(
+  runs: Map<string, PiSubagentRuntimeRun>,
+  payload: unknown,
+  now = Date.now(),
+): PiSubagentRuntimeRun | null {
+  const data = eventRecord(payload);
+  const id = eventString(data, "id") ?? eventString(data, "runId");
+  if (!id) return null;
+  const agents = Array.isArray(data.agents)
+    ? data.agents.filter((value): value is string => typeof value === "string" && !!value.trim())
+    : [];
+  const agent = eventString(data, "agent");
+  if (agent && !agents.includes(agent)) agents.unshift(agent);
+  const run: PiSubagentRuntimeRun = {
+    id,
+    processId: eventNumber(data, "pid"),
+    sessionId: eventString(data, "sessionId"),
+    mode: eventString(data, "mode"),
+    agent,
+    agents,
+    task: eventString(data, "task"),
+    goal: eventString(data, "goal"),
+    cwd: eventString(data, "cwd"),
+    state: "running",
+    startedAt: now,
+  };
+  runs.set(id, run);
+  while (runs.size > 100) {
+    const oldest = runs.keys().next().value;
+    if (typeof oldest !== "string") break;
+    runs.delete(oldest);
+  }
+  return run;
+}
+
+export function recordPiSubagentComplete(
+  runs: Map<string, PiSubagentRuntimeRun>,
+  payload: unknown,
+  now = Date.now(),
+): PiSubagentRuntimeRun | null {
+  const data = eventRecord(payload);
+  const id = eventString(data, "runId") ?? eventString(data, "id");
+  if (!id) return null;
+  const existing = runs.get(id);
+  const reportedState = eventString(data, "state") ?? eventString(data, "status");
+  const state =
+    reportedState === "complete"
+      ? "completed"
+      : reportedState === "stopped"
+        ? "terminated"
+        : (reportedState ?? (data.success === false ? "failed" : "completed"));
+  const run: PiSubagentRuntimeRun = {
+    id,
+    processId: existing?.processId,
+    sessionId: eventString(data, "sessionId") ?? existing?.sessionId,
+    mode: existing?.mode,
+    agent: eventString(data, "agent") ?? existing?.agent,
+    agents: existing?.agents ?? [],
+    task: existing?.task,
+    goal: existing?.goal,
+    cwd: eventString(data, "cwd") ?? existing?.cwd,
+    state,
+    startedAt: existing?.startedAt ?? now,
+    endedAt: now,
+    summary: eventString(data, "summary"),
+  };
+  runs.set(id, run);
+  return run;
+}
 
 type EmbeddedServerGlobal = {
   server: ServerHandle | null;
@@ -1493,6 +1646,12 @@ type EmbeddedServerGlobal = {
   importedWorkflows: ImportedWorkflowContext[];
   mcpClients: McpClientContext[];
   subagentContext: SubagentContext | null;
+  shellRuntime: PersistentShellPool;
+  evalRuntime: PersistentEvalRuntime;
+  browserRuntime: BrowserAutomationRuntime;
+  runtimeSessionId: string | null;
+  piSubagentRuns: Map<string, PiSubagentRuntimeRun>;
+  piSubagentEventUnsubscribes: Array<() => void>;
   // The freshest `ExtensionAPI` (i.e. `pi`) reference, re-published on
   // every `session_start`. Command handlers MUST go through this getter
   // instead of capturing the `pi` parameter from `export default function`
@@ -2014,15 +2173,44 @@ function getOrCreateGlobalState(): EmbeddedServerGlobal {
       importedWorkflows: [],
       mcpClients: [],
       subagentContext: null,
+      shellRuntime: new PersistentShellPool(),
+      evalRuntime: new PersistentEvalRuntime(),
+      browserRuntime: new BrowserAutomationRuntime(),
+      runtimeSessionId: null,
+      piSubagentRuns: new Map<string, PiSubagentRuntimeRun>(),
+      piSubagentEventUnsubscribes: [],
       sessionHeaderCache: new Map<string, SessionFileCacheEntry<unknown>>(),
       sessionMetricsCache: new Map<string, SessionFileCacheEntry<unknown>>(),
     } as EmbeddedServerGlobal;
   }
-  return g[EMBEDDED_GLOBAL_KEY] as EmbeddedServerGlobal;
+  const state = g[EMBEDDED_GLOBAL_KEY] as EmbeddedServerGlobal;
+  // Development extension reloads preserve the process-global object. Fill
+  // newly introduced lazy runtimes without requiring the Pi process to exit.
+  state.shellRuntime ||= new PersistentShellPool();
+  state.evalRuntime ||= new PersistentEvalRuntime();
+  state.browserRuntime ||= new BrowserAutomationRuntime();
+  state.runtimeSessionId ??= null;
+  state.piSubagentRuns ||= new Map<string, PiSubagentRuntimeRun>();
+  state.piSubagentEventUnsubscribes ||= [];
+  return state;
 }
 
 export default function (pi: ExtensionAPI) {
   const globalState = getOrCreateGlobalState();
+
+  for (const unsubscribe of globalState.piSubagentEventUnsubscribes) {
+    try {
+      unsubscribe();
+    } catch {}
+  }
+  globalState.piSubagentEventUnsubscribes = [
+    pi.events.on("subagent:async-started", (payload) => {
+      recordPiSubagentStarted(globalState.piSubagentRuns, payload);
+    }),
+    pi.events.on("subagent:async-complete", (payload) => {
+      recordPiSubagentComplete(globalState.piSubagentRuns, payload);
+    }),
+  ];
 
   // Store latest context reference for use in command handlers
   let latestCtx: ExtensionContext | null = null;
@@ -2052,6 +2240,268 @@ export default function (pi: ExtensionAPI) {
     return globalState.getApi?.() ?? null;
   }
 
+  function runtimeSessionKey(ctx: ExtensionContext): string {
+    return (
+      ctx.sessionManager.getSessionFile() ||
+      globalState.taskCapabilityContext?.taskId ||
+      `picode-port-${PORT}`
+    );
+  }
+
+  const bashParameters = {
+    type: "object",
+    properties: {
+      command: { type: "string", minLength: 1, description: "Shell command to execute" },
+      cwd: { type: "string", description: "Working directory for this and following calls" },
+      env: {
+        type: "object",
+        additionalProperties: { type: "string" },
+        description: "Environment values retained by this session shell",
+      },
+      timeout: { type: "number", minimum: 1, maximum: 3600 },
+      pty: { type: "boolean", description: "Request an interactive terminal when available" },
+      async: { type: "boolean", description: "Run as a managed Harness background job" },
+    },
+    required: ["command"],
+    additionalProperties: false,
+  } as unknown as Parameters<ExtensionAPI["registerTool"]>[0]["parameters"];
+
+  pi.registerTool({
+    name: "bash",
+    label: "bash",
+    description:
+      "Execute a command in a session-scoped persistent shell. Supports cwd/env retention, streaming, timeout, cancellation, bounded output artifacts, and managed async Harness jobs.",
+    promptSnippet: "Execute shell commands in a persistent, cancellable Picode session.",
+    parameters: bashParameters,
+    async execute(_toolCallId, rawParams, signal, onUpdate, ctx) {
+      const params = rawParams as unknown as ShellRequest & { async?: boolean };
+      if (params.async) {
+        if (globalState.taskCapabilityContext?.taskKind !== "harness") {
+          throw new Error("Async shell jobs are available only to Harness Tasks");
+        }
+        const taskId = globalState.taskCapabilityContext.taskId;
+        const agentRunId = await activeAgentRunForTask(taskId, signal);
+        const invocation = backgroundShellInvocation(params.command);
+        const result = await callBrokerControl(
+          "background_job_start",
+          {
+            taskId,
+            agentRunId,
+            executable: invocation.executable,
+            arguments: invocation.arguments,
+            timeoutMs: Math.floor((params.timeout ?? 1800) * 1000),
+          },
+          { signal, timeoutMs: 60_000 },
+        );
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Started managed shell job.\n${JSON.stringify(result, null, 2)}`,
+            },
+          ],
+          details: result,
+        };
+      }
+      const result = await globalState.shellRuntime.execute(
+        runtimeSessionKey(ctx),
+        ctx.cwd || process.cwd(),
+        params,
+        {
+          signal,
+          onUpdate: (output) =>
+            onUpdate?.({ content: [{ type: "text", text: output }], details: undefined }),
+        },
+      );
+      const notices = [
+        result.output,
+        result.ptyNotice,
+        result.truncated && result.fullOutputPath
+          ? `Full output: ${result.fullOutputPath} (${result.totalBytes} bytes)`
+          : undefined,
+      ].filter(Boolean);
+      const text = notices.join("\n\n");
+      if (result.exitCode !== 0)
+        throw new Error(`${text}\n\nCommand exited with code ${result.exitCode}`);
+      return { content: [{ type: "text", text }], details: result };
+    },
+  });
+
+  const evalParameters = {
+    type: "object",
+    properties: {
+      cells: {
+        type: "array",
+        minItems: 1,
+        maxItems: 32,
+        items: {
+          type: "object",
+          properties: {
+            language: { type: "string", enum: ["py", "js"] },
+            code: { type: "string", minLength: 1 },
+            title: { type: "string" },
+            timeout: { type: "number", minimum: 1, maximum: 3600 },
+            reset: { type: "boolean" },
+          },
+          required: ["language", "code"],
+          additionalProperties: false,
+        },
+      },
+    },
+    required: ["cells"],
+    additionalProperties: false,
+  } as unknown as Parameters<ExtensionAPI["registerTool"]>[0]["parameters"];
+
+  pi.registerTool({
+    name: "eval",
+    label: "eval",
+    description:
+      "Execute Python or JavaScript cells in lazy, session-scoped persistent runtimes. State survives across calls until reset or session replacement.",
+    promptSnippet: "Run persistent Python or JavaScript cells with structured output.",
+    parameters: evalParameters,
+    async execute(_toolCallId, rawParams, signal, onUpdate, ctx) {
+      const params = rawParams as unknown as { cells: EvalCell[] };
+      const results = await globalState.evalRuntime.execute(runtimeSessionKey(ctx), params.cells, {
+        signal,
+        onUpdate: (text) => onUpdate?.({ content: [{ type: "text", text }], details: undefined }),
+      });
+      const text = results
+        .map(
+          (result, index) =>
+            `Cell ${index + 1} [${result.language}${result.title ? `: ${result.title}` : ""}]${
+              result.isError ? " ERROR" : ""
+            } (${result.durationMs}ms)\n${result.output}`,
+        )
+        .join("\n\n");
+      if (results.some((result) => result.isError)) throw new Error(text);
+      return { content: [{ type: "text", text }], details: { results } };
+    },
+  });
+
+  const browserParameters = {
+    type: "object",
+    properties: {
+      action: { type: "string", enum: ["open", "run", "close"] },
+      name: { type: "string" },
+      url: { type: "string" },
+      code: { type: "string" },
+      timeout: { type: "number", minimum: 1, maximum: 300 },
+      headless: { type: "boolean" },
+      app: {
+        type: "object",
+        properties: {
+          path: { type: "string" },
+          cdp_url: { type: "string" },
+          args: { type: "array", items: { type: "string" }, maxItems: 64 },
+          auto_install: {
+            type: "boolean",
+            description:
+              "Download a cached Chrome for Testing build on first use when no browser is installed.",
+          },
+        },
+        additionalProperties: false,
+      },
+      all: { type: "boolean" },
+      kill: { type: "boolean" },
+    },
+    required: ["action"],
+    additionalProperties: false,
+  } as unknown as Parameters<ExtensionAPI["registerTool"]>[0]["parameters"];
+
+  pi.registerTool({
+    name: "browser",
+    label: "browser",
+    description:
+      "Automate a lazily started or CDP-connected Chromium browser with persistent named tabs. If no local browser is available, app.auto_install downloads a cached Chrome for Testing build on first use. Open a tab, run JavaScript using tab helpers, then close it.",
+    promptSnippet: "Automate persistent Chromium tabs through open, run, and close actions.",
+    parameters: browserParameters,
+    async execute(_toolCallId, rawParams, signal, _onUpdate, ctx) {
+      const result = await globalState.browserRuntime.execute(
+        runtimeSessionKey(ctx),
+        rawParams as unknown as BrowserRequest,
+        signal,
+      );
+      return {
+        content: [
+          { type: "text", text: result.text },
+          ...(result.screenshots || []).map((screenshot) => ({
+            type: "image" as const,
+            data: screenshot.data,
+            mimeType: screenshot.mimeType,
+          })),
+        ],
+        details: {
+          ...result,
+          screenshots: result.screenshots?.map(({ bytes, mimeType }) => ({ bytes, mimeType })),
+        },
+      };
+    },
+  });
+
+  const jobsParameters = {
+    type: "object",
+    properties: {
+      action: { type: "string", enum: ["list", "status", "logs", "wait", "cancel", "stdin"] },
+      jobId: { type: "string" },
+      timeoutMs: { type: "number", minimum: 20, maximum: 60_000 },
+      input: { type: "string", maxLength: 65_536 },
+    },
+    required: ["action"],
+    additionalProperties: false,
+  } as unknown as Parameters<ExtensionAPI["registerTool"]>[0]["parameters"];
+
+  pi.registerTool({
+    name: "picode_jobs",
+    label: "Picode Jobs",
+    description:
+      "List, inspect, read logs from, wait for, cancel, or write stdin to task-owned managed background jobs.",
+    promptSnippet: "Supervise the complete lifecycle of Picode background jobs.",
+    parameters: jobsParameters,
+    async execute(_toolCallId, rawParams, signal) {
+      const params = rawParams as unknown as {
+        action: string;
+        jobId?: string;
+        timeoutMs?: number;
+        input?: string;
+      };
+      let result: unknown;
+      if (params.action === "list") {
+        const snapshot = (await callBrokerControl("task_snapshot", {}, { signal })) as {
+          orchestration?: { jobs?: unknown[] };
+        };
+        result = snapshot.orchestration?.jobs || [];
+      } else {
+        if (!params.jobId) throw new Error(`picode_jobs ${params.action} requires jobId`);
+        const operation =
+          params.action === "cancel"
+            ? "background_job_cancel"
+            : params.action === "wait"
+              ? "background_job_wait"
+              : params.action === "stdin"
+                ? "background_job_stdin"
+                : "background_job_get";
+        result = await callBrokerControl(
+          operation,
+          { jobId: params.jobId, timeoutMs: params.timeoutMs, input: params.input },
+          { signal, timeoutMs: (params.timeoutMs ?? 30_000) + 5_000 },
+        );
+      }
+      if (params.action === "logs" && result && typeof result === "object") {
+        const view = result as { liveTail?: number[]; artifactPath?: string };
+        result = {
+          ...view,
+          liveTailText: Array.isArray(view.liveTail)
+            ? Buffer.from(view.liveTail).toString("utf8")
+            : "",
+        };
+      }
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2).slice(0, 64 * 1024) }],
+        details: result,
+      };
+    },
+  });
+
   const capabilitySearchParameters = {
     type: "object",
     properties: {
@@ -2075,9 +2525,11 @@ export default function (pi: ExtensionAPI) {
       const query = typeof params.query === "string" ? params.query : "";
       const limit = typeof params.limit === "number" ? params.limit : 8;
       const results = searchTaskCapabilities(globalState.taskCapabilityContext, query, limit);
-      if (results.some((result) => result.id.endsWith("-lsp"))) {
+      const resultIds = new Set(results.map((result) => result.id));
+      if (results.some((result) => result.id.endsWith("-lsp")))
         setOptionalToolActive("picode_lsp", true);
-      }
+      if (resultIds.has("persistent-eval")) setOptionalToolActive("eval", true);
+      if (resultIds.has("browser-automation")) setOptionalToolActive("browser", true);
       return {
         content: [
           {
@@ -2352,6 +2804,113 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
+  const taskParameters = {
+    type: "object",
+    properties: {
+      context: { type: "string", maxLength: 32_768 },
+      task: { type: "string", maxLength: 16_384 },
+      name: { type: "string", maxLength: 128 },
+      agent: { type: "string", enum: ["scout", "reviewer", "tester", "task"] },
+      class: { type: "string", maxLength: 128 },
+      scope: { type: "array", items: { type: "string" }, maxItems: 64 },
+      tools: {
+        type: "array",
+        items: { type: "string", enum: ["search", "read", "execute", "edit", "write"] },
+        maxItems: 5,
+      },
+      method: { type: "string", maxLength: 4096 },
+      stopConditions: { type: "array", items: { type: "string" }, maxItems: 32 },
+      expectedResult: { type: "string", maxLength: 4096 },
+      effort: { type: "string", enum: ["lo", "med", "hi"] },
+      isolated: { type: "boolean" },
+      tasks: {
+        type: "array",
+        minItems: 1,
+        maxItems: 16,
+        items: {
+          type: "object",
+          properties: {
+            name: { type: "string", maxLength: 128 },
+            agent: { type: "string", enum: ["scout", "reviewer", "tester", "task"] },
+            class: { type: "string", maxLength: 128 },
+            task: { type: "string", minLength: 1, maxLength: 16_384 },
+            scope: { type: "array", items: { type: "string" }, maxItems: 64 },
+            tools: {
+              type: "array",
+              items: {
+                type: "string",
+                enum: ["search", "read", "execute", "edit", "write"],
+              },
+              maxItems: 5,
+            },
+            method: { type: "string", maxLength: 4096 },
+            stopConditions: { type: "array", items: { type: "string" }, maxItems: 32 },
+            expectedResult: { type: "string", maxLength: 4096 },
+            effort: { type: "string", enum: ["lo", "med", "hi"] },
+            isolated: { type: "boolean" },
+            usesSecret: { type: "boolean" },
+            destructive: { type: "boolean" },
+            ambiguous: { type: "boolean" },
+          },
+          required: ["task"],
+          additionalProperties: false,
+        },
+      },
+    },
+    additionalProperties: false,
+  } as unknown as Parameters<ExtensionAPI["registerTool"]>[0]["parameters"];
+
+  pi.registerTool({
+    name: "task",
+    label: "task",
+    description:
+      "Run a bounded one-shot or parallel batch through Picode's GUI-configured Subagent model policy. Use the pi-subagents `subagent` tool instead for chains, forked context, steering, resume, structured output, or reusable workflows.",
+    promptSnippet:
+      "Delegate independent bounded work to configured Subagent models, optionally as a parallel batch.",
+    parameters: taskParameters,
+    async execute(_toolCallId, rawParams, signal) {
+      if (globalState.taskCapabilityContext?.taskKind !== "harness") {
+        throw new Error("Subagent tasks are available only to Harness Tasks");
+      }
+      const delegations = normalizeTaskToolInput(rawParams as unknown as TaskToolInput);
+      const taskId = globalState.taskCapabilityContext.taskId;
+      const parentRunId = await activeAgentRunForTask(taskId, signal);
+      const effortMap = { lo: "low", med: "medium", hi: "high" } as const;
+      const results = await Promise.all(
+        delegations.map(async (delegation) => {
+          const result = await callBrokerControl(
+            "subagent_spawn",
+            {
+              useConfiguredPolicy: true,
+              thinkingLevel: delegation.effort ? effortMap[delegation.effort] : undefined,
+              request: {
+                taskId,
+                parentRunId,
+                work: delegation.work,
+                policy: { candidates: [], fallback: "doNotDelegate" },
+                qualifiedModels: [],
+              },
+            },
+            { signal, timeoutMs: 120_000 },
+          );
+          return { name: delegation.name, agent: delegation.agent, ...((result || {}) as object) };
+        }),
+      );
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Started ${results.length} Subagent task(s). Results return to the parent as unverified candidates.\n${JSON.stringify(results, null, 2)}`.slice(
+              0,
+              64 * 1024,
+            ),
+          },
+        ],
+        details: { results },
+      };
+    },
+  });
+
   const advisoryParameters = {
     type: "object",
     properties: {
@@ -2497,6 +3056,7 @@ export default function (pi: ExtensionAPI) {
   function setCapabilitySearchActive(enabled: boolean) {
     const api = currentPi();
     if (!api) return;
+    const allToolNames = api.getAllTools().map((tool) => tool.name);
     const active = api
       .getActiveTools()
       .filter(
@@ -2505,13 +3065,20 @@ export default function (pi: ExtensionAPI) {
           name !== "picode_lsp" &&
           name !== "picode_background_job" &&
           name !== "picode_delegate" &&
+          name !== "task" &&
           name !== "picode_advisory" &&
-          name !== "picode_mcp",
+          name !== "picode_mcp" &&
+          name !== "eval" &&
+          name !== "browser" &&
+          name !== "picode_jobs" &&
+          name !== "subagent" &&
+          name !== "subagent_wait",
       );
     if (enabled) active.push("picode_search_tools");
     if (enabled) active.push("picode_advisory");
     if (globalState.taskCapabilityContext?.taskKind === "harness") {
-      active.push("picode_background_job", "picode_delegate");
+      active.push("picode_background_job", "picode_delegate", "task", "picode_jobs");
+      active.push(...selectPiSubagentTools(allToolNames, "harness"));
     }
     if (
       globalState.mcpClients.some(
@@ -2648,6 +3215,13 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     rememberCtx(ctx);
+    const nextRuntimeSessionId = runtimeSessionKey(ctx);
+    if (globalState.runtimeSessionId && globalState.runtimeSessionId !== nextRuntimeSessionId) {
+      globalState.shellRuntime.dispose(globalState.runtimeSessionId);
+      globalState.evalRuntime.dispose(globalState.runtimeSessionId);
+      await globalState.browserRuntime.dispose(globalState.runtimeSessionId);
+    }
+    globalState.runtimeSessionId = nextRuntimeSessionId;
     if (!didRefreshModelRegistry && ctx.modelRegistry) {
       didRefreshModelRegistry = true;
       // Cursor providers can otherwise expose a fallback or yesterday's
@@ -2672,6 +3246,12 @@ export default function (pi: ExtensionAPI) {
   pi.on("before_agent_start", async (event) => {
     const suffix =
       buildTaskCapabilityPrompt(globalState.taskCapabilityContext) +
+      buildPiSubagentsPrompt(
+        currentPi()
+          ?.getAllTools()
+          .map((tool) => tool.name) ?? [],
+        globalState.taskCapabilityContext?.taskKind ?? null,
+      ) +
       buildImportedWorkflowPrompt(
         globalState.taskCapabilityContext?.taskId,
         globalState.importedWorkflows,
@@ -2941,7 +3521,12 @@ export default function (pi: ExtensionAPI) {
           globalState.subagentContext = context;
           const a = requireApi("picode_subagent_context");
           if (!a) break;
-          a.setActiveTools(a.getActiveTools().filter((tool) => subagentToolAllowed(context, tool)));
+          a.setActiveTools(
+            a
+              .getAllTools()
+              .map((tool) => tool.name)
+              .filter((tool) => subagentToolAllowed(context, tool)),
+          );
           sendTo(ws, success("picode_subagent_context", { parentRunId: context.parentRunId }));
           break;
         }
@@ -3175,6 +3760,29 @@ export default function (pi: ExtensionAPI) {
         case "get_pi_version": {
           // Embedded pi version is forwarded by Picot (Rust) at spawn time.
           sendTo(ws, success("get_pi_version", { version: EMBEDDED_PI_VERSION }));
+          break;
+        }
+
+        case "get_picode_runtime_snapshot": {
+          const evalSnapshot = globalState.evalRuntime.snapshot();
+          const browserSnapshot = globalState.browserRuntime.snapshot();
+          const memory = process.memoryUsage();
+          sendTo(
+            ws,
+            success("get_picode_runtime_snapshot", {
+              sessionId: globalState.runtimeSessionId,
+              processId: process.pid,
+              memoryBytes: memory.rss,
+              heapBytes: memory.heapUsed,
+              cpuMicros: process.cpuUsage(),
+              shellSessions: globalState.shellRuntime.size,
+              piSubagents: [...globalState.piSubagentRuns.values()].sort(
+                (left, right) => right.startedAt - left.startedAt,
+              ),
+              ...evalSnapshot,
+              ...browserSnapshot,
+            }),
+          );
           break;
         }
 
@@ -3940,54 +4548,6 @@ export default function (pi: ExtensionAPI) {
           const response = await responsePromise;
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify(response));
-        } catch (e: unknown) {
-          res.writeHead(400, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: errMessage(e) }));
-        }
-      });
-      return;
-    }
-
-    if (urlPath === "/api/sessions/delete-batch" && req.method === "POST") {
-      let body = "";
-      req.on("data", (chunk: Buffer) => {
-        body += chunk.toString();
-      });
-      req.on("end", async () => {
-        try {
-          const { filePaths } = JSON.parse(body);
-          if (!Array.isArray(filePaths)) {
-            res.writeHead(400, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ error: "filePaths must be an array" }));
-            return;
-          }
-
-          let deleted = 0;
-          const errors: string[] = [];
-          const resolvedSessionsDir = path.resolve(SESSIONS_DIR);
-
-          for (const fp of filePaths) {
-            // Safety: must be a string, end with .jsonl, and resolve inside SESSIONS_DIR
-            if (
-              typeof fp !== "string" ||
-              !fp.endsWith(".jsonl") ||
-              !path.resolve(fp).startsWith(resolvedSessionsDir + path.sep)
-            ) {
-              errors.push(fp);
-              continue;
-            }
-            try {
-              await fs.promises.unlink(fp);
-              globalState.sessionHeaderCache.delete(fp);
-              globalState.sessionMetricsCache.delete(fp);
-              deleted++;
-            } catch {
-              errors.push(fp);
-            }
-          }
-
-          res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ deleted, errors }));
         } catch (e: unknown) {
           res.writeHead(400, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: errMessage(e) }));

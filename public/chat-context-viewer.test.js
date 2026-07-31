@@ -84,7 +84,43 @@ describe("chat context viewer", () => {
       "chat-1",
       "page-2",
     );
-    expect(document.querySelectorAll(".context-record")).toHaveLength(3);
+    expect(document.getElementById("context-load-more").hidden).toBe(true);
+  });
+
+  test("loads later conversation pages only when requested and keeps newest content first", async () => {
+    const transport = {
+      readChatMigrationContext: vi
+        .fn()
+        .mockResolvedValueOnce({
+          candidate: { source: "codex", title: "Long chat", fileSizeBytes: 90 * 1024 * 1024 },
+          records: [{ kind: "message", role: "user", content: "First page" }],
+          nextCursor: "page-2",
+          complete: false,
+        })
+        .mockResolvedValueOnce({
+          candidate: { source: "codex", title: "Long chat", fileSizeBytes: 90 * 1024 * 1024 },
+          records: [{ kind: "message", role: "assistant", content: "Second page" }],
+          nextCursor: null,
+          complete: true,
+        }),
+    };
+
+    const viewer = setupChatContextViewer({ transport, env: window });
+
+    await vi.waitFor(() => expect(transport.readChatMigrationContext).toHaveBeenCalledTimes(1));
+    expect(document.querySelectorAll(".context-record")).toHaveLength(1);
+    expect(document.getElementById("context-messages").textContent).toContain("First page");
+    expect(document.getElementById("context-messages").textContent).not.toContain("Second page");
+    expect(document.getElementById("context-load-more").hidden).toBe(false);
+
+    await viewer.loadNext();
+
+    expect(transport.readChatMigrationContext).toHaveBeenCalledTimes(2);
+    expect(document.querySelectorAll(".context-record")).toHaveLength(2);
+    expect(document.getElementById("context-messages").textContent).toContain("Second page");
+    const records = [...document.querySelectorAll(".context-record")];
+    expect(records[0].textContent).toContain("Second page");
+    expect(records[1].textContent).toContain("First page");
     expect(document.getElementById("context-load-more").hidden).toBe(true);
   });
 });

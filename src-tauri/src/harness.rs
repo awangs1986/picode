@@ -66,6 +66,8 @@ pub struct CompletionGate {
     pub action_id: String,
     #[serde(default)]
     pub path_prefixes: Vec<String>,
+    #[serde(default)]
+    pub red_probe_action_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -133,6 +135,11 @@ impl HarnessProfile {
         for gate in &self.gates {
             if !action_ids.contains(gate.action_id.as_str()) {
                 return Err(format!("gate {} references missing action", gate.id));
+            }
+            if let Some(probe) = &gate.red_probe_action_id {
+                if !action_ids.contains(probe.as_str()) {
+                    return Err(format!("gate {} references missing red probe", gate.id));
+                }
             }
         }
         Ok(())
@@ -435,6 +442,107 @@ pub struct ActionExecution {
     pub output_truncated: bool,
     pub timed_out: bool,
     pub duration_ms: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StructuredTestResult {
+    pub structured: bool,
+    pub status: String,
+    pub passed: bool,
+    pub tests: Option<u64>,
+    pub failures: Option<u64>,
+    pub source: String,
+}
+
+impl StructuredTestResult {
+    pub fn from_execution(execution: &ActionExecution) -> Self {
+        let candidate = execution
+            .stdout
+            .lines()
+            .chain(execution.stderr.lines())
+            .map(str::trim)
+            .find(|line| line.starts_with('{') && line.ends_with('}'));
+        if let Some(line) = candidate {
+            if let Ok(value) = serde_json::from_str::<Value>(line) {
+                let passed = value
+                    .get("passed")
+                    .and_then(Value::as_bool)
+                    .or_else(|| value.get("success").and_then(Value::as_bool));
+                let tests = value
+                    .get("tests")
+                    .and_then(Value::as_u64)
+                    .or_else(|| value.get("total").and_then(Value::as_u64));
+                let failures = value
+                    .get("failures")
+                    .and_then(Value::as_u64)
+                    .or_else(|| value.get("failed").and_then(Value::as_u64));
+                if let Some(passed) = passed {
+                    return Self {
+                        structured: true,
+                        status: if passed { "passed" } else { "failed" }.into(),
+                        passed,
+                        tests,
+                        failures,
+                        source: "json-line".into(),
+                    };
+                }
+            }
+        }
+        let passed = execution.exit_code == Some(0) && !execution.timed_out;
+        Self {
+            structured: false,
+            status: if execution.timed_out {
+                "timed-out"
+            } else if passed {
+                "passed"
+            } else {
+                "failed"
+            }
+            .into(),
+            passed,
+            tests: None,
+            failures: None,
+            source: "exit-code".into(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GateValidityResult {
+    pub gate_id: String,
+    pub probe_action_id: Option<String>,
+    pub red_capable: bool,
+    pub observed_failure: bool,
+    pub reason: String,
+}
+
+impl GateValidityResult {
+    pub fn missing_probe(gate_id: &str) -> Self {
+        Self {
+            gate_id: gate_id.into(),
+            probe_action_id: None,
+            red_capable: false,
+            observed_failure: false,
+            reason: "gate has no declared controlled red probe".into(),
+        }
+    }
+
+    pub fn from_probe(gate_id: &str, probe_action_id: &str, execution: &ActionExecution) -> Self {
+        let observed_failure = execution.timed_out || execution.exit_code != Some(0);
+        Self {
+            gate_id: gate_id.into(),
+            probe_action_id: Some(probe_action_id.into()),
+            red_capable: observed_failure,
+            observed_failure,
+            reason: if observed_failure {
+                "controlled red probe produced a non-passing result".into()
+            } else {
+                "red probe unexpectedly passed; Gate validity is not proven".into()
+            },
+        }
+    }
 }
 
 impl HarnessAction {

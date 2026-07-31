@@ -43,6 +43,14 @@ pub enum Activation {
     Explicit,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CapabilityTier {
+    Resident,
+    Discoverable,
+    Disabled,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CapabilityManifest {
@@ -54,6 +62,7 @@ pub struct CapabilityManifest {
     pub keywords: Vec<String>,
     pub scope: CapabilityScope,
     pub activation: Activation,
+    pub tier: CapabilityTier,
     #[serde(default)]
     pub permissions: BTreeSet<String>,
     pub resident_cost_bytes: u64,
@@ -83,6 +92,7 @@ pub struct CapabilitySummary {
     pub keywords: Vec<String>,
     pub scope: CapabilityScope,
     pub activation: Activation,
+    pub tier: CapabilityTier,
     pub permissions: BTreeSet<String>,
     pub loaded: bool,
 }
@@ -130,6 +140,9 @@ impl CapabilityCatalog {
             .entries
             .values()
             .filter_map(|entry| {
+                if entry.manifest.tier == CapabilityTier::Disabled {
+                    return None;
+                }
                 let id = entry.manifest.id.to_lowercase();
                 let summary = entry.manifest.summary.to_lowercase();
                 let keywords = entry.manifest.keywords.join(" ").to_lowercase();
@@ -211,16 +224,21 @@ impl CapabilityCatalog {
                 keywords: entry.manifest.keywords.clone(),
                 scope: entry.manifest.scope,
                 activation: entry.manifest.activation,
+                tier: entry.manifest.tier,
                 permissions: entry.manifest.permissions.clone(),
                 loaded: entry.loaded,
             })
             .collect()
     }
     pub fn load(&mut self, id: &str) -> Result<(), String> {
-        self.entries
+        let entry = self
+            .entries
             .get_mut(id)
-            .ok_or_else(|| "capability missing".to_owned())?
-            .loaded = true;
+            .ok_or_else(|| "capability missing".to_owned())?;
+        if entry.manifest.tier == CapabilityTier::Disabled {
+            return Err("disabled capability must be enabled in Settings before loading".into());
+        }
+        entry.loaded = true;
         Ok(())
     }
     pub fn unload(&mut self, id: &str) -> Result<(), String> {
@@ -232,6 +250,18 @@ impl CapabilityCatalog {
     }
     pub fn resident_process_count(&self) -> usize {
         self.entries.values().filter(|entry| entry.loaded).count()
+    }
+
+    pub fn set_tier(&mut self, id: &str, tier: CapabilityTier) -> Result<(), String> {
+        let entry = self
+            .entries
+            .get_mut(id)
+            .ok_or_else(|| "capability missing".to_owned())?;
+        if tier == CapabilityTier::Disabled {
+            entry.loaded = false;
+        }
+        entry.manifest.tier = tier;
+        Ok(())
     }
 }
 
@@ -558,6 +588,7 @@ mod tests {
             keywords: vec!["rust".to_owned(), "symbol".to_owned()],
             scope,
             activation: Activation::OnDemand,
+            tier: CapabilityTier::Discoverable,
             permissions: BTreeSet::from(["workspace.read".to_owned()]),
             resident_cost_bytes: 0,
         }

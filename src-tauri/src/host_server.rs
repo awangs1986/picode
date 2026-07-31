@@ -737,7 +737,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(health["protocolVersion"], 2);
-        assert_eq!(health["piVersion"], "0.80.10");
+        assert_eq!(health["piVersion"], crate::pi_manager::locked_pi_version());
         let index = reqwest::get(format!("{}/app/settings", host.origin()))
             .await
             .unwrap()

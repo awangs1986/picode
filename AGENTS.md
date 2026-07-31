@@ -78,7 +78,7 @@ Before implementing a capability Picode does not already have, follow the Capabi
 3. If OMP has no suitable mechanism, inspect comparable open-source agents such as OpenCode or legally reusable Claude-style implementations for an implementation approach.
 4. Write a Picode-specific implementation only after the earlier levels have been searched and rejected with reasons.
 
-Record a Capability Source Review in the issue or implementation document. Pin the examined project version or commit, verify license compatibility, preserve required notices, and evaluate maintenance, security, permissions, runtime cost, and Pi compatibility. Never copy code without a license that permits it; unlicensed, proprietary, source-available, or reverse-engineered material may inform behavior and architecture only and requires an independent implementation.
+Record a **per-capability** Source Review in the issue or implementation document **before coding starts**. The record must show the Pi search, the Oh My Pi comparison, the comparable open-source-agent search, and the rejection/adoption reason for each rung; a generic project-level source list is not sufficient. Pin the examined project version or commit, verify license compatibility, preserve required notices, and evaluate maintenance, security, permissions, runtime cost, and Pi compatibility. Never copy code without a license that permits it; unlicensed, proprietary, source-available, or reverse-engineered material may inform behavior and architecture only and requires an independent implementation.
 
 ### Explicit skill precedence
 

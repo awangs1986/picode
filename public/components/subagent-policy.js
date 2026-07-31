@@ -12,7 +12,14 @@ const DEFAULT_POLICY = Object.freeze({
   enabled: false,
   fallback: "doNotDelegate",
   candidates: [],
-  qualifiedClasses: ["repository-search", "advisory-review"],
+  qualifiedClasses: [
+    "repository-search",
+    "documentation-search",
+    "code-review",
+    "test-execution",
+    "implementation",
+    "advisory-review",
+  ],
 });
 
 export function loadSubagentPolicy(storage = globalThis.localStorage) {
@@ -58,7 +65,14 @@ function normalizeSubagentPolicy(value) {
       : [],
     qualifiedClasses: Array.isArray(value.qualifiedClasses)
       ? value.qualifiedClasses.filter((item) => typeof item === "string")
-      : ["repository-search", "advisory-review"],
+      : [
+          "repository-search",
+          "documentation-search",
+          "code-review",
+          "test-execution",
+          "implementation",
+          "advisory-review",
+        ],
   };
 }
 

@@ -17,3 +17,9 @@ An implementation issue must state:
 - evidence required to close it.
 
 Do not close an issue from UI presence alone. Report whether the result is Simple completed, Harness verified, Harness verified with overrides, implemented with incomplete Harness verification, environment-blocked, or failed.
+
+For a capability issue, the Source Review is a pre-implementation gate, not a
+release-note exercise. If the issue does not link a capability-specific review
+with Pi, Oh My Pi, comparable-agent, and final-choice evidence, keep it in
+planning/research status. A passing unit test or a visible Settings entry does
+not waive this requirement.

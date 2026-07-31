@@ -175,6 +175,7 @@ describe("WsTransport", () => {
       { "workspace-1": "C:\\work" },
       { includeReasoning: true },
     );
+    await transport.deleteChats(["C:\\sessions\\chat.jsonl"]);
 
     expect(ws.sendControl).toHaveBeenCalledWith(
       "chat_migration_scan",
@@ -199,6 +200,11 @@ describe("WsTransport", () => {
         workspaceBindings: { "workspace-1": "C:\\work" },
         includeReasoning: true,
       },
+      { timeoutMs: 0 },
+    );
+    expect(ws.sendControl).toHaveBeenCalledWith(
+      "chat_delete",
+      { filePaths: ["C:\\sessions\\chat.jsonl"] },
       { timeoutMs: 0 },
     );
   });
@@ -365,6 +371,9 @@ describe("WsTransport", () => {
       true,
       5000,
     );
+    await transport.firstmateStatus();
+    await transport.setFirstmateRoot("D:\\firstmate");
+    await transport.openFirstmate();
 
     expect(ws.sendControl).toHaveBeenCalledWith(
       "external_import_preview",
@@ -386,6 +395,13 @@ describe("WsTransport", () => {
       expect.objectContaining({ taskId: "task-a", explicitlyAuthorized: true }),
       { timeoutMs: 0 },
     );
+    expect(ws.sendControl).toHaveBeenCalledWith("firstmate_status", {}, {});
+    expect(ws.sendControl).toHaveBeenCalledWith(
+      "firstmate_set_root",
+      { path: "D:\\firstmate" },
+      {},
+    );
+    expect(ws.sendControl).toHaveBeenCalledWith("firstmate_open", {}, { timeoutMs: 60000 });
   });
 
   test("currentPort + brokerWsUrl derive from the environment", () => {

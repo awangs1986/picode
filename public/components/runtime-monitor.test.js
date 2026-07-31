@@ -1,11 +1,42 @@
 // @vitest-environment jsdom
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "./runtime-monitor.js";
 
 describe("picode-runtime-monitor", () => {
   beforeEach(() => {
     document.body.innerHTML = "";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        json: async () => ({
+          success: true,
+          data: {
+            processId: 4700,
+            memoryBytes: 33554432,
+            shellSessions: 1,
+            javascriptKernels: 1,
+            pythonKernels: 0,
+            tabs: 1,
+            piSubagents: [
+              {
+                id: "async-1",
+                processId: 4710,
+                mode: "chain",
+                agents: ["scout", "worker"],
+                goal: "Inspect then implement",
+                state: "running",
+                startedAt: 1,
+              },
+            ],
+          },
+        }),
+      })),
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it("renders exact Agent Run identity, uncertainty labels, hierarchy, and controls", async () => {
@@ -113,6 +144,11 @@ describe("picode-runtime-monitor", () => {
     expect(monitor.textContent).toContain("search-model");
     expect(monitor.textContent).toContain("extension-a");
     expect(monitor.textContent).toContain("memory");
+    expect(monitor.querySelectorAll('[data-pi-subagent="async-1"]')).toHaveLength(1);
+    expect(monitor.textContent).toContain("Inspect then implement");
+    expect(monitor.textContent).toContain("Manage with /subagents");
+    expect(monitor.querySelectorAll("[data-tool-runtime]")).toHaveLength(3);
+    expect(monitor.textContent).toContain("JavaScript Eval");
     monitor.querySelector('[data-cancel-extension="extension-a"]').click();
     await Promise.resolve();
     expect(transport.cancelProfessionalExtension).toHaveBeenCalledWith("extension-a");

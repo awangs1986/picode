@@ -1,6 +1,6 @@
 # Picode P0–P5 execution backlog
 
-Status: P0–P4 implemented and verified on `feature/p0-p4-complete`; P5 remains planning-only
+Status: P0–P4 baseline gate and the final capability/Gate-validity additions pass on `feature/p0-p4-complete`; P5 remains planning-only.
 
 Sources: [`ROADMAP.md`](../ROADMAP.md), [`task-execution.md`](specs/task-execution.md), [`CONTEXT.md`](../CONTEXT.md)
 
@@ -16,9 +16,9 @@ P0–P5 are dependency levels, not calendar releases. Each numbered item is inte
 | P1 | 15 | Optional Harness contract, verification, evidence, and truthful completion (implemented) |
 | P2 | 13 | Lazy capabilities, safe editing, local intelligence, and scoped LSP (implemented) |
 | P3 | 16 | Durable long work, Git isolation, qualified Subagents, and model routing (implemented) |
-| P4 | 10 | Isolated professional extensions and regression measurement (implemented) |
-| P5 | 8 | Threat-modeled remote and experimental capabilities |
-| **Total** | **82** | P0–P4 are independently verifiable on this branch; P5 is not started |
+| P4 | 10 | Isolated professional extensions and regression measurement (baseline; adapters partial) |
+| P5 | 10 | Threat-modeled remote, engine, external-orchestrator, and experimental capabilities |
+| **Total** | **84** | The baseline gate is repeatable; end-to-end Harness claims remain capability-specific and P5 is not started |
 
 The implementation gate and the exact commands used for this branch are recorded in
 [`docs/verification/P0-P4-ACCEPTANCE.md`](verification/P0-P4-ACCEPTANCE.md). The gate is
@@ -250,8 +250,8 @@ local test does not exercise a real provider.
 - **Task Kind:** Harness
 - **Depends:** P1-07, P1-10
 - **CSR required:** Structured test/report adapters and retry semantics
-- **Outcome:** Evaluate exit codes, artifacts, machine-readable reports, and bounded patterns; retain every declared retry and mark pass-after-failure as flaky.
-- **Acceptance:** Exit code zero cannot override a failed predicate; an undeclared retry cannot run automatically; missing expected reports fail clearly; model prose cannot manufacture success.
+- **Outcome:** Evaluate exit codes, artifacts, machine-readable reports, and bounded patterns; retain every declared retry and mark pass-after-failure as flaky. Every Completion Gate may also declare a controlled red-probe action whose failure proves the Gate is capable of rejecting a bad candidate.
+- **Acceptance:** Exit code zero cannot override a failed predicate; an undeclared retry cannot run automatically; missing expected reports fail clearly; model prose cannot manufacture success; a Gate without a red probe is visibly incomplete rather than Harness verified; a passing red probe does not count as validity evidence.
 
 ### P1-12 — Implement the Evidence Ledger and Artifact store
 
@@ -273,7 +273,7 @@ local test does not exercise a real provider.
 - **Task Kind:** Both
 - **Depends:** P1-06, P1-09, P1-11, P1-12
 - **Outcome:** Distinguish Simple completed, Harness verified, Harness verified with overrides, incomplete Harness verification, suspended, environment blocked, and failed.
-- **Acceptance:** Simple never claims Harness verification; every effective gate must pass for its verified label; skipped/replaced template gates and flaky passes stay visible.
+- **Acceptance:** Simple never claims Harness verification; every effective gate must pass and have red-capable validity evidence for its verified label; skipped/replaced template gates and flaky passes stay visible.
 
 ### P1-15 — Pass the P1 Harness contract gate
 
@@ -653,6 +653,22 @@ P5 items begin as PRDs and threat models. Completing discovery does not authoriz
 - **Depends:** Any P5 candidate seeking release
 - **Outcome:** Decide whether an experiment remains external, ships disabled, graduates to a lower phase, or is rejected based on security, usefulness, reliability, performance, maintenance, and Pi compatibility evidence.
 - **Acceptance:** Every decision links its PRD, threat model, Capability Source Review, tests, resource measurements, and unresolved risks; no candidate is promoted from demo behavior alone.
+
+### P5-09 — Add optional game content pipeline validation adapters
+
+- **Task Kind:** Harness
+- **Depends:** P4-01, P1-07, P1-09, P1-12
+- **CSR required:** Pi engine/project extensions, Unity/Unreal/Godot validation workflows, and comparable game build pipelines
+- **Outcome:** Provide disabled-by-default, third-tier adapters that validate engine resource references, GUIDs, serialization, import settings, scenes, Prefabs/Blueprints, generated data, Cook/package output, and runtime loading without authoring artistic content.
+- **Acceptance:** Each adapter has an explicit enablement and environment contract; validation runs only in the selected task/CI context; controlled broken references prove Red-capable Gates; artifacts identify affected content and platform; disabling the adapter removes it from the Agent catalog and starts no engine process.
+
+### P5-10 — Add optional Firstmate crew-orchestrator adapter
+
+- **Task Kind:** Harness
+- **Depends:** P4-01, P1-07, P1-09, P1-12, P3-06
+- **Outcome:** Expose [`kunchenguid/firstmate`](capability-source-reviews/firstmate-2026-07-31.md) as a disabled-by-default Tier-3 external component. When explicitly enabled, Picode can launch a user-authorized firstmate session with an isolated `FM_HOME`, bounded worker/backend resources, and a selected Git worktree, then import a scout report, patch/worktree reference, or PR metadata as unverified evidence.
+- **CSR required:** The firstmate review above is mandatory; Pi-native `pi-subagents` remains the first choice for in-process delegation, and OMP/comparable agent behavior must be reconsidered before any new wrapper code.
+- **Acceptance:** Disabled means no Agent catalog entry, process, dependency install, or project access; enabling persists only the manifest; invocation requires explicit project/backend/worker/merge authority; cancellation and restart reconcile child processes; returned changes never auto-merge/push; Picode/CI must run the declared Gate and mark the result verified before Harness completion.
 
 ## Recommended first execution waves
 

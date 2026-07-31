@@ -13,9 +13,42 @@ function formatPermission(value) {
   return String(value || "").replace(/([a-z])([A-Z])/g, "$1 $2");
 }
 
+function skillBundleLabel(source) {
+  const normalized = String(source || "")
+    .replace(/^git:/, "")
+    .replace(/^npm:/, "")
+    .replace(/^https?:\/\//, "")
+    .replace(/^github\.com\//, "")
+    .replace(/\.git$/, "");
+  return normalized || t("professional.individualSkill", {}, "Individual skill");
+}
+
+export function groupInstalledSkills(skills) {
+  const groups = new Map();
+  for (const [index, skill] of (skills || []).entries()) {
+    const source = String(skill?.source || "");
+    const bundled = skill?.origin === "package" && source && source !== "unknown";
+    const key = bundled ? `bundle:${source}` : `skill:${index}:${skill?.name || "unknown"}`;
+    if (!groups.has(key)) {
+      groups.set(key, {
+        key,
+        bundled,
+        label: bundled ? skillBundleLabel(source) : skill?.name || "skill",
+        source,
+        skills: [],
+      });
+    }
+    groups.get(key).skills.push(skill);
+  }
+  return [...groups.values()].sort((left, right) => left.label.localeCompare(right.label));
+}
+
 export class PicodeProfessionalExtensions extends HTMLElement {
   connectedCallback() {
     this._snapshot ||= null;
+    this._capabilitySnapshot ||= null;
+    this._skills ||= null;
+    this._firstmateStatus ||= null;
     this._importPreview ||= null;
     this._mcpPreview ||= null;
     this._selectedImports ||= new Set();
@@ -35,12 +68,50 @@ export class PicodeProfessionalExtensions extends HTMLElement {
   }
 
   async refresh() {
-    try {
-      this._snapshot = (await this.transport.taskSnapshot())?.extensions || {};
-      this._error = "";
-    } catch (error) {
-      this._error = error?.message || String(error);
+    const errors = [];
+    const taskSnapshot = this.transport.taskSnapshot
+      ? await Promise.resolve()
+          .then(() => this.transport.taskSnapshot())
+          .catch((error) => {
+            errors.push(error);
+            return null;
+          })
+      : null;
+    if (taskSnapshot) this._snapshot = taskSnapshot?.extensions || {};
+
+    const capabilitySnapshot = this.transport.capabilitySnapshot
+      ? await Promise.resolve()
+          .then(() => this.transport.capabilitySnapshot())
+          .catch((error) => {
+            errors.push(error);
+            return null;
+          })
+      : null;
+    if (capabilitySnapshot) this._capabilitySnapshot = capabilitySnapshot;
+
+    if (this.transport.listSkills) {
+      const skills = await Promise.resolve()
+        .then(() => this.transport.listSkills())
+        .catch((error) => {
+          errors.push(error);
+          return null;
+        });
+      if (skills) this._skills = Array.isArray(skills) ? skills : [];
     }
+
+    if (this.transport.firstmateStatus) {
+      const firstmateStatus = await Promise.resolve()
+        .then(() => this.transport.firstmateStatus())
+        .catch((error) => {
+          errors.push(error);
+          return null;
+        });
+      if (firstmateStatus) this._firstmateStatus = firstmateStatus;
+    }
+
+    this._error = errors.length
+      ? errors.map((error) => error?.message || String(error)).join("; ")
+      : "";
     this._render();
   }
 
@@ -57,6 +128,9 @@ export class PicodeProfessionalExtensions extends HTMLElement {
     const installations = snapshot.installations || [];
     const imports = snapshot.imports || [];
     const mcp = snapshot.mcpConfigs || [];
+    const capabilities = this._capabilitySnapshot?.capabilities || [];
+    const skills = this._skills || [];
+    const skillGroups = groupInstalledSkills(skills);
     const residents = Number(snapshot.residentProcessCount || 0);
     this.innerHTML = `
       <div class="picode-professional-head">
@@ -66,6 +140,16 @@ export class PicodeProfessionalExtensions extends HTMLElement {
       </div>
       ${this._error ? `<p class="picode-runtime-error">${escapeHtml(this._error)}</p>` : ""}
       <div class="picode-professional-grid">
+        <section class="picode-professional-card picode-professional-card--wide">
+          <header><div><span class="picode-eyebrow">SKILLS</span><h3>${escapeHtml(t("professional.skills", {}, "Installed skills"))}</h3></div><small>${this._skills === null ? "—" : skills.length}</small></header>
+          <p class="settings-help">${escapeHtml(t("professional.skillsHelp", {}, "Skills loaded by the current Pi runtime are available from the slash menu and are shown here for verification."))}</p>
+          ${this._skills === null ? `<p class="picode-runtime-empty">${escapeHtml(t("professional.skillsLoading", {}, "Loading skills…"))}</p>` : skills.length ? `<div class="picode-imported-list">${skillGroups.map((group) => this._skillGroup(group)).join("")}</div>` : `<p class="picode-runtime-empty">${escapeHtml(t("professional.noSkills", {}, "No skills are currently loaded."))}</p>`}
+        </section>
+        ${`<section class="picode-professional-card picode-professional-card--wide">
+          <header><div><span class="picode-eyebrow">CAPABILITIES</span><h3>${escapeHtml(t("professional.capabilities", {}, "Optional capabilities"))}</h3></div><small>${capabilities.length}</small></header>
+          <p class="settings-help">${escapeHtml(t("professional.capabilitiesHelp", {}, "Disabled modules stay out of the Agent catalog and consume no process resources."))}</p>
+          ${capabilities.length ? `<div class="picode-imported-list">${capabilities.map((item) => this._capabilityRow(item)).join("")}</div>` : `<p class="picode-runtime-empty">${escapeHtml(t("professional.noCapabilities", {}, "No optional capabilities are available."))}</p>`}
+        </section>`}
         <section class="picode-professional-card">
           <header><div><span class="picode-eyebrow">HOST</span><h3>${escapeHtml(t("professional.installed", {}, "Isolated host"))}</h3></div><small>${installations.length}</small></header>
           ${installations.length ? installations.map((item) => this._extensionRow(item)).join("") : `<p class="picode-runtime-empty">${escapeHtml(t("professional.noneInstalled", {}, "No heavy extensions installed."))}</p>`}
@@ -116,6 +200,43 @@ export class PicodeProfessionalExtensions extends HTMLElement {
     </label>`;
   }
 
+  _skillGroup(group) {
+    if (!group.bundled) return this._skillRow(group.skills[0]);
+    return `<details class="picode-skill-bundle">
+      <summary><span><strong>${escapeHtml(group.label)}</strong><small>${group.skills.length} ${escapeHtml(t("professional.skillCount", {}, "skills"))}</small></span><small>${escapeHtml(t("professional.expandSkillBundle", {}, "Expand"))}</small></summary>
+      <div class="picode-skill-bundle-items">${group.skills.map((skill) => this._skillRow(skill)).join("")}</div>
+    </details>`;
+  }
+
+  _skillRow(skill) {
+    return `<div class="picode-skill-row"><span><strong>/${escapeHtml(skill?.name || skill?.command || "skill")}</strong><small>${escapeHtml(skill?.description || "")}</small></span><small>${escapeHtml(skill?.scope || "runtime")}</small></div>`;
+  }
+
+  _capabilityRow(item) {
+    const tier = item.tier || "discoverable";
+    const disabled = tier === "disabled";
+    const name = t(`professional.capability.${item.id}.name`, {}, item.id);
+    const summary = t(`professional.capability.${item.id}.summary`, {}, item.summary || "");
+    const tierLabel = disabled
+      ? t("professional.capabilityDisabled", {}, "Disabled")
+      : t("professional.capabilityDiscoverable", {}, "Discoverable");
+    const planned = String(item.version || "").startsWith("planned:");
+    const status = planned
+      ? t("professional.capabilityPlanned", {}, "Planned; implementation not installed")
+      : t("professional.capabilityAvailable", {}, "Available on demand");
+    const firstmateRoot =
+      item.id === "firstmate-crew-orchestrator"
+        ? `<div class="picode-firstmate-root"><small>${escapeHtml(this._firstmateStatus?.available ? `${t("professional.firstmateRootReady", {}, "Root ready")}: ${this._firstmateStatus.root}` : t("professional.firstmateRootMissing", {}, "Choose a Firstmate directory containing AGENTS.md"))}</small><button type="button" class="ui-button ui-button--secondary ui-button--sm" data-firstmate-pick-root>${escapeHtml(t("professional.firstmateChooseRoot", {}, "Choose root"))}</button></div>`
+        : "";
+    return `<label class="picode-import-candidate" data-capability="${escapeHtml(item.id)}">
+      <span><strong>${escapeHtml(name)}</strong><small>${escapeHtml(summary)} · ${escapeHtml(status)} · ${escapeHtml(tierLabel)}</small>${firstmateRoot}</span>
+      <select class="ui-select" data-capability-tier="${escapeHtml(item.id)}" aria-label="${escapeHtml(item.id)} tier">
+        <option value="disabled" ${disabled ? "selected" : ""}>${escapeHtml(t("professional.capabilityDisabled", {}, "Disabled"))}</option>
+        <option value="discoverable" ${tier === "discoverable" ? "selected" : ""}>${escapeHtml(t("professional.capabilityDiscoverable", {}, "Discoverable"))}</option>
+      </select>
+    </label>`;
+  }
+
   _renderImportPreview() {
     if (!this._importPreview) return "";
     const rows = this._importPreview.candidates || [];
@@ -152,6 +273,36 @@ export class PicodeProfessionalExtensions extends HTMLElement {
   }
 
   _bind() {
+    this.querySelectorAll("[data-capability-tier]").forEach((select) => {
+      select.addEventListener("change", async () => {
+        try {
+          await this.transport.setCapabilityTier(select.dataset.capabilityTier, select.value);
+          window.dispatchEvent(
+            new CustomEvent("picode:capability-tier-changed", {
+              detail: { id: select.dataset.capabilityTier, tier: select.value },
+            }),
+          );
+          await this.refresh();
+        } catch (error) {
+          this._error = error?.message || String(error);
+          this._render();
+        }
+      });
+    });
+    this.querySelector("[data-firstmate-pick-root]")?.addEventListener("click", async (event) => {
+      event.preventDefault();
+      try {
+        const root = await this.transport.pickFolder();
+        if (root) {
+          await this.transport.setFirstmateRoot(root);
+          this._status = t("professional.firstmateRootSaved", {}, "Firstmate root saved.");
+          await this.refresh();
+        }
+      } catch (error) {
+        this._error = error?.message || String(error);
+        this._render();
+      }
+    });
     this.querySelector("[data-pick-import-root]")?.addEventListener("click", async () => {
       const root = await this.transport.pickFolder();
       if (root) {

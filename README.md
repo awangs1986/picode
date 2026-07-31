@@ -53,6 +53,7 @@ Project files are not included in chat backups.
 - **Harness Task**: binds to a real workspace and adds structured plans, evidence, verification, and optional Git isolation.
 - Durable task and account-handoff state.
 - User-configurable subagent model policy for qualified, bounded work.
+- Managed [pi-subagents](https://github.com/nicobailon/pi-subagents) orchestration for chains, parallel groups, forked context, background control, structured results, and acceptance gates in Harness Tasks.
 - Runtime monitor for agents, subagents, resource consumption, wait states, and suspected stalls.
 - Lazy global and task-bound extension capabilities.
 - Explicitly invoked user Skills may override Picode's default workflow for that task.
@@ -132,6 +133,8 @@ The implementation roadmap and architectural decisions live in [`docs/`](./docs/
 Picode is a fork and derivative work of [Picot](https://github.com/shixin-guo/picot). Picot provided the desktop interaction model, Tauri foundation, session UI, and much of the original integration work that made this project possible. We are sincerely grateful to the Picot maintainers and contributors.
 
 Picode is powered by the [Pi coding agent](https://github.com/earendil-works/pi). Pi provides the compact agent runtime, RPC mode, session format, model/provider integration, and extension ecosystem at the center of Picode. We are equally grateful to Pi's maintainers and contributors.
+
+Advanced Harness orchestration is provided by [pi-subagents](https://github.com/nicobailon/pi-subagents). We thank Nico Bailon and its contributors for making the extension available under the MIT License.
 
 Where practical, Picode keeps its changes separable and documented so useful upstream Picot improvements can continue to be incorporated.
 

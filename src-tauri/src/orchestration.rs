@@ -417,9 +417,10 @@ pub fn delegation_eligibility(work: &DelegatedWork) -> Eligibility {
     if !work.envelope.is_complete() {
         return Eligibility::Rejected("delegation envelope is incomplete".into());
     }
-    if work.requires_write {
-        return Eligibility::Rejected("writes are not eligible".into());
-    }
+    // Write-capable agents are eligible when the user has explicitly qualified
+    // their work class and the envelope remains non-destructive, unambiguous,
+    // independently verifiable, and free of secret access. The configured
+    // policy check happens before this shared ranking function.
     if work.uses_secret {
         return Eligibility::Rejected("secret use is not eligible".into());
     }
@@ -797,9 +798,11 @@ mod tests {
         assert_eq!(delegation_eligibility(&work), Eligibility::Eligible);
         let mut risky = work.clone();
         risky.requires_write = true;
+        assert_eq!(delegation_eligibility(&risky), Eligibility::Eligible);
+        risky.destructive = true;
         assert_eq!(
             delegation_eligibility(&risky),
-            Eligibility::Rejected("writes are not eligible".to_owned())
+            Eligibility::Rejected("destructive work is not eligible".to_owned())
         );
 
         let policy = SubagentModelPolicy {

@@ -39,6 +39,7 @@ use account_binding::AccountBindingStore;
 use account_import::AccountImportService;
 use account_vault::AccountVault;
 use broker_ws::BrokerWs;
+use capability::CapabilityTier;
 use capability_service::CapabilityService;
 use chat_backup::{BackupSelectionFlags, ChatBackupService};
 use chat_migration::ChatMigrationService;
@@ -1483,6 +1484,7 @@ fn install_control_handler(
                     | "chat_migration_import"
                     | "chat_migration_context_open"
                     | "chat_migration_context_page"
+                    | "chat_delete"
                     | "chat_backup_scan"
                     | "chat_backup_pick_save"
                     | "chat_backup_pick_open"
@@ -1504,13 +1506,21 @@ fn install_control_handler(
                     | "harness_review"
                     | "harness_confirm"
                     | "harness_run_action"
+                    | "harness_validate_gate"
                     | "capability_snapshot"
                     | "capability_set_opt_in"
+                    | "capability_set_tier"
+                    | "firstmate_status"
+                    | "firstmate_set_root"
+                    | "firstmate_open"
                     | "capability_search"
                     | "capability_refresh_index"
                     | "capability_search_code"
                     | "background_job_start"
                     | "background_job_cancel"
+                    | "background_job_get"
+                    | "background_job_wait"
+                    | "background_job_stdin"
                     | "task_graph_save"
                     | "task_checkpoint"
                     | "subagent_spawn"
@@ -1867,6 +1877,18 @@ fn install_control_handler(
                         )?)
                         .map_err(|error| format!("Cannot encode chat context page: {error}"))
                     }
+                    "chat_delete" => {
+                        let file_paths: Vec<String> = args
+                            .get("filePaths")
+                            .and_then(Value::as_array)
+                            .ok_or("filePaths must be an array")?
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_string)
+                            .collect();
+                        serde_json::to_value(chat_migration.delete_sessions(&file_paths)?)
+                            .map_err(|error| format!("Cannot encode chat deletion result: {error}"))
+                    }
                     "chat_backup_scan" => serde_json::to_value(chat_backup.scan_sessions()?)
                         .map_err(|error| format!("Cannot encode chat-backup scan: {error}")),
                     "chat_backup_pick_save" => Ok(match pick_backup_save_core(&app).await {
@@ -2182,6 +2204,28 @@ fn install_control_handler(
                         serde_json::to_value(result)
                             .map_err(|error| format!("Cannot encode Harness result: {error}"))
                     }
+                    "harness_validate_gate" => {
+                        let task_id = arg_str("taskId").ok_or("taskId is required")?;
+                        let gate_id = arg_str("gateId").ok_or("gateId is required")?;
+                        let workspace = task_control
+                            .lock()
+                            .map_err(|_| "Task Control lock is poisoned".to_owned())?
+                            .task_workspace(&task_id)?;
+                        let result = harness_service
+                            .validate_gate(
+                                &task_id,
+                                &workspace,
+                                &gate_id,
+                                arg_bool("riskApproved").unwrap_or(false),
+                            )
+                            .await?;
+                        task_control
+                            .lock()
+                            .map_err(|_| "Task Control lock is poisoned".to_owned())?
+                            .record_evidence_ref(&task_id, &result.evidence.id)?;
+                        serde_json::to_value(result)
+                            .map_err(|error| format!("Cannot encode Gate validity result: {error}"))
+                    }
                     "capability_snapshot" => serde_json::to_value(
                         capability_service
                             .lock()
@@ -2197,6 +2241,101 @@ fn install_control_handler(
                             .map_err(|_| "Capability Service lock is poisoned".to_owned())?
                             .set_catalog_opt_in(&task_id, enabled)?;
                         Ok(Value::Null)
+                    }
+                    "capability_set_tier" => {
+                        let id = arg_str("id").ok_or("id is required")?;
+                        let tier = match arg_str("tier")
+                            .ok_or("tier is required")?
+                            .to_ascii_lowercase()
+                            .as_str()
+                        {
+                            "resident" => {
+                                return Err("resident tier is reserved for the Resident Core".into())
+                            }
+                            "discoverable" => CapabilityTier::Discoverable,
+                            "disabled" => CapabilityTier::Disabled,
+                            _ => {
+                                return Err(
+                                    "tier must be resident, discoverable, or disabled".into()
+                                )
+                            }
+                        };
+                        capability_service
+                            .lock()
+                            .map_err(|_| "Capability Service lock is poisoned".to_owned())?
+                            .set_module_tier(&id, tier)?;
+                        Ok(Value::Null)
+                    }
+                    "firstmate_status" => {
+                        let service = capability_service
+                            .lock()
+                            .map_err(|_| "Capability Service lock is poisoned".to_owned())?;
+                        let enabled = service
+                            .snapshot()
+                            .capabilities
+                            .iter()
+                            .find(|capability| capability.id == "firstmate-crew-orchestrator")
+                            .is_some_and(|capability| capability.tier != CapabilityTier::Disabled);
+                        let root = service.firstmate_root();
+                        Ok(serde_json::json!({
+                            "enabled": enabled,
+                            "available": root.is_some(),
+                            "root": root,
+                            "requiresAgentsFile": true,
+                        }))
+                    }
+                    "firstmate_set_root" => {
+                        let path = arg_str("path").ok_or("path is required")?;
+                        let mut service = capability_service
+                            .lock()
+                            .map_err(|_| "Capability Service lock is poisoned".to_owned())?;
+                        let root = service.set_firstmate_root(Path::new(&path))?;
+                        Ok(serde_json::json!({
+                            "available": true,
+                            "root": root,
+                        }))
+                    }
+                    "firstmate_open" => {
+                        let root = {
+                            let service = capability_service
+                                .lock()
+                                .map_err(|_| "Capability Service lock is poisoned".to_owned())?;
+                            let enabled = service
+                                .snapshot()
+                                .capabilities
+                                .iter()
+                                .find(|capability| capability.id == "firstmate-crew-orchestrator")
+                                .is_some_and(|capability| {
+                                    capability.tier != CapabilityTier::Disabled
+                                });
+                            if !enabled {
+                                return Err(
+                                    "Firstmate is disabled; enable it in Professional Extensions first"
+                                        .into(),
+                                );
+                            }
+                            service.firstmate_root().ok_or_else(|| {
+                                "Firstmate directory not found; choose a folder containing AGENTS.md"
+                                    .to_owned()
+                            })?
+                        };
+                        let port = open_workspace_core(
+                            &root.to_string_lossy(),
+                            None,
+                            true,
+                            true,
+                            true,
+                            false,
+                            &manager,
+                            &broker,
+                            Some(&app),
+                        )
+                        .await?;
+                        Ok(serde_json::json!({
+                            "port": port,
+                            "root": root,
+                            "mode": "firstmate",
+                        }))
                     }
                     "capability_search" => {
                         let task_id = arg_str("taskId").ok_or("taskId is required")?;
@@ -2281,6 +2420,32 @@ fn install_control_handler(
                         serde_json::to_value(orchestration_service.cancel_job(&job_id)?)
                             .map_err(|error| format!("Cannot encode background job: {error}"))
                     }
+                    "background_job_get" => {
+                        let job_id = arg_str("jobId").ok_or("jobId is required")?;
+                        serde_json::to_value(orchestration_service.job(&job_id)?)
+                            .map_err(|error| format!("Cannot encode background job: {error}"))
+                    }
+                    "background_job_wait" => {
+                        let job_id = arg_str("jobId").ok_or("jobId is required")?;
+                        let timeout_ms = args
+                            .get("timeoutMs")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(30_000)
+                            .clamp(20, 60_000);
+                        serde_json::to_value(
+                            orchestration_service
+                                .wait_job(&job_id, Duration::from_millis(timeout_ms))?,
+                        )
+                        .map_err(|error| format!("Cannot encode background job: {error}"))
+                    }
+                    "background_job_stdin" => {
+                        let job_id = arg_str("jobId").ok_or("jobId is required")?;
+                        let input = arg_str("input").ok_or("input is required")?;
+                        serde_json::to_value(
+                            orchestration_service.write_job_stdin(&job_id, input.as_bytes())?,
+                        )
+                        .map_err(|error| format!("Cannot encode background job: {error}"))
+                    }
                     "task_graph_save" => {
                         let graph: TaskGraph = serde_json::from_value(
                             args.get("graph").cloned().ok_or("graph is required")?,
@@ -2341,6 +2506,7 @@ fn install_control_handler(
                         .map_err(|error| format!("Invalid Subagent request: {error}"))?;
                         let use_configured_policy =
                             arg_bool("useConfiguredPolicy").unwrap_or(false);
+                        let thinking_level = arg_str("thinkingLevel");
                         let decision = if use_configured_policy {
                             orchestration_service.route_configured_subagent(
                                 &request.task_id,
@@ -2475,6 +2641,15 @@ fn install_control_handler(
                                     "modelId": selected_model,
                                 }),
                             )?;
+                            if let Some(level) = thinking_level {
+                                broker.send_command_to_port(
+                                    port,
+                                    serde_json::json!({
+                                        "type": "set_thinking_level",
+                                        "level": level,
+                                    }),
+                                )?;
+                            }
                             broker.send_command_to_port(
                                 port,
                                 serde_json::json!({

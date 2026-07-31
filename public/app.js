@@ -193,6 +193,45 @@ const wsClient = new WebSocketClient(wsUrl);
 // Native-only ops are gated on
 // `transport.capabilities.native` (advertised by the broker handshake).
 const transport = initTransport({ wsClient, env: window });
+const firstmateEntryButton = document.getElementById("firstmate-entry-btn");
+
+async function refreshFirstmateEntry() {
+  if (!firstmateEntryButton || !transport.firstmateStatus) return;
+  try {
+    const status = await transport.firstmateStatus();
+    const enabled = Boolean(status?.enabled);
+    const available = Boolean(status?.available);
+    firstmateEntryButton.classList.toggle("hidden", !enabled);
+    firstmateEntryButton.disabled = !available;
+    firstmateEntryButton.title = available
+      ? t("professional.firstmateOpen", {}, "Open Firstmate chat")
+      : t(
+          "professional.firstmateConfigure",
+          {},
+          "Choose a Firstmate root in Professional Extensions",
+        );
+    firstmateEntryButton.setAttribute("aria-label", firstmateEntryButton.title);
+  } catch (_error) {
+    firstmateEntryButton.classList.add("hidden");
+  }
+}
+
+firstmateEntryButton?.addEventListener("click", async () => {
+  try {
+    await transport.openFirstmate();
+  } catch (error) {
+    const message = String(error?.message || error);
+    if (message.includes("Firstmate directory") || message.includes("AGENTS.md")) {
+      await openSettings("extensions");
+    } else {
+      console.error("[Firstmate] failed to open:", error);
+    }
+  }
+});
+window.addEventListener("picode:capability-tier-changed", () => {
+  void refreshFirstmateEntry();
+});
+void refreshFirstmateEntry();
 // True once the broker advertises a native (OS/window) control handler — i.e.
 // we're attached to the desktop host. Drives native-only UI gating. Starts
 // false and flips when the `capabilities` frame arrives (see listener below).
@@ -212,7 +251,10 @@ const sidebar = new SessionSidebar(
   document.getElementById("session-list"),
   handleSessionSelect,
   handleNewProjectChat,
-  { onOpenProject: () => handleOpenFolder() },
+  {
+    onOpenProject: () => handleOpenFolder(),
+    deleteSessions: (filePaths) => transport.deleteChats(filePaths),
+  },
 );
 
 // ── Super Agent wiring ──────────────────────────────────────────────────────
@@ -1121,6 +1163,11 @@ function showNewMessageBadge() {
 
 wsClient.addEventListener("connected", () => {
   updateConnectionStatus("connected");
+  // Professional Extensions can be connected before the broker handshake.
+  // Refresh once the control channel is ready so capability cards never stay
+  // stuck on the initial empty/error state.
+  document.querySelector("picode-professional-extensions")?.refresh?.();
+  void refreshFirstmateEntry();
   // Fetch model context window size for token % display
   setTimeout(fetchContextWindow, 1000);
 });
@@ -3831,6 +3878,7 @@ function selectSettingsTab(tabKey = "general") {
   }
   if (targetTabKey === "extensions") {
     loadBrowsePackages();
+    document.querySelector("picode-professional-extensions")?.refresh?.();
   }
   if (targetTabKey === "usage") {
     const dashboard = document.getElementById("settings-cost-dashboard");

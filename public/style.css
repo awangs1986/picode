@@ -757,7 +757,8 @@ samp {
   transition: opacity var(--duration) var(--ease);
 }
 
-.session-archive-btn {
+.session-archive-btn,
+.session-delete-btn {
   position: absolute;
   top: 0;
   right: 0;
@@ -782,7 +783,8 @@ samp {
   pointer-events: none;
 }
 
-.session-archive-btn svg {
+.session-archive-btn svg,
+.session-delete-btn svg {
   width: 14px;
   height: 14px;
   stroke: currentColor;
@@ -796,7 +798,8 @@ samp {
   opacity: 0;
 }
 
-.session-item:hover .session-archive-btn {
+.session-item:hover .session-archive-btn,
+.session-item:hover .session-delete-btn {
   opacity: 1;
   visibility: visible;
   pointer-events: auto;
@@ -804,6 +807,12 @@ samp {
 
 .session-archive-btn:hover {
   background: var(--bg-glass-hover);
+}
+
+.session-delete-btn:hover,
+.context-menu-item--danger:hover {
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.1);
 }
 
 .session-tag {
@@ -6133,12 +6142,79 @@ picode-professional-extensions {
   font-size: var(--font-size-xs);
 }
 
+.picode-firstmate-root {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  margin-top: var(--space-2);
+}
+
+.picode-firstmate-root small {
+  color: var(--text-tertiary);
+}
+
 .picode-extension-install,
 .picode-import-candidate,
 .picode-mcp-candidate {
   margin-top: var(--space-2);
   padding: var(--space-2) 0;
   border-top: 1px solid var(--border-subtle);
+}
+
+.picode-skill-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-top: var(--space-2);
+  padding: var(--space-2) 0;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.picode-skill-row > span {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-0-5);
+}
+
+.picode-skill-row strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picode-skill-bundle {
+  margin-top: var(--space-2);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.picode-skill-bundle > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) 0;
+  cursor: pointer;
+  list-style: none;
+}
+
+.picode-skill-bundle > summary::-webkit-details-marker {
+  display: none;
+}
+
+.picode-skill-bundle > summary > span {
+  display: grid;
+  gap: var(--space-0-5);
+}
+
+.picode-skill-bundle[open] > summary > small:last-child {
+  color: var(--accent-primary);
+}
+
+.picode-skill-bundle-items {
+  padding-left: var(--space-4);
+  border-left: 1px solid var(--border-subtle);
 }
 
 .picode-extension-install > span,

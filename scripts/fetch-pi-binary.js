@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Fetch the platform-specific pi binary tarball from pi-mono GitHub
+ * Fetch the platform-specific pi binary tarball from the Pi GitHub
  * releases and extract it into `src-tauri/resources/pi/` so the Tauri
  * bundle can ship a self-contained pi runtime.
  *
@@ -134,30 +134,37 @@ function ensureDirEmpty(dir) {
   fs.mkdirSync(dir, { recursive: true });
 }
 
-function downloadTo(url, dest) {
+function downloadTo(url, dest, redirectCount = 0) {
   return new Promise((resolve, reject) => {
-    const file = fs.createWriteStream(dest);
-    const cleanup = (err) => {
-      file.close();
-      fs.unlink(dest, () => {});
-      reject(err);
-    };
     const handle = (res) => {
       // Follow redirects (GitHub release downloads always redirect to S3).
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         res.resume();
-        downloadTo(res.headers.location, dest).then(resolve, reject);
+        if (redirectCount >= 10) {
+          reject(new Error(`Too many redirects while downloading ${url}`));
+          return;
+        }
+        const redirected = new URL(res.headers.location, url).toString();
+        downloadTo(redirected, dest, redirectCount + 1).then(resolve, reject);
         return;
       }
       if (res.statusCode !== 200) {
-        cleanup(new Error(`HTTP ${res.statusCode} for ${url}`));
+        res.resume();
+        reject(new Error(`HTTP ${res.statusCode} for ${url}`));
         return;
       }
+      const file = fs.createWriteStream(dest);
+      const cleanup = (err) => {
+        file.close();
+        fs.unlink(dest, () => {});
+        reject(err);
+      };
       res.pipe(file);
       file.on("finish", () => file.close(() => resolve()));
       file.on("error", cleanup);
+      res.on("error", cleanup);
     };
-    https.get(url, { headers: { "User-Agent": "pi-studio-fetch" } }, handle).on("error", cleanup);
+    https.get(url, { headers: { "User-Agent": "picode-fetch" } }, handle).on("error", reject);
   });
 }
 
@@ -307,7 +314,7 @@ async function main() {
   }
 
   if (!fs.existsSync(cachedArchive)) {
-    const url = `https://github.com/earendil-works/pi-mono/releases/download/v${version}/${asset.archiveName}`;
+    const url = `https://github.com/earendil-works/pi/releases/download/v${version}/${asset.archiveName}`;
     info(`downloading ${url}`);
     try {
       await downloadTo(url, cachedArchive);
@@ -315,7 +322,7 @@ async function main() {
       fail(
         `download failed: ${err.message}\n` +
           `  - check network connectivity\n` +
-          `  - verify v${version} exists at https://github.com/earendil-works/pi-mono/releases\n` +
+          `  - verify v${version} exists at https://github.com/earendil-works/pi/releases\n` +
           `  - if the version was just published, the asset may take a few minutes to propagate`,
       );
     }

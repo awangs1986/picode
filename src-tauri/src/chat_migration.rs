@@ -18,6 +18,7 @@ const MAX_SCAN_CANDIDATES: usize = 5_000;
 const MAX_SOURCE_FILE_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_RECORD_TEXT_BYTES: usize = 8 * 1024 * 1024;
 const PREVIEW_FULL_FILE_BYTES: u64 = 96 * 1024;
+const PREVIEW_HEAD_BYTES: usize = 256 * 1024;
 const PREVIEW_FIRST_RECORD_INITIAL_CAPACITY: usize = 32 * 1024;
 const PREVIEW_TAIL_BYTES: u64 = 64 * 1024;
 const CURSOR_PREVIEW_RANGE_SQL: &str = "SELECT value FROM cursorDiskKV
@@ -29,7 +30,7 @@ const CURSOR_PREVIEW_RANGE_SQL: &str = "SELECT value FROM cursorDiskKV
      ORDER BY rowid DESC";
 const CURSOR_RECORDS_RANGE_SQL: &str =
     "SELECT rowid, value FROM cursorDiskKV WHERE key >= ?1 AND key < ?2 ORDER BY rowid";
-const CONTEXT_PAGE_RECORD_LIMIT: usize = 40;
+const CONTEXT_PAGE_RECORD_LIMIT: usize = 100;
 const CONTEXT_PAGE_TEXT_BYTES: usize = 2 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize)]
@@ -82,6 +83,13 @@ pub struct ChatImportResult {
     pub imported: usize,
     pub skipped: usize,
     pub chats: Vec<ImportedChat>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatDeletionResult {
+    pub deleted: usize,
+    pub errors: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -156,6 +164,12 @@ struct PendingCandidate {
 #[derive(Debug, Clone)]
 struct PendingScan {
     candidates: Vec<PendingCandidate>,
+}
+
+#[derive(Debug)]
+struct ImportedChatDeletion {
+    candidate_id: String,
+    snapshot_path: PathBuf,
 }
 
 #[derive(Debug, Clone)]
@@ -414,19 +428,29 @@ impl ChatMigrationService {
         candidate_id: &str,
         cursor: Option<&str>,
     ) -> Result<ChatContextPage, String> {
+        self.context_page_with_auxiliary(scan_id, candidate_id, cursor, false)
+    }
+
+    fn context_page_with_auxiliary(
+        &self,
+        scan_id: &str,
+        candidate_id: &str,
+        cursor: Option<&str>,
+        include_auxiliary: bool,
+    ) -> Result<ChatContextPage, String> {
         let candidate = self.pending_candidate(scan_id, candidate_id)?;
         let decoded = cursor.map(decode_context_cursor).transpose()?;
         let (records, next_cursor) = match &candidate.source {
             CandidateSource::Jsonl { path } if candidate.summary.source == "codex" => {
-                load_jsonl_context_page(path, "codex", decoded)?
+                load_jsonl_context_page(path, "codex", decoded, include_auxiliary)?
             }
             CandidateSource::Jsonl { path } if candidate.summary.source == "claude" => {
-                load_jsonl_context_page(path, "claude", decoded)?
+                load_jsonl_context_page(path, "claude", decoded, include_auxiliary)?
             }
             CandidateSource::Cursor {
                 database,
                 composer_id,
-            } => load_cursor_context_page(database, composer_id, decoded)?,
+            } => load_cursor_context_page(database, composer_id, decoded, include_auxiliary)?,
             _ => return Err("Unsupported chat source".to_string()),
         };
         let next_cursor = next_cursor.map(encode_context_cursor).transpose()?;
@@ -800,6 +824,183 @@ impl ChatMigrationService {
             archived: candidate.summary.archived,
         })
     }
+
+    pub fn delete_sessions(
+        &self,
+        requested_paths: &[String],
+    ) -> Result<ChatDeletionResult, String> {
+        let mut deleted = 0_usize;
+        let mut errors = Vec::new();
+        let mut seen = HashSet::new();
+        for requested in requested_paths {
+            if !seen.insert(workspace_identity_key(requested)) {
+                continue;
+            }
+            match self.delete_one_session(requested) {
+                Ok(()) => deleted += 1,
+                Err(error) => {
+                    log::warn!("[chat-delete] cannot delete {}: {}", requested, error);
+                    errors.push(requested.clone());
+                }
+            }
+        }
+        Ok(ChatDeletionResult { deleted, errors })
+    }
+
+    fn delete_one_session(&self, requested: &str) -> Result<(), String> {
+        let requested_path = PathBuf::from(requested);
+        if requested_path.extension().and_then(|value| value.to_str()) != Some("jsonl") {
+            return Err("Only Pi JSONL session files can be deleted".to_string());
+        }
+        let sessions_root = fs::canonicalize(&self.pi_sessions_dir).map_err(|error| {
+            format!(
+                "Cannot resolve Pi sessions root {}: {error}",
+                self.pi_sessions_dir.display()
+            )
+        })?;
+        let session_path = fs::canonicalize(&requested_path).map_err(|error| {
+            format!("Cannot resolve chat {}: {error}", requested_path.display())
+        })?;
+        if !session_path.is_file() || !session_path.starts_with(&sessions_root) {
+            return Err("The requested chat is outside the Pi sessions directory".to_string());
+        }
+
+        let imported = self.imported_deletion_for_session(&session_path)?;
+        let snapshot_path = imported
+            .as_ref()
+            .map(|record| record.snapshot_path.as_path())
+            .filter(|path| path.exists())
+            .map(|path| {
+                let snapshots_root = fs::canonicalize(&self.snapshots_dir).map_err(|error| {
+                    format!(
+                        "Cannot resolve imported-chat storage {}: {error}",
+                        self.snapshots_dir.display()
+                    )
+                })?;
+                let canonical = fs::canonicalize(path).map_err(|error| {
+                    format!(
+                        "Cannot resolve imported snapshot {}: {error}",
+                        path.display()
+                    )
+                })?;
+                if !canonical.is_file() || !canonical.starts_with(snapshots_root) {
+                    return Err("The imported snapshot is outside Picode storage".to_string());
+                }
+                Ok(canonical)
+            })
+            .transpose()?;
+
+        let mut staged = Vec::new();
+        stage_for_deletion(&session_path, &mut staged)?;
+        if let Some(snapshot_path) = snapshot_path {
+            if let Err(error) = stage_for_deletion(&snapshot_path, &mut staged) {
+                restore_staged_files(&staged)?;
+                return Err(error);
+            }
+        }
+
+        if let Some(imported) = imported {
+            let index_result = (|| {
+                let mut index = self
+                    .index
+                    .lock()
+                    .map_err(|_| "The chat-migration index lock is poisoned".to_string())?;
+                let transaction = index
+                    .transaction()
+                    .map_err(|error| format!("Cannot start chat-deletion transaction: {error}"))?;
+                let affected = transaction
+                    .execute(
+                        "DELETE FROM imported_chats WHERE candidate_id = ?1",
+                        [imported.candidate_id],
+                    )
+                    .map_err(|error| format!("Cannot remove imported-chat index: {error}"))?;
+                if affected != 1 {
+                    return Err("The imported-chat index changed during deletion".to_string());
+                }
+                transaction
+                    .commit()
+                    .map_err(|error| format!("Cannot commit chat deletion: {error}"))
+            })();
+            if let Err(error) = index_result {
+                restore_staged_files(&staged)?;
+                return Err(error);
+            }
+        }
+
+        for (_, staged_path) in staged {
+            if let Err(error) = fs::remove_file(&staged_path) {
+                log::warn!(
+                    "[chat-delete] logical deletion committed but staged file cleanup failed for {}: {}",
+                    staged_path.display(),
+                    error
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn imported_deletion_for_session(
+        &self,
+        canonical_session: &Path,
+    ) -> Result<Option<ImportedChatDeletion>, String> {
+        let index = self
+            .index
+            .lock()
+            .map_err(|_| "The chat-migration index lock is poisoned".to_string())?;
+        let mut statement = index
+            .prepare("SELECT candidate_id, snapshot_path, session_path FROM imported_chats")
+            .map_err(|error| format!("Cannot inspect imported-chat index: {error}"))?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .map_err(|error| format!("Cannot read imported-chat index: {error}"))?;
+        for row in rows {
+            let (candidate_id, snapshot_path, session_path) =
+                row.map_err(|error| format!("Cannot read imported-chat row: {error}"))?;
+            let Ok(indexed_session) = fs::canonicalize(&session_path) else {
+                continue;
+            };
+            if indexed_session == canonical_session {
+                return Ok(Some(ImportedChatDeletion {
+                    candidate_id,
+                    snapshot_path: PathBuf::from(snapshot_path),
+                }));
+            }
+        }
+        Ok(None)
+    }
+}
+
+fn stage_for_deletion(path: &Path, staged: &mut Vec<(PathBuf, PathBuf)>) -> Result<(), String> {
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| format!("Cannot determine the chat filename for {}", path.display()))?;
+    let staged_path = path.with_file_name(format!(".{file_name}.picode-delete-{}", Uuid::new_v4()));
+    fs::rename(path, &staged_path)
+        .map_err(|error| format!("Cannot stage {} for deletion: {error}", path.display()))?;
+    staged.push((path.to_path_buf(), staged_path));
+    Ok(())
+}
+
+fn restore_staged_files(staged: &[(PathBuf, PathBuf)]) -> Result<(), String> {
+    for (original, staged_path) in staged.iter().rev() {
+        if !staged_path.exists() {
+            continue;
+        }
+        fs::rename(staged_path, original).map_err(|error| {
+            format!(
+                "Cannot restore {} after deletion failed: {error}",
+                original.display()
+            )
+        })?;
+    }
+    Ok(())
 }
 
 fn deduplicate_candidates(candidates: &mut Vec<PendingCandidate>) {
@@ -982,6 +1183,15 @@ fn preview_json_values(path: &Path) -> Result<(u64, Vec<Value>), String> {
                 path.display(),
                 MAX_RECORD_TEXT_BYTES / 1024 / 1024
             ));
+        }
+        if head.len() < PREVIEW_HEAD_BYTES {
+            let remaining = PREVIEW_HEAD_BYTES - head.len();
+            let mut additional = Vec::with_capacity(remaining);
+            bounded_head
+                .take(remaining as u64)
+                .read_to_end(&mut additional)
+                .map_err(|error| format!("Cannot read the start of {}: {error}", path.display()))?;
+            head.extend_from_slice(&additional);
         }
         chunks.push(head);
 
@@ -1455,24 +1665,31 @@ fn codex_records_from_value(value: &Value) -> Vec<ExternalRecord> {
         .unwrap_or_default();
     let found = match (kind, payload_kind) {
         ("event_msg", "user_message") => value_string(payload, &["message", "text"])
+            .and_then(meaningful_chat_text)
             .map(|content| record("message", "user", content, timestamp, None, None, None)),
         ("event_msg", "agent_message") => value_string(payload, &["message", "text"])
+            .and_then(meaningful_chat_text)
             .map(|content| record("message", "assistant", content, timestamp, None, None, None)),
-        ("response_item", "message") => message_text(payload).map(|content| {
-            let role = payload
-                .get("role")
-                .and_then(Value::as_str)
-                .unwrap_or("assistant");
-            record(
-                "message",
-                if role == "user" { "user" } else { "assistant" },
-                content,
-                timestamp,
-                None,
-                None,
-                value_string(payload, &["id"]),
-            )
-        }),
+        ("response_item", "message") => {
+            let role = match payload.get("role").and_then(Value::as_str) {
+                Some("user") => "user",
+                Some("assistant") => "assistant",
+                _ => return Vec::new(),
+            };
+            message_text(payload)
+                .and_then(meaningful_chat_text)
+                .map(|content| {
+                    record(
+                        "message",
+                        role,
+                        content,
+                        timestamp,
+                        None,
+                        None,
+                        value_string(payload, &["id"]),
+                    )
+                })
+        }
         ("response_item", "reasoning") => message_text(payload).map(|content| {
             record(
                 "reasoning",
@@ -1776,6 +1993,7 @@ fn load_jsonl_context_page(
     path: &Path,
     source: &str,
     cursor: Option<ContextCursor>,
+    include_auxiliary: bool,
 ) -> Result<(Vec<ExternalRecord>, Option<ContextCursor>), String> {
     let (byte_offset, record_index, mut previous_hash) = match cursor {
         None => (0, 0, None),
@@ -1827,6 +2045,9 @@ fn load_jsonl_context_page(
             return Err("The context cursor no longer matches this chat".to_string());
         }
         for (index, candidate) in records.into_iter().enumerate().skip(start_index) {
+            if !include_auxiliary && !context_record_is_conversation(&candidate) {
+                continue;
+            }
             match append_context_record(&mut output, &mut text_bytes, &mut previous_hash, candidate)
             {
                 ContextAppend::Added | ContextAppend::Duplicate => {}
@@ -1850,6 +2071,7 @@ fn load_cursor_context_page(
     database: &Path,
     composer_id: &str,
     cursor: Option<ContextCursor>,
+    include_auxiliary: bool,
 ) -> Result<(Vec<ExternalRecord>, Option<ContextCursor>), String> {
     let (start_row_id, record_index, mut previous_hash) = match cursor {
         None => (0_i64, 0_usize, None),
@@ -1897,6 +2119,9 @@ fn load_cursor_context_page(
             return Err("The context cursor no longer matches this chat".to_string());
         }
         for (index, candidate) in records.into_iter().enumerate().skip(row_start_index) {
+            if !include_auxiliary && !context_record_is_conversation(&candidate) {
+                continue;
+            }
             match append_context_record(&mut output, &mut text_bytes, &mut previous_hash, candidate)
             {
                 ContextAppend::Added | ContextAppend::Duplicate => {}
@@ -1914,6 +2139,10 @@ fn load_cursor_context_page(
         }
     }
     Ok((output, None))
+}
+
+fn context_record_is_conversation(record: &ExternalRecord) -> bool {
+    matches!(record.kind.as_str(), "message" | "reasoning")
 }
 
 fn record(
@@ -2315,6 +2544,140 @@ mod tests {
     }
 
     #[test]
+    fn codex_preview_reads_past_large_host_context_to_find_the_first_user_message() {
+        let (root, service) = test_service();
+        let source = service
+            .roots
+            .codex_sessions
+            .join("2026/07/large-host-context.jsonl");
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
+        let mut file = File::create(&source).unwrap();
+        writeln!(
+            file,
+            "{}",
+            json!({
+                "type": "session_meta",
+                "timestamp": "2026-07-01T00:00:00Z",
+                "payload": { "id": "codex-large-host-context", "cwd": "C:\\repo" }
+            })
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            json!({
+                "type": "response_item",
+                "timestamp": "2026-07-01T00:00:01Z",
+                "payload": {
+                    "type": "message",
+                    "role": "developer",
+                    "content": [{ "type": "input_text", "text": format!("<app-context>{}</app-context>", "x".repeat(70 * 1024)) }]
+                }
+            })
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            json!({
+                "type": "response_item",
+                "timestamp": "2026-07-01T00:00:02Z",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{ "type": "input_text", "text": format!("<environment_context>{}</environment_context>", "y".repeat(40 * 1024)) }]
+                }
+            })
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            json!({
+                "type": "response_item",
+                "timestamp": "2026-07-01T00:00:03Z",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{ "type": "input_text", "text": "Build the Windows release" }]
+                }
+            })
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            json!({
+                "type": "response_item",
+                "timestamp": "2026-07-01T00:00:04Z",
+                "payload": {
+                    "type": "function_call_output",
+                    "output": "z".repeat(80 * 1024)
+                }
+            })
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            json!({
+                "type": "event_msg",
+                "timestamp": "2026-07-01T00:00:05Z",
+                "payload": { "type": "agent_message", "message": "Release completed" }
+            })
+        )
+        .unwrap();
+        drop(file);
+
+        assert!(fs::metadata(&source).unwrap().len() > PREVIEW_FULL_FILE_BYTES);
+        let candidate = codex_candidate(&source, false).unwrap().unwrap();
+        assert_eq!(candidate.summary.title, "Build the Windows release");
+        assert_eq!(
+            candidate.summary.last_message_snippet.as_deref(),
+            Some("Release completed")
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn codex_records_hide_host_messages_and_keep_visible_conversation() {
+        let developer = json!({
+            "type": "response_item",
+            "timestamp": "2026-07-01T00:00:00Z",
+            "payload": {
+                "type": "message",
+                "role": "developer",
+                "content": [{ "type": "input_text", "text": "<app-context>host instructions</app-context>" }]
+            }
+        });
+        let injected_user = json!({
+            "type": "response_item",
+            "timestamp": "2026-07-01T00:00:01Z",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [{ "type": "input_text", "text": "<environment_context><cwd>C:\\repo</cwd></environment_context>" }]
+            }
+        });
+        let visible_user = json!({
+            "type": "response_item",
+            "timestamp": "2026-07-01T00:00:02Z",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [{ "type": "input_text", "text": "Fix the visible bug" }]
+            }
+        });
+
+        assert!(codex_records_from_value(&developer).is_empty());
+        assert!(codex_records_from_value(&injected_user).is_empty());
+        let records = codex_records_from_value(&visible_user);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].role, "user");
+        assert_eq!(records[0].content, "Fix the visible bug");
+    }
+
+    #[test]
     fn codex_scan_excludes_internal_subagent_and_approval_sessions() {
         let (root, service) = test_service();
         write_file(
@@ -2640,6 +3003,146 @@ mod tests {
     }
 
     #[test]
+    fn deleting_an_imported_chat_removes_session_snapshot_and_index_together() {
+        let (root, service) = test_service();
+        let source = service.roots.codex_sessions.join("2026/07/delete-me.jsonl");
+        write_file(
+            &source,
+            concat!(
+                "{\"type\":\"session_meta\",\"timestamp\":\"2026-07-01T00:00:00Z\",\"payload\":{\"id\":\"codex-delete-me\",\"cwd\":\"D:\\\\old\\\\repo\"}}\n",
+                "{\"type\":\"event_msg\",\"timestamp\":\"2026-07-01T00:00:01Z\",\"payload\":{\"type\":\"user_message\",\"message\":\"Delete this imported copy\"}}\n"
+            ),
+        );
+        let target = root.join("bound-workspace");
+        fs::create_dir_all(&target).unwrap();
+        let scan = service.scan_local(&["codex".to_string()]).unwrap();
+        let candidate = &scan.candidates[0];
+        let bindings = HashMap::from([(
+            candidate.workspace_group_id.clone(),
+            target.to_string_lossy().into_owned(),
+        )]);
+        let imported = service
+            .import_selected(
+                &scan.scan_id,
+                std::slice::from_ref(&candidate.id),
+                &bindings,
+                false,
+            )
+            .unwrap();
+        let session_path = PathBuf::from(&imported.chats[0].session_file);
+        let snapshot_path: String = service
+            .index
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT snapshot_path FROM imported_chats WHERE session_path = ?1",
+                [session_path.to_string_lossy().as_ref()],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        let result = service
+            .delete_sessions(&[session_path.to_string_lossy().into_owned()])
+            .unwrap();
+
+        assert_eq!(result.deleted, 1);
+        assert!(result.errors.is_empty());
+        assert!(!session_path.exists());
+        assert!(!Path::new(&snapshot_path).exists());
+        let remaining: i64 = service
+            .index
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM imported_chats", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(remaining, 0);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn failed_import_index_deletion_restores_staged_chat_files() {
+        let (root, service) = test_service();
+        let source = service.roots.codex_sessions.join("2026/07/rollback.jsonl");
+        write_file(
+            &source,
+            concat!(
+                "{\"type\":\"session_meta\",\"timestamp\":\"2026-07-01T00:00:00Z\",\"payload\":{\"id\":\"codex-delete-rollback\",\"cwd\":\"D:\\\\old\\\\repo\"}}\n",
+                "{\"type\":\"event_msg\",\"timestamp\":\"2026-07-01T00:00:01Z\",\"payload\":{\"type\":\"user_message\",\"message\":\"Keep this if the index fails\"}}\n"
+            ),
+        );
+        let target = root.join("bound-workspace");
+        fs::create_dir_all(&target).unwrap();
+        let scan = service.scan_local(&["codex".to_string()]).unwrap();
+        let candidate = &scan.candidates[0];
+        let bindings = HashMap::from([(
+            candidate.workspace_group_id.clone(),
+            target.to_string_lossy().into_owned(),
+        )]);
+        let imported = service
+            .import_selected(
+                &scan.scan_id,
+                std::slice::from_ref(&candidate.id),
+                &bindings,
+                false,
+            )
+            .unwrap();
+        let session_path = PathBuf::from(&imported.chats[0].session_file);
+        let snapshot_path: String = service
+            .index
+            .lock()
+            .unwrap()
+            .query_row("SELECT snapshot_path FROM imported_chats", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        service
+            .index
+            .lock()
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER reject_import_delete BEFORE DELETE ON imported_chats
+                 BEGIN SELECT RAISE(ABORT, 'forced delete failure'); END;",
+            )
+            .unwrap();
+
+        let result = service
+            .delete_sessions(&[session_path.to_string_lossy().into_owned()])
+            .unwrap();
+
+        assert_eq!(result.deleted, 0);
+        assert_eq!(
+            result.errors,
+            vec![session_path.to_string_lossy().into_owned()]
+        );
+        assert!(session_path.exists());
+        assert!(Path::new(&snapshot_path).exists());
+        let remaining: i64 = service
+            .index
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM imported_chats", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(remaining, 1);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn deleting_a_chat_rejects_files_outside_the_pi_sessions_root() {
+        let (root, service) = test_service();
+        let outside = root.join("outside.jsonl");
+        write_file(&outside, "do not delete");
+
+        let result = service
+            .delete_sessions(&[outside.to_string_lossy().into_owned()])
+            .unwrap();
+
+        assert_eq!(result.deleted, 0);
+        assert_eq!(result.errors, vec![outside.to_string_lossy().into_owned()]);
+        assert!(outside.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn cursor_workspace_variants_share_one_normalized_windows_group() {
         let (root, service) = test_service();
         fs::create_dir_all(service.roots.cursor_database.parent().unwrap()).unwrap();
@@ -2775,7 +3278,7 @@ mod tests {
         let mut content = String::from(
             "{\"type\":\"session_meta\",\"timestamp\":\"2026-07-01T00:00:00Z\",\"payload\":{\"id\":\"codex-paged\",\"cwd\":\"C:\\\\repo\"}}\n",
         );
-        for index in 0..43 {
+        for index in 0..(CONTEXT_PAGE_RECORD_LIMIT + 3) {
             content.push_str(&format!(
                 "{{\"type\":\"event_msg\",\"timestamp\":\"2026-07-01T00:00:{index:02}Z\",\"payload\":{{\"type\":\"{}\",\"message\":\"message {index}\"}}}}\n",
                 if index % 2 == 0 { "user_message" } else { "agent_message" }
@@ -2796,11 +3299,47 @@ mod tests {
             .context_page(&scan.scan_id, &candidate_id, first.next_cursor.as_deref())
             .unwrap();
         assert_eq!(second.records.len(), 3);
-        assert_eq!(second.records[0].content, "message 40");
+        assert_eq!(
+            second.records[0].content,
+            format!("message {CONTEXT_PAGE_RECORD_LIMIT}")
+        );
         assert!(second.complete);
         assert!(service
             .context_page("another-scan", &candidate_id, None)
             .is_err());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn context_preview_does_not_let_tool_logs_hide_conversation_messages() {
+        let (root, service) = test_service();
+        let source = service
+            .roots
+            .codex_sessions
+            .join("2026/07/tool-heavy.jsonl");
+        let mut content = String::from(
+            "{\"type\":\"session_meta\",\"timestamp\":\"2026-07-01T00:00:00Z\",\"payload\":{\"id\":\"codex-tool-heavy\",\"cwd\":\"C:\\\\repo\"}}\n{\"type\":\"event_msg\",\"timestamp\":\"2026-07-01T00:00:01Z\",\"payload\":{\"type\":\"user_message\",\"message\":\"Start the task\"}}\n",
+        );
+        for index in 0..45 {
+            content.push_str(&format!(
+                "{{\"type\":\"response_item\",\"timestamp\":\"2026-07-01T00:00:02Z\",\"payload\":{{\"type\":\"function_call_output\",\"call_id\":\"call-{index}\",\"output\":\"tool log {index}\"}}}}\n"
+            ));
+        }
+        content.push_str(
+            "{\"type\":\"event_msg\",\"timestamp\":\"2026-07-01T00:00:03Z\",\"payload\":{\"type\":\"agent_message\",\"message\":\"Task finished\"}}\n",
+        );
+        write_file(&source, &content);
+
+        let scan = service.scan_local(&["codex".to_string()]).unwrap();
+        let page = service
+            .context_page(&scan.scan_id, &scan.candidates[0].id, None)
+            .unwrap();
+
+        assert!(page.complete);
+        assert_eq!(page.records.len(), 2);
+        assert!(page.records.iter().all(|record| record.kind == "message"));
+        assert_eq!(page.records[0].content, "Start the task");
+        assert_eq!(page.records[1].content, "Task finished");
         let _ = fs::remove_dir_all(root);
     }
 
@@ -2817,7 +3356,12 @@ mod tests {
         );
         let claude_scan = service.scan_local(&["claude".to_string()]).unwrap();
         let claude_page = service
-            .context_page(&claude_scan.scan_id, &claude_scan.candidates[0].id, None)
+            .context_page_with_auxiliary(
+                &claude_scan.scan_id,
+                &claude_scan.candidates[0].id,
+                None,
+                true,
+            )
             .unwrap();
         assert!(claude_page
             .records

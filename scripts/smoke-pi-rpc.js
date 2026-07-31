@@ -10,7 +10,9 @@ const binary = join(
   "pi",
   process.platform === "win32" ? "pi.exe" : "pi",
 );
-const fixtureDir = join(root, "tests", "fixtures", "pi-rpc", "0.80.10");
+const { version: piVersion } = await Bun.file(join(root, "scripts", "pi-version.json")).json();
+const fixtureDir = join(root, "tests", "fixtures", "pi-rpc", piVersion);
+const subagentsExtension = join(root, "node_modules", "pi-subagents", "index.ts");
 const update = process.argv.includes("--update");
 const temp = await mkdtemp(join(tmpdir(), "picot-rpc-smoke-"));
 const extension = join(temp, "smoke-extension.ts");
@@ -25,16 +27,31 @@ await writeFile(
   }\n`,
 );
 
-const subprocess = Bun.spawn([binary, "--mode", "rpc", "--no-session", "--extension", extension], {
-  cwd: temp,
-  stdin: "pipe",
-  stdout: "pipe",
-  stderr: "pipe",
-});
+const subprocess = Bun.spawn(
+  [
+    binary,
+    "--mode",
+    "rpc",
+    "--no-session",
+    "--no-extensions",
+    "--extension",
+    extension,
+    "--extension",
+    subagentsExtension,
+  ],
+  {
+    cwd: temp,
+    env: { ...process.env, PI_SUBAGENT_PI_BINARY: binary },
+    stdin: "pipe",
+    stdout: "pipe",
+    stderr: "pipe",
+  },
+);
 
 const pending = new Map();
 const observedEvents = [];
 let stdoutBuffer = "";
+let stderrBuffer = "";
 let nextId = 1;
 
 const reader = (async () => {
@@ -58,6 +75,13 @@ const reader = (async () => {
   }
 })();
 
+const stderrReader = (async () => {
+  for await (const chunk of subprocess.stderr) {
+    stderrBuffer += new TextDecoder().decode(chunk, { stream: true });
+    if (stderrBuffer.length > 32_768) stderrBuffer = stderrBuffer.slice(-32_768);
+  }
+})();
+
 function request(command, timeoutMs = 5_000) {
   const id = `smoke-${nextId++}`;
   const frame = { id, ...command };
@@ -65,7 +89,11 @@ function request(command, timeoutMs = 5_000) {
   return new Promise((resolveRequest, rejectRequest) => {
     const timeout = setTimeout(() => {
       pending.delete(id);
-      rejectRequest(new Error(`Timed out waiting for ${command.type}`));
+      rejectRequest(
+        new Error(
+          `Timed out waiting for ${command.type}${stderrBuffer.trim() ? `\nPi stderr:\n${stderrBuffer.trim()}` : ""}`,
+        ),
+      );
     }, timeoutMs);
     pending.set(id, {
       resolve(value) {
@@ -101,7 +129,7 @@ try {
   }
 
   const contract = {
-    version: "0.80.10",
+    version: piVersion,
     commands: [
       "get_state",
       "get_commands",
@@ -112,9 +140,18 @@ try {
     ],
     stateFields: Object.keys(state.data ?? {}).sort(),
     commandSources: [...new Set((commands.data?.commands ?? []).map((item) => item.source))].sort(),
+    subagentCommands: (commands.data?.commands ?? [])
+      .map((item) => item.name)
+      .filter((name) => ["subagents", "chain", "parallel", "subagents-fleet"].includes(name))
+      .sort(),
     eventTypes: [...new Set(observedEvents.map((event) => event.type))].sort(),
     promptAcceptance: prompt.success,
   };
+  if (contract.subagentCommands.length !== 4) {
+    throw new Error(
+      `pi-subagents commands are incomplete: ${contract.subagentCommands.join(", ")}`,
+    );
+  }
   const fixture = join(fixtureDir, "contract.json");
   if (update) {
     await mkdir(fixtureDir, { recursive: true });
@@ -132,5 +169,6 @@ try {
   subprocess.stdin.end();
   await subprocess.exited;
   await reader;
+  await stderrReader;
   await rm(temp, { recursive: true, force: true });
 }

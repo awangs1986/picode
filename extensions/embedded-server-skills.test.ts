@@ -9,12 +9,22 @@ describe("normalizeSkillCommands", () => {
           name: "skill:release-notes",
           description: "  Cut a release  ",
           source: "skill",
-          sourceInfo: { scope: "project" },
+          sourceInfo: {
+            scope: "project",
+            source: "git:github.com/mattpocock/skills",
+            origin: "package",
+            path: "/skills/release-notes/SKILL.md",
+          },
         },
         {
           name: "skill:research",
           source: "skill",
-          sourceInfo: { scope: "user" },
+          sourceInfo: {
+            scope: "user",
+            source: "top-level",
+            origin: "top-level",
+            path: "/home/user/.pi/agent/skills/research/SKILL.md",
+          },
         },
         { name: "compact", source: "extension" },
       ]),
@@ -24,12 +34,18 @@ describe("normalizeSkillCommands", () => {
         name: "release-notes",
         description: "Cut a release",
         scope: "project",
+        source: "git:github.com/mattpocock/skills",
+        origin: "package",
+        path: "/skills/release-notes/SKILL.md",
       },
       {
         command: "/skill:research",
         name: "research",
         description: "",
         scope: "personal",
+        source: "top-level",
+        origin: "top-level",
+        path: "/home/user/.pi/agent/skills/research/SKILL.md",
       },
     ]);
   });

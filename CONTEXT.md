@@ -194,6 +194,14 @@ _Avoid_: Model mode, provider type
 A Task Run that starts immediately without a user Workspace Binding or Harness Profile and exposes only Pi's core experience through an internal Scratch Space.
 _Avoid_: Unconfigured Harness Task, unsafe task
 
+**Simple Development Delivery**:
+A user-directed, non-Harness development path for a small work or personal project. It may use an attached workspace, ordinary project tools, Git operations, and independent delivery when explicitly requested, but it does not claim the verification, evidence, isolation, or review guarantees of a Harness Task.
+_Avoid_: Unverified code by definition, mandatory engineering process, Harness-lite
+
+**Optional Harness Adoption**:
+The user's choice to apply the Engineering Development Loop and a Task Harness to a Task Run. Harness adoption maximizes repeatability and evidence for medium-sized work but is never inferred merely from a workspace, repository, language, or project type.
+_Avoid_: Automatic project classification, universal gate, forced ceremony
+
 **Harness Task**:
 A workspace-bound Task Run created from a Task Harness for structured project work, with optional Git, evidence, and verification policies that may be overridden at task scope by explicit user strategy.
 _Avoid_: Every coding task, mandatory project mode
@@ -205,6 +213,14 @@ _Avoid_: Workspace Binding, hidden project folder
 **Harness Profile**:
 An optional, user-confirmed, project-owned template that names how Harness Tasks for a workspace may build, test, check, generate, and prove completion across supported platforms.
 _Avoid_: Universal task requirement, guessed command list, CI copy
+
+**Engineering Development Loop**:
+The complete software-development Harness for a medium-sized software or game project: understand the request, inspect the workspace and repository, plan, implement, build, test, debug, review changes, preserve evidence, and prepare a truthful delivery result. It uses external engines, compilers, IDEs, SDKs, and art tools through declared project capabilities rather than replacing them.
+_Avoid_: Research workflow, writing workflow, art-production suite, isolated code-generation demo
+
+**Development-only Product Boundary**:
+The product scope that keeps Picode centered on software engineering. Research agents, general writing, artistic content creation, built-in CI, autonomous production release, full IDE/engine replacement, default cloud agent pools, and durable personal memory are outside the core even when optional integrations may expose their engineering results.
+_Avoid_: General-purpose assistant, creative suite, research platform, CI service
 
 **Task Harness**:
 The built-in Harness template instantiated for one Harness Task, optionally refined by a project Harness Profile, together with its task-local overrides and active assurance policy.
@@ -225,6 +241,70 @@ _Avoid_: Shell snippet, guessed command
 **Completion Gate**:
 A Harness Action or structured condition active in a Task Harness that must pass before that Harness Task may receive its corresponding verified label.
 _Avoid_: Agent confidence, optional check
+
+**Red-capable Gate**:
+A Completion Gate whose predicate and execution path have demonstrated that they can detect and report a relevant invalid, regressed, or incomplete state. A green run proves only the current candidate; it never proves Gate validity by itself.
+_Avoid_: Green means valid, command ran, nonzero-only check
+
+**Gate Validity Check**:
+The separate review or controlled negative test that proves a Completion Gate is Red-capable. It is required when a Gate is introduced or materially changed and is retained as Gate evidence, distinct from ordinary candidate verification.
+_Avoid_: Ordinary test run, success result, CI approval
+
+**Gate Cross-Validation**:
+An explicitly enabled, model-assisted adversarial review that tests a Gate's green path and controlled red path in an isolated validation context. The selected model may design negative fixtures, observe structured results, and report bypasses or false claims, but the deterministic Gate Runner remains authoritative and the model cannot silently change the Gate or certify it alone.
+_Avoid_: Model confidence, automatic Gate approval, mutation of the user workspace
+
+**Developer Agent Role**:
+The Picode role responsible for understanding and implementing a change in a developer workspace, designing and running change-appropriate local gates, preserving evidence, and preparing a reviewable delivery candidate. It does not replace the dedicated CI server, main-branch reviewer, or authorized committer.
+_Avoid_: CI executor, merge authority, release publisher
+
+**Developer-local Gate**:
+A change-scoped build, test, diagnostic, packaging, or smoke check designed and run by the Developer Agent before handoff. It proves the developer's evidence baseline and does not imply CI approval, main-branch review, merge authorization, or release readiness.
+_Avoid_: CI result, project-wide certification, reviewer approval
+
+**Developer Runtime Diagnostics**:
+The on-demand debugging and runtime-observation capability used by a Developer Agent: target launch or attach, breakpoints, stacks, threads, variables, exceptions, structured logs, crash dumps, and external profiler traces through DAP or project-specific adapters.
+_Avoid_: Built-in IDE replacement, source-only inspection, CI certification
+
+**Developer Preflight**:
+The fast, local environment and Gate checks performed by a Developer Agent before handoff. It provides feedback and evidence for the current workspace but cannot certify the project independently of CI.
+_Avoid_: Local CI, final certification, authoritative build
+
+**CI Authority**:
+The controlled CI environment and policy that independently executes the project's authoritative Gates, with pinned toolchains, clean or declared state, platform variants, and retained results/artifacts. A CI result may certify project Gates according to project policy, not according to Picode's local confidence.
+_Avoid_: Picode local run, developer approval, main-branch review
+
+**CI Handoff**:
+The developer's submission of a change reference, Gate definitions, environment expectations, and local evidence to a configured CI Authority, followed by retrieval of the CI run, logs, artifacts, and Gate verdicts.
+_Avoid_: Automatic merge, local test replay, CI server implementation
+
+**Developer Handoff Package**:
+The versioned, reviewable delivery record for a Harness Task: goal and acceptance conditions, owned diff and branch/worktree, Gate definitions and green results, Red-capable evidence, Developer Preflight, CI Handoff results, environment fingerprint, known failures, risks, unresolved items, and Artifact references. It is evidence for review, not review approval or merge authorization.
+_Avoid_: Chat summary, CI replacement, automatic merge request approval
+
+**Issue Binding**:
+The explicit association between a Task Run and an external requirement or issue record. It preserves the imported requirement version and identity, while updates back to the external tracker require user-authorized Issue capability actions.
+_Avoid_: Chat title as requirement, silent issue mutation, mandatory project-management service
+
+**Engineering Documentation and Contract**:
+The code-adjacent project facts Picode may maintain and validate: API/configuration/data schemas, interface contracts, migration notes, architecture decisions, change notes, and command/version documentation. It is part of software development evidence and is not a general writing workflow.
+_Avoid_: Creative writing, marketing copy, documentation aesthetics, independent prose task
+
+**Platform Validation Matrix**:
+The declared set of target operating systems, architectures, build configurations, device classes, and minimum versions for a project, with independent Gate and Artifact status for each target. An unexercised target is not implicitly passed by another target's result.
+_Avoid_: Current developer machine, universal build claim, path translation guess
+
+**Module Resource Budget**:
+The declared resident and active resource expectations, dependencies, permissions, concurrency, background behavior, and release policy for a capability module, together with observed Runtime Monitor measurements. A budget limits new work or prompts the user when exceeded; it does not silently terminate an active task.
+_Avoid_: Startup memory promise, hidden auto-kill, exact resource guarantee
+
+**Game Content Pipeline Validation**:
+The optional, third-tier engine adapter capability that validates code-to-content relationships and engine resource processing—references, GUIDs, serialization, import settings, scenes, Prefabs/Blueprints, generated data, Cook/package output, and runtime loading—without authoring or judging artistic content.
+_Avoid_: Art tool, asset authoring suite, aesthetic review, built-in game engine
+
+**Security and Supply-chain Validation Module**:
+The optional, third-tier analysis capability for secret scanning, dependency vulnerability and provenance checks, license/NOTICE policy, SAST, compiler security diagnostics, SBOM generation, and structured security reports. It does not replace the always-enforced Secret Reference, redaction, permission, or credential boundaries.
+_Avoid_: Optional secret protection, CI server, automatic external upload
 
 **Verification Baseline**:
 A comparable pre-change result tied to a code state, Harness Profile fingerprint, platform, and environment. It distinguishes existing failures from regressions.
@@ -288,6 +368,26 @@ _Avoid_: Saved plaintext, chat credential, copied password file
 The lightweight local index through which an Agent discovers non-core tools without loading their complete schemas or implementations.
 _Avoid_: Always-loaded tool list, extension process registry
 
+**Complete Capability, Lazy Residency**:
+The product principle that Picode must provide the development capabilities required by its target workflow while loading tool schemas, implementations, worker processes, kernels, browsers, and other runtime resources only when the active task enables or uses them.
+_Avoid_: Tool count minimization, permanently resident tool suite
+
+**Developer Core Capability Set**:
+The lightweight, always-discoverable capabilities shared by development tasks: file enumeration/search/read, version-aware edit/patch/write, persistent and cancellable Shell with managed jobs, Git status/diff/history/baseline inspection, durable plan and todo state, bounded output with full artifacts, and Agent/job monitoring and stop control. Individual implementations may still load lazily.
+_Avoid_: Every installed development extension, permanently running tool processes
+
+**Resident Core**:
+The first capability tier: lightweight core schemas and control-plane behavior that every applicable task can use without enabling an extension. Resident Core does not imply that heavyweight implementations or child processes remain running.
+_Avoid_: All tools loaded at startup, all development modules
+
+**Discoverable Lazy Capability**:
+The second capability tier: a user-enabled capability represented to the Agent by a lightweight manifest and searchable schema, with its complete implementation, dependencies, and runtime resources loaded only when invoked.
+_Avoid_: Resident extension, hidden capability, automatic process startup
+
+**Disabled User Module**:
+The third capability tier: an installed or available module that appears in settings but is absent from the Agent's capability catalog until the user explicitly enables it. Enabling moves it to Discoverable Lazy Capability; it still does not load the implementation until invocation.
+_Avoid_: Missing feature, model-visible by default, enabled means resident
+
 **Global Extension**:
 A user-enabled capability available for discovery by Harness Tasks and by Simple Tasks that explicitly opt into extension discovery, while its implementation remains unloaded until selected.
 _Avoid_: Core tool, always-running plugin
@@ -303,6 +403,14 @@ _Avoid_: Greenfield first, vendor copying
 **Capability Source Review**:
 The durable record of which Source Ladder candidates were examined and why one was reused, adapted, referenced, or rejected.
 _Avoid_: Informal search notes, undocumented code borrowing
+
+**Firstmate Crew Orchestrator**:
+The optional third-tier external component based on `kunchenguid/firstmate` that can supervise visible agent crews in isolated Git worktrees. It is invoked through an explicit Picode adapter with its own `FM_HOME`, resource budget, backend, and merge authority; it is not a Pi conversation runtime, a Resident Core service, or an automatic merge/push mechanism.
+_Avoid_: Bundled firstmate distro, automatic installation, hidden worker pool, unverified PR treated as Harness completion
+
+**Per-capability Source Gate**:
+The implementation-readiness check requiring a capability-specific Source Review before coding: record the Pi extension search, the OMP comparison, the comparable open-source agent search, and the reason a clean-room Picode implementation is necessary if earlier rungs do not fit.
+_Avoid_: Generic source list, post-hoc attribution, greenfield-first implementation
 
 **Explicit Skill Invocation**:
 The user's deliberate selection of an imported Skill for a particular Task Run. Merely installing, importing, discovering, or suggesting a Skill is not an invocation.

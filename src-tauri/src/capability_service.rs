@@ -1,7 +1,7 @@
 use crate::capability::{
     parse_tools_md, Activation, CapabilityCatalog, CapabilityManifest, CapabilityScope,
-    CapabilitySearchResult, CapabilitySummary, IndexLimits, IndexMatch, LocalCodeIndex,
-    ResidentCore,
+    CapabilitySearchResult, CapabilitySummary, CapabilityTier, IndexLimits, IndexMatch,
+    LocalCodeIndex, ResidentCore,
 };
 use crate::execution::TaskKind;
 use serde::{Deserialize, Serialize};
@@ -25,6 +25,10 @@ struct PersistedCapabilityState {
     schema_version: u32,
     #[serde(default)]
     catalog_opt_in: BTreeMap<String, bool>,
+    #[serde(default)]
+    module_tiers: BTreeMap<String, CapabilityTier>,
+    #[serde(default)]
+    firstmate_root: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -67,6 +71,8 @@ impl CapabilityService {
             PersistedCapabilityState {
                 schema_version: STATE_VERSION,
                 catalog_opt_in: BTreeMap::new(),
+                module_tiers: BTreeMap::new(),
+                firstmate_root: None,
             }
         };
         if state.schema_version != STATE_VERSION {
@@ -78,6 +84,9 @@ impl CapabilityService {
         let mut catalog = CapabilityCatalog::new(ResidentCore::required());
         for manifest in builtin_manifests() {
             catalog.register(manifest)?;
+        }
+        for (id, tier) in &state.module_tiers {
+            catalog.set_tier(id, *tier)?;
         }
         let service = Self {
             root: root.to_owned(),
@@ -105,6 +114,35 @@ impl CapabilityService {
             .catalog_opt_in
             .insert(task_id.to_owned(), enabled);
         self.persist()
+    }
+
+    pub fn set_module_tier(&mut self, id: &str, tier: CapabilityTier) -> Result<(), String> {
+        self.catalog.set_tier(id, tier)?;
+        self.state.module_tiers.insert(id.to_owned(), tier);
+        self.persist()
+    }
+
+    pub fn firstmate_root(&self) -> Option<PathBuf> {
+        self.state
+            .firstmate_root
+            .clone()
+            .filter(|path| path.is_dir())
+            .or_else(discover_firstmate_root)
+    }
+
+    pub fn set_firstmate_root(&mut self, path: &Path) -> Result<PathBuf, String> {
+        if !path.is_dir() {
+            return Err("Firstmate directory does not exist".into());
+        }
+        let resolved = path
+            .canonicalize()
+            .map_err(|error| format!("resolve Firstmate directory: {error}"))?;
+        if !resolved.join("AGENTS.md").is_file() {
+            return Err("Firstmate directory must contain AGENTS.md".into());
+        }
+        self.state.firstmate_root = Some(resolved.clone());
+        self.persist()?;
+        Ok(resolved)
     }
 
     pub fn search(
@@ -279,6 +317,7 @@ fn builtin_manifests() -> Vec<CapabilityManifest> {
             keywords: vec!["rust".into(), "symbol".into(), "diagnostics".into()],
             scope: CapabilityScope::Global,
             activation: Activation::OnDemand,
+            tier: CapabilityTier::Discoverable,
             permissions: BTreeSet::from(["workspace.read".into(), "process.exec".into()]),
             resident_cost_bytes: 0,
         },
@@ -290,6 +329,7 @@ fn builtin_manifests() -> Vec<CapabilityManifest> {
             keywords: vec!["build".into(), "test".into(), "verify".into()],
             scope: CapabilityScope::Task,
             activation: Activation::Explicit,
+            tier: CapabilityTier::Discoverable,
             permissions: BTreeSet::from(["workspace.read".into(), "process.exec".into()]),
             resident_cost_bytes: 0,
         },
@@ -301,10 +341,233 @@ fn builtin_manifests() -> Vec<CapabilityManifest> {
             keywords: vec!["code".into(), "search".into(), "symbol".into()],
             scope: CapabilityScope::Global,
             activation: Activation::OnDemand,
+            tier: CapabilityTier::Discoverable,
             permissions: BTreeSet::from(["workspace.read".into()]),
             resident_cost_bytes: 0,
         },
+        CapabilityManifest {
+            schema_version: 1,
+            id: "persistent-eval".into(),
+            version: "1.0.0".into(),
+            summary:
+                "Persistent Python/JavaScript evaluation kernel for bounded development checks"
+                    .into(),
+            keywords: vec![
+                "python".into(),
+                "javascript".into(),
+                "eval".into(),
+                "kernel".into(),
+            ],
+            scope: CapabilityScope::Global,
+            activation: Activation::OnDemand,
+            tier: CapabilityTier::Discoverable,
+            permissions: BTreeSet::from(["workspace.read".into(), "process.exec".into()]),
+            resident_cost_bytes: 0,
+        },
+        CapabilityManifest {
+            schema_version: 1,
+            id: "browser-automation".into(),
+            version: "1.0.0".into(),
+            summary: "Lazy CDP browser automation for local web smoke checks".into(),
+            keywords: vec!["browser".into(), "cdp".into(), "smoke".into(), "web".into()],
+            scope: CapabilityScope::Global,
+            activation: Activation::OnDemand,
+            tier: CapabilityTier::Discoverable,
+            permissions: BTreeSet::from(["process.exec".into(), "network.local".into()]),
+            resident_cost_bytes: 0,
+        },
+        CapabilityManifest {
+            schema_version: 1,
+            id: "debug-adapter".into(),
+            version: "1.0.0".into(),
+            summary: "Scoped DAP launch and attach diagnostics for active Harness runs".into(),
+            keywords: vec![
+                "dap".into(),
+                "debug".into(),
+                "breakpoint".into(),
+                "diagnostics".into(),
+            ],
+            scope: CapabilityScope::Task,
+            activation: Activation::Explicit,
+            tier: CapabilityTier::Discoverable,
+            permissions: BTreeSet::from(["workspace.read".into(), "process.exec".into()]),
+            resident_cost_bytes: 0,
+        },
+        CapabilityManifest {
+            schema_version: 1,
+            id: "firstmate-crew-orchestrator".into(),
+            version: "external:f0d7cbe9".into(),
+            summary: "Optional external Firstmate crew orchestration in isolated worktrees".into(),
+            keywords: vec![
+                "firstmate".into(),
+                "crew".into(),
+                "worktree".into(),
+                "orchestrator".into(),
+            ],
+            scope: CapabilityScope::Global,
+            activation: Activation::Explicit,
+            tier: CapabilityTier::Disabled,
+            permissions: BTreeSet::from([
+                "workspace.read".into(),
+                "process.exec".into(),
+                "git.worktree".into(),
+            ]),
+            resident_cost_bytes: 0,
+        },
+        // P5 modules are deliberately visible in Settings but disabled by
+        // default. Registering their manifests does not install dependencies,
+        // expose them to the Agent, or start a worker process.
+        CapabilityManifest {
+            schema_version: 1,
+            id: "remote-control".into(),
+            version: "planned:p5-02".into(),
+            summary: "Opt-in phone control for local chats and Agent Runs".into(),
+            keywords: vec!["phone".into(), "remote".into(), "control".into()],
+            scope: CapabilityScope::Global,
+            activation: Activation::Explicit,
+            tier: CapabilityTier::Disabled,
+            permissions: BTreeSet::from(["network.local".into(), "task.control".into()]),
+            resident_cost_bytes: 0,
+        },
+        CapabilityManifest {
+            schema_version: 1,
+            id: "computer-use".into(),
+            version: "planned:p5-03".into(),
+            summary: "Opt-in browser and desktop visual automation".into(),
+            keywords: vec!["computer".into(), "desktop".into(), "visual".into()],
+            scope: CapabilityScope::Global,
+            activation: Activation::Explicit,
+            tier: CapabilityTier::Disabled,
+            permissions: BTreeSet::from(["network.local".into(), "process.exec".into()]),
+            resident_cost_bytes: 0,
+        },
+        CapabilityManifest {
+            schema_version: 1,
+            id: "collaboration-review".into(),
+            version: "planned:p5-04".into(),
+            summary: "Opt-in shared review and collaborator identity boundary".into(),
+            keywords: vec!["collaboration".into(), "review".into(), "shared".into()],
+            scope: CapabilityScope::Global,
+            activation: Activation::Explicit,
+            tier: CapabilityTier::Disabled,
+            permissions: BTreeSet::from(["network.local".into(), "task.control".into()]),
+            resident_cost_bytes: 0,
+        },
+        CapabilityManifest {
+            schema_version: 1,
+            id: "voice-image-workflows".into(),
+            version: "planned:p5-05".into(),
+            summary: "Opt-in local audio capture, transcription, and image input".into(),
+            keywords: vec![
+                "voice".into(),
+                "audio".into(),
+                "image".into(),
+                "media".into(),
+            ],
+            scope: CapabilityScope::Global,
+            activation: Activation::Explicit,
+            tier: CapabilityTier::Disabled,
+            permissions: BTreeSet::from(["media.capture".into(), "network".into()]),
+            resident_cost_bytes: 0,
+        },
+        CapabilityManifest {
+            schema_version: 1,
+            id: "durable-memory".into(),
+            version: "planned:p5-06".into(),
+            summary: "Opt-in inspectable long-term task memory and retrieval".into(),
+            keywords: vec!["memory".into(), "journal".into(), "retrieval".into()],
+            scope: CapabilityScope::Global,
+            activation: Activation::Explicit,
+            tier: CapabilityTier::Disabled,
+            permissions: BTreeSet::from(["workspace.read".into()]),
+            resident_cost_bytes: 0,
+        },
+        CapabilityManifest {
+            schema_version: 1,
+            id: "remote-worker-pool".into(),
+            version: "planned:p5-07".into(),
+            summary: "Opt-in remote worker scheduling with capability and artifact bounds".into(),
+            keywords: vec![
+                "worker".into(),
+                "pool".into(),
+                "remote".into(),
+                "scheduler".into(),
+            ],
+            scope: CapabilityScope::Global,
+            activation: Activation::Explicit,
+            tier: CapabilityTier::Disabled,
+            permissions: BTreeSet::from(["network".into(), "process.exec".into()]),
+            resident_cost_bytes: 0,
+        },
+        CapabilityManifest {
+            schema_version: 1,
+            id: "game-content-pipeline".into(),
+            version: "planned:p5-09".into(),
+            summary: "Engine content validation for references, imports, Cook, and runtime loading"
+                .into(),
+            keywords: vec![
+                "unity".into(),
+                "unreal".into(),
+                "godot".into(),
+                "content".into(),
+                "cook".into(),
+            ],
+            scope: CapabilityScope::Task,
+            activation: Activation::Explicit,
+            tier: CapabilityTier::Disabled,
+            permissions: BTreeSet::from(["workspace.read".into(), "process.exec".into()]),
+            resident_cost_bytes: 0,
+        },
+        CapabilityManifest {
+            schema_version: 1,
+            id: "security-supply-chain".into(),
+            version: "planned:p5-09".into(),
+            summary: "Secret, dependency, license, SAST, and SBOM validation".into(),
+            keywords: vec![
+                "security".into(),
+                "dependency".into(),
+                "license".into(),
+                "sbom".into(),
+            ],
+            scope: CapabilityScope::Task,
+            activation: Activation::Explicit,
+            tier: CapabilityTier::Disabled,
+            permissions: BTreeSet::from([
+                "workspace.read".into(),
+                "process.exec".into(),
+                "network".into(),
+            ]),
+            resident_cost_bytes: 0,
+        },
     ]
+}
+
+fn discover_firstmate_root() -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    for key in ["FIRSTMATE_ROOT", "FM_HOME"] {
+        if let Ok(value) = std::env::var(key) {
+            let path = PathBuf::from(value);
+            candidates.push(path.clone());
+            if key == "FM_HOME" {
+                candidates.push(path.join("firstmate"));
+            }
+        }
+    }
+    if let Ok(home) = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")) {
+        let home = PathBuf::from(home);
+        candidates.extend([
+            home.join("firstmate"),
+            home.join("src").join("firstmate"),
+            home.join("Documents").join("firstmate"),
+        ]);
+    }
+    candidates.extend([
+        PathBuf::from(r"D:\firstmate"),
+        PathBuf::from(r"D:\temp\firstmate"),
+    ]);
+    candidates
+        .into_iter()
+        .find(|path| path.is_dir() && path.join("AGENTS.md").is_file())
 }
 
 fn build_compact_prompt(enabled: bool, task_capabilities: &[String], state: &str) -> String {
@@ -485,6 +748,93 @@ mod tests {
             read_lsp_frame(&mut std::io::Cursor::new(wire), 1024).unwrap(),
             value
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn disabled_modules_are_persisted_and_hidden_until_explicitly_enabled() {
+        let root = std::env::temp_dir().join(format!("picode-tier-{}", uuid::Uuid::new_v4()));
+        let state = root.join("state");
+        let mut service = CapabilityService::open(&state).unwrap();
+        assert!(service
+            .search("harness-a", TaskKind::Harness, "firstmate", 5)
+            .unwrap()
+            .is_empty());
+        assert!(service
+            .snapshot()
+            .capabilities
+            .iter()
+            .find(|capability| capability.id == "firstmate-crew-orchestrator")
+            .is_some_and(|capability| capability.tier == CapabilityTier::Disabled));
+        let snapshot = service.snapshot();
+        let tier_by_id = snapshot
+            .capabilities
+            .iter()
+            .map(|capability| (capability.id.as_str(), capability.tier))
+            .collect::<BTreeMap<_, _>>();
+        for id in [
+            "remote-control",
+            "computer-use",
+            "collaboration-review",
+            "voice-image-workflows",
+            "durable-memory",
+            "remote-worker-pool",
+            "game-content-pipeline",
+            "security-supply-chain",
+        ] {
+            assert_eq!(tier_by_id.get(id), Some(&CapabilityTier::Disabled), "{id}");
+        }
+        for id in [
+            "rust-lsp",
+            "task-build",
+            "local-code-index",
+            "persistent-eval",
+            "browser-automation",
+            "debug-adapter",
+        ] {
+            assert_eq!(
+                tier_by_id.get(id),
+                Some(&CapabilityTier::Discoverable),
+                "{id}"
+            );
+        }
+
+        service
+            .set_module_tier("firstmate-crew-orchestrator", CapabilityTier::Discoverable)
+            .unwrap();
+        assert_eq!(
+            service
+                .search("harness-a", TaskKind::Harness, "firstmate", 5)
+                .unwrap()[0]
+                .id,
+            "firstmate-crew-orchestrator"
+        );
+
+        let reopened = CapabilityService::open(&state).unwrap();
+        assert!(reopened
+            .snapshot()
+            .capabilities
+            .iter()
+            .find(|capability| capability.id == "firstmate-crew-orchestrator")
+            .is_some_and(|capability| capability.tier == CapabilityTier::Discoverable));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn firstmate_root_requires_agents_file_and_persists() {
+        let root = std::env::temp_dir().join(format!("picode-firstmate-{}", uuid::Uuid::new_v4()));
+        let state = root.join("state");
+        let invalid = root.join("invalid");
+        let valid = root.join("firstmate");
+        fs::create_dir_all(&invalid).unwrap();
+        fs::create_dir_all(&valid).unwrap();
+        let mut service = CapabilityService::open(&state).unwrap();
+        assert!(service.set_firstmate_root(&invalid).is_err());
+        fs::write(valid.join("AGENTS.md"), "# Firstmate\n").unwrap();
+        let saved = service.set_firstmate_root(&valid).unwrap();
+        assert_eq!(service.firstmate_root(), Some(saved.clone()));
+        let reopened = CapabilityService::open(&state).unwrap();
+        assert_eq!(reopened.firstmate_root(), Some(saved));
         fs::remove_dir_all(root).unwrap();
     }
 }

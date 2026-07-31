@@ -151,7 +151,14 @@ impl Default for SubagentPolicyConfiguration {
             enabled: false,
             candidates: Vec::new(),
             fallback: ModelFallback::DoNotDelegate,
-            qualified_classes: vec!["repository-search".into(), "advisory-review".into()],
+            qualified_classes: vec![
+                "repository-search".into(),
+                "documentation-search".into(),
+                "code-review".into(),
+                "test-execution".into(),
+                "implementation".into(),
+                "advisory-review".into(),
+            ],
         }
     }
 }
@@ -332,7 +339,7 @@ impl OrchestrationService {
             .args(args)
             .envs(environment)
             .current_dir(&cwd)
-            .stdin(Stdio::null())
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         configure_process_group(&mut command);
@@ -439,6 +446,44 @@ impl OrchestrationService {
         Ok(view)
     }
 
+    pub fn job(&self, id: &str) -> Result<ManagedJobView, String> {
+        self.jobs
+            .lock()
+            .map_err(lock_error)?
+            .get(id)
+            .map(|job| job.view.clone())
+            .ok_or_else(|| "background job missing".to_owned())
+    }
+
+    pub fn write_job_stdin(&self, id: &str, input: &[u8]) -> Result<ManagedJobView, String> {
+        if input.len() > 64 * 1024 {
+            return Err("background job stdin exceeds the 64 KiB limit".into());
+        }
+        let child = {
+            let jobs = self.jobs.lock().map_err(lock_error)?;
+            let job = jobs
+                .get(id)
+                .ok_or_else(|| "background job missing".to_owned())?;
+            if job.view.status.terminal() {
+                return Err("background job is already terminal".into());
+            }
+            job.child
+                .clone()
+                .ok_or_else(|| "background job process is unavailable".to_owned())?
+        };
+        let mut child = child.lock().map_err(lock_error)?;
+        let stdin = child
+            .stdin
+            .as_mut()
+            .ok_or_else(|| "background job stdin is unavailable".to_owned())?;
+        stdin
+            .write_all(input)
+            .and_then(|_| stdin.flush())
+            .map_err(|error| format!("write background job stdin: {error}"))?;
+        drop(child);
+        self.job(id)
+    }
+
     /// Cancels every process group still owned by this service. The shutdown
     /// path uses this instead of relying on child-handle drops, which do not
     /// terminate detached descendants consistently on Windows or Unix.
@@ -472,7 +517,6 @@ impl OrchestrationService {
         }
     }
 
-    #[cfg(test)]
     pub fn wait_job(&self, id: &str, timeout: Duration) -> Result<ManagedJobView, String> {
         let started = Instant::now();
         loop {
@@ -1197,7 +1241,7 @@ mod tests {
     }
 
     #[test]
-    fn routing_rejects_writes_before_model_cost_and_records_a_checkpoint() {
+    fn routing_accepts_bounded_writes_and_records_a_checkpoint() {
         let root = std::env::temp_dir().join(format!("picode-route-{}", uuid::Uuid::new_v4()));
         let service = OrchestrationService::open(&root, 1024).unwrap();
         let request = DelegationRequest::read_only_fixture("task-a", "run-a");
@@ -1206,10 +1250,7 @@ mod tests {
 
         let mut risky = request;
         risky.work.requires_write = true;
-        assert!(service
-            .route_subagent(&risky)
-            .unwrap_err()
-            .contains("ineligible"));
+        assert_eq!(service.route_subagent(&risky).unwrap().model_id, "capable");
 
         let mut graph = TaskGraph::new("task-a");
         graph.add_stage(Stage::new("search", &[], "main")).unwrap();
@@ -1231,7 +1272,7 @@ mod tests {
     }
 
     #[test]
-    fn user_model_policy_is_durable_and_only_routes_qualified_read_work() {
+    fn user_model_policy_is_durable_and_routes_qualified_bounded_work() {
         let root = std::env::temp_dir().join(format!("picode-policy-{}", uuid::Uuid::new_v4()));
         let service = OrchestrationService::open(&root, 1024).unwrap();
         service
@@ -1249,10 +1290,13 @@ mod tests {
         assert_eq!(decision.model_id, "deepseek/search");
         let mut write = fixture.work.clone();
         write.requires_write = true;
-        assert!(service
-            .route_configured_subagent("task-a", "run-a", &write)
-            .unwrap_err()
-            .contains("ineligible"));
+        assert_eq!(
+            service
+                .route_configured_subagent("task-a", "run-a", &write)
+                .unwrap()
+                .model_id,
+            "deepseek/search"
+        );
         drop(service);
         let reopened = OrchestrationService::open(&root, 1024).unwrap();
         assert!(reopened.configured_subagent_policy().enabled);

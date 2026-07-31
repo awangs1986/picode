@@ -70,12 +70,31 @@ export class PicodeRuntimeMonitor extends HTMLElement {
   async refresh() {
     if (!this.transport) return;
     try {
-      this._snapshot = await this.transport.taskSnapshot();
+      const [snapshot, toolRuntimes] = await Promise.all([
+        this.transport.taskSnapshot(),
+        this._fetchToolRuntimes(),
+      ]);
+      this._snapshot = { ...snapshot, toolRuntimes };
       this._error = "";
     } catch (error) {
       this._error = error?.message || String(error);
     }
     this._render();
+  }
+
+  async _fetchToolRuntimes(fetchImpl = globalThis.fetch) {
+    if (typeof fetchImpl !== "function") return null;
+    try {
+      const response = await fetchImpl("/api/rpc", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "get_picode_runtime_snapshot" }),
+      });
+      const payload = await response.json();
+      return payload?.success ? payload.data : null;
+    } catch {
+      return null;
+    }
   }
 
   _render() {
@@ -86,6 +105,16 @@ export class PicodeRuntimeMonitor extends HTMLElement {
     const extensionRuns = this._snapshot?.extensions?.runs || [];
     const mcpRuns = this._snapshot?.extensions?.mcpRuns || [];
     const dapSessions = this._snapshot?.extensions?.dapSessions || [];
+    const toolRuntime = this._snapshot?.toolRuntimes;
+    const piSubagents = toolRuntime?.piSubagents || [];
+    const toolRuntimes = toolRuntime
+      ? [
+          { id: "shell", label: "Shell", count: toolRuntime.shellSessions },
+          { id: "javascript", label: "JavaScript Eval", count: toolRuntime.javascriptKernels },
+          { id: "python", label: "Python Eval", count: toolRuntime.pythonKernels },
+          { id: "browser", label: "Browser tabs", count: toolRuntime.tabs },
+        ].filter((runtime) => Number(runtime.count) > 0)
+      : [];
     const roots = runs.filter((run) => !run.parentId);
     const ordered = [];
     const append = (run, depth = 0) => {
@@ -106,13 +135,15 @@ export class PicodeRuntimeMonitor extends HTMLElement {
           <button class="picode-icon-button" data-runtime-close aria-label="${escapeHtml(t("common.close", {}, "Close"))}">×</button>
         </header>
         <div class="picode-runtime-summary">
-          <div><strong>${runs.filter((run) => !["completed", "failed", "cancelled", "terminated"].includes(run.state)).length + jobs.filter((job) => job.status === "running").length + extensionRuns.filter((run) => run.state === "running").length + mcpRuns.filter((run) => run.state === "running").length + dapSessions.filter((run) => run.state === "running").length}</strong><span>${escapeHtml(t("runtime.active", {}, "Active"))}</span></div>
-          <div><strong>${runs.length + jobs.length + extensionRuns.length + mcpRuns.length + dapSessions.length}</strong><span>${escapeHtml(t("runtime.total", {}, "Recent runs"))}</span></div>
+          <div><strong>${runs.filter((run) => !["completed", "failed", "cancelled", "terminated"].includes(run.state)).length + jobs.filter((job) => job.status === "running").length + extensionRuns.filter((run) => run.state === "running").length + mcpRuns.filter((run) => run.state === "running").length + dapSessions.filter((run) => run.state === "running").length + piSubagents.filter((run) => run.state === "running").length + toolRuntimes.reduce((total, runtime) => total + Number(runtime.count || 0), 0)}</strong><span>${escapeHtml(t("runtime.active", {}, "Active"))}</span></div>
+          <div><strong>${runs.length + jobs.length + extensionRuns.length + mcpRuns.length + dapSessions.length + piSubagents.length + toolRuntimes.reduce((total, runtime) => total + Number(runtime.count || 0), 0)}</strong><span>${escapeHtml(t("runtime.total", {}, "Recent runs"))}</span></div>
         </div>
         <div class="picode-runtime-list">
           ${this._error ? `<p class="picode-runtime-error">${escapeHtml(this._error)}</p>` : ""}
           ${ordered.length ? ordered.map(({ run, depth }) => this._runCard(run, tasks.get(run.taskId), depth)).join("") : `<div class="picode-runtime-empty">${escapeHtml(t("runtime.empty", {}, "No Agent Runs yet."))}</div>`}
           ${jobs.length ? `<h3 class="picode-runtime-section-title">${escapeHtml(t("runtime.backgroundJobs", {}, "Background jobs"))}</h3>${jobs.map((job) => this._jobCard(job, tasks.get(job.taskId))).join("")}` : ""}
+          ${piSubagents.length ? `<h3 class="picode-runtime-section-title">${escapeHtml(t("runtime.piSubagents", {}, "Pi subagents"))}</h3>${piSubagents.map((run) => this._piSubagentCard(run)).join("")}` : ""}
+          ${toolRuntimes.length ? `<h3 class="picode-runtime-section-title">${escapeHtml(t("runtime.toolRuntimes", {}, "Agent tool runtimes"))}</h3>${toolRuntimes.map((runtime) => this._toolRuntimeCard(runtime, toolRuntime)).join("")}` : ""}
           ${extensionRuns.length || mcpRuns.length || dapSessions.length ? `<h3 class="picode-runtime-section-title">${escapeHtml(t("runtime.professional", {}, "Professional extensions"))}</h3>${extensionRuns.map((run) => this._extensionCard(run, "EXT")).join("")}${mcpRuns.map((run) => this._scopedProcessCard(run, "MCP")).join("")}${dapSessions.map((run) => this._scopedProcessCard({ ...run, ownerId: run.target }, "DAP")).join("")}` : ""}
           ${
             routingDecisions.length
@@ -197,6 +228,31 @@ export class PicodeRuntimeMonitor extends HTMLElement {
       </div>
       <div class="picode-agent-run__identity"><code>${escapeHtml(job.id)}</code><span>PID ${escapeHtml(job.processId)}</span><span>${escapeHtml(job.fullOutputHash || "—")}</span></div>
       ${terminal ? "" : `<div class="picode-agent-run__actions"><button class="picode-button picode-button--danger" data-cancel-job="${escapeHtml(job.id)}">${escapeHtml(t("runtime.cancelJob", {}, "Cancel job"))}</button></div>`}
+    </article>`;
+  }
+
+  _toolRuntimeCard(runtime, snapshot) {
+    return `<article class="picode-background-job" data-tool-runtime="${escapeHtml(runtime.id)}">
+      <div class="picode-agent-run__head">
+        <span class="picode-agent-avatar">T</span>
+        <div><strong>${escapeHtml(runtime.label)}</strong><small>${escapeHtml(t("runtime.lazyRuntime", {}, "Lazy task runtime"))}</small></div>
+        <span class="picode-agent-state" data-state="running">${escapeHtml(stateLabel("running"))}</span>
+      </div>
+      <div class="picode-agent-run__identity"><code>${escapeHtml(runtime.count)}</code><span>PID ${escapeHtml(snapshot.processId)}</span><span>${formatBytes(snapshot.memoryBytes)}</span><span>${escapeHtml(attribution("shared"))}</span></div>
+    </article>`;
+  }
+
+  _piSubagentCard(run) {
+    const label = run.goal || run.task || run.agent || run.id;
+    const agents = run.agents?.length ? run.agents.join(" → ") : run.agent || "subagent";
+    return `<article class="picode-background-job" data-pi-subagent="${escapeHtml(run.id)}">
+      <div class="picode-agent-run__head">
+        <span class="picode-agent-avatar">S</span>
+        <div><strong>${escapeHtml(label)}</strong><small>${escapeHtml(agents)} · ${escapeHtml(run.mode || "single")}</small></div>
+        <span class="picode-agent-state" data-state="${escapeHtml(run.state)}">${escapeHtml(stateLabel(run.state))}</span>
+      </div>
+      ${run.summary ? `<p class="picode-agent-action">${escapeHtml(run.summary)}</p>` : ""}
+      <div class="picode-agent-run__identity"><code>${escapeHtml(run.id)}</code><span>${run.processId ? `PID ${escapeHtml(run.processId)}` : "PID —"}</span><span>${escapeHtml(t("runtime.piSubagentManaged", {}, "Manage with /subagents"))}</span></div>
     </article>`;
   }
 

@@ -185,6 +185,39 @@ export class WsTransport {
     return this._control("task_snapshot", {});
   }
 
+  capabilitySnapshot() {
+    return this._control("capability_snapshot", {});
+  }
+
+  async listSkills() {
+    const response = await fetch("/api/rpc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type: "list_skills" }),
+    });
+    const payload = await response.json();
+    if (!response.ok || !payload?.success) {
+      throw new Error(payload?.error || `Skill list request failed (${response.status})`);
+    }
+    return payload.data?.skills || [];
+  }
+
+  setCapabilityTier(id, tier) {
+    return this._control("capability_set_tier", { id, tier });
+  }
+
+  firstmateStatus() {
+    return this._control("firstmate_status", {});
+  }
+
+  setFirstmateRoot(path) {
+    return this._control("firstmate_set_root", { path });
+  }
+
+  openFirstmate() {
+    return this._control("firstmate_open", {}, { timeoutMs: SPAWN_TIMEOUT_MS });
+  }
+
   createSimpleTask(chatId, goal) {
     return this._control("task_create_simple", { chatId, goal });
   }
@@ -424,6 +457,10 @@ export class WsTransport {
       { scanId, candidateIds, workspaceBindings, includeReasoning },
       { timeoutMs: NO_TIMEOUT },
     );
+  }
+
+  deleteChats(filePaths) {
+    return this._control("chat_delete", { filePaths }, { timeoutMs: NO_TIMEOUT });
   }
 
   scanBackupSessions() {

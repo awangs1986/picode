@@ -1,6 +1,6 @@
 # Picode P0–P4 acceptance record
 
-Date: 2026-07-30
+Date: 2026-07-31
 Branch: `feature/p0-p4-complete`
 Scope: P0–P4 only; P5 remains a future planning track.
 
@@ -25,18 +25,20 @@ exit code, duration, signal, and bounded output tail.
   compatibility boundary around the existing Pi runtime.
 - P1: versioned Harness discovery and review, trust/drift fingerprints,
   explicit action authorization, typed execution, bounded verification,
+  structured test result classification, explicit Gate Validity red probes,
   Evidence Ledger/artifacts, redaction/encryption/retention, and truthful
   completion labels.
-- P2: lazy capability catalog, explicit user/task capability scopes,
+- P2: three-tier lazy capability catalog with persisted Disabled modules,
+  explicit user/task capability scopes,
   safe stale-write checks, deterministic local search, one-shot LSP mappings,
   and the `TOOLS.md` task contract.
 - P3: durable background jobs with restart/cancel/timeout, checkpointed task
   graph, Git snapshots and safe worktrees, qualified read-only subagent routing,
   user-selected model policy, and live resource attribution.
 - P4: non-resident extensions, manual selective JSON/rules/skills/commands
-  import, permission migrations, isolated MCP stdio/Streamable HTTP, explicit
-  DAP launch/attach, project adapters, deduplicated diagnostics, advisory
-  subagents, task-scoped cancellation, crash/hang cleanup, and content-addressed
+  import, permission migrations, isolated MCP stdio/Streamable HTTP, real
+  DAP adapter process lifecycle with bounded events, project-adapter registries,
+  deduplicated diagnostics, advisory subagents, task-scoped cancellation, crash/hang cleanup, and content-addressed
   regression records with deterministic comparison.
 
 ## Safety and scope notes
@@ -60,7 +62,10 @@ are intentionally marked `#[ignore]` in the parent process and are listed in the
 JSON artifact; they are launched only by their dedicated fixture tests so a test
 process cannot orphan them.
 
-For the current implementation, the Rust suite has 127 passing tests, zero
-failures, and four intentionally ignored child fixtures. The frontend suite and
-extension bundle sizes are recorded by the gate rather than copied into prose,
-so the record stays reproducible after dependency updates.
+The machine-readable artifact records the exact Rust/frontend counts for the
+run. The P0-P4 implementation now exposes `harness_validate_gate` for explicit
+controlled red probes and `capability_set_tier` for persisted capability
+residency. A project profile without a red probe remains visibly incomplete;
+the passing repository Gate itself does not manufacture red-capability proof.
+CI authority and project-specific engine/content adapters remain external or
+P5 concerns, as documented in the development-harness audit.
