@@ -1,22 +1,22 @@
-use crate::extension_host::Permission;
-use crate::extension_manager::ExtensionLifecycle;
-use crate::orchestration_service::{ManagedJobStatus, OrchestrationService};
+use crate::extension_manager::{ExtensionLifecycle, Permission};
+use crate::hook_manager::{HookConfig, HookOutcome, HookState};
 use crate::resource_sampler::ProcessSampler;
 use crate::safe_files::SafeFileStore;
 use crate::secrets::{SecretReference, SecretStore};
+use crate::work_manager::{StartProcess, WorkHandle, WorkKind, WorkManager, WorkStatus};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
-#[cfg(test)]
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use uuid::Uuid;
 
-const STATE_SCHEMA: u32 = 1;
+const STATE_SCHEMA: u32 = 2;
+const MANIFEST_VERSION: u32 = 2;
 const MAX_IMPORT_FILES: usize = 2_000;
 const MAX_IMPORT_BYTES: u64 = 512 * 1024;
 
@@ -25,6 +25,19 @@ const MAX_IMPORT_BYTES: u64 = 512 * 1024;
 pub struct ResourceLimits {
     pub max_memory_bytes: u64,
     pub max_output_bytes: usize,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HealthCheck {
+    pub kind: String,
+    #[serde(default)]
+    pub target: Option<String>,
+    pub timeout_ms: u64,
+}
+
+fn default_manifest_version() -> u32 {
+    MANIFEST_VERSION
 }
 
 impl ResourceLimits {
@@ -43,6 +56,8 @@ impl ResourceLimits {
 #[serde(rename_all = "camelCase")]
 pub struct ExtensionManifest {
     pub id: String,
+    #[serde(default = "default_manifest_version")]
+    pub manifest_version: u32,
     pub schema_version: u32,
     #[serde(default)]
     pub name: String,
@@ -53,11 +68,15 @@ pub struct ExtensionManifest {
     #[serde(default)]
     pub source_ref: Option<String>,
     #[serde(default)]
+    pub source_hash: Option<String>,
+    #[serde(default)]
     pub license: String,
     #[serde(default)]
     pub components: Vec<String>,
     #[serde(default)]
     pub platforms: Vec<String>,
+    #[serde(default)]
+    pub health_check: Option<HealthCheck>,
     pub executable: PathBuf,
     pub arguments: Vec<String>,
     pub permissions: BTreeSet<Permission>,
@@ -77,14 +96,17 @@ impl ExtensionManifest {
     ) -> Self {
         Self {
             id: id.into(),
+            manifest_version: MANIFEST_VERSION,
             schema_version,
             name: id.into(),
             version: format!("schema-{schema_version}"),
             source: "local".into(),
             source_ref: None,
+            source_hash: None,
             license: "unknown".into(),
             components: vec!["native-helper".into()],
             platforms: vec![std::env::consts::OS.into()],
+            health_check: None,
             executable,
             arguments,
             permissions,
@@ -95,6 +117,9 @@ impl ExtensionManifest {
 
     fn validate(&self) -> Result<(), String> {
         validate_identifier(&self.id, "extension")?;
+        if self.manifest_version != MANIFEST_VERSION {
+            return Err("extension manifestVersion must be 2".into());
+        }
         if self.schema_version == 0 {
             return Err("extension schema version must be positive".into());
         }
@@ -104,6 +129,47 @@ impl ExtensionManifest {
             })
         {
             return Err("remote extension requires a pinned full commit SHA".into());
+        }
+        if self.name.trim().is_empty()
+            || self.version.trim().is_empty()
+            || self.source.trim().is_empty()
+            || self.license.trim().is_empty()
+            || self.components.is_empty()
+            || self.platforms.is_empty()
+        {
+            return Err(
+                "manifest v2 requires name, version, source, license, components, and platforms"
+                    .into(),
+            );
+        }
+        const COMPONENTS: &[&str] = &[
+            "skill",
+            "hook",
+            "mcp",
+            "lsp",
+            "dap",
+            "firstmate",
+            "native-helper",
+        ];
+        if self
+            .components
+            .iter()
+            .any(|component| !COMPONENTS.contains(&component.as_str()))
+        {
+            return Err("manifest v2 contains an unsupported component".into());
+        }
+        if let Some(hash) = &self.source_hash {
+            if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return Err("manifest sourceHash must be a full SHA-256 digest".into());
+            }
+        }
+        if let Some(check) = &self.health_check {
+            if !matches!(check.kind.as_str(), "process" | "stdio" | "http")
+                || check.timeout_ms == 0
+                || check.timeout_ms > 60_000
+            {
+                return Err("manifest healthCheck is invalid or unbounded".into());
+            }
         }
         if self.executable.as_os_str().is_empty()
             || self.arguments.iter().any(|arg| arg.contains('\0'))
@@ -277,8 +343,11 @@ pub struct McpServerConfig {
     pub environment: BTreeMap<String, SecretReference>,
     pub scope: ExtensionScope,
     pub enabled: bool,
+    #[serde(default)]
+    pub trusted: bool,
 }
 
+#[derive(Debug)]
 pub struct McpClientActivation {
     pub server_id: String,
     pub task_id: String,
@@ -453,6 +522,16 @@ struct PersistedState {
     installations: BTreeMap<String, ExtensionManifest>,
     #[serde(default)]
     trusted_extensions: BTreeSet<String>,
+    #[serde(default)]
+    hooks: BTreeMap<String, HookConfig>,
+    #[serde(default)]
+    skills: BTreeMap<String, ManagedSkill>,
+    #[serde(default)]
+    catalog_components: BTreeMap<String, ManagedCatalogComponent>,
+    #[serde(default)]
+    firstmate: FirstmateState,
+    #[serde(default)]
+    last_errors: BTreeMap<String, String>,
     runs: BTreeMap<String, ExtensionRunView>,
     imports: BTreeMap<String, ImportedCapability>,
     import_activations: Vec<ImportActivation>,
@@ -463,6 +542,55 @@ struct PersistedState {
     diagnostics: BTreeSet<DiagnosticFinding>,
     advisories: Vec<AdvisoryRecord>,
     regression_runs: Vec<RegressionRun>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyHookState {
+    #[serde(default)]
+    hooks: BTreeMap<String, HookConfig>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ManagedSkill {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub trusted: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ManagedCatalogComponent {
+    pub id: String,
+    pub kind: String,
+    pub source: String,
+    pub version: String,
+    pub license: String,
+    #[serde(default)]
+    pub permissions: Vec<String>,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub trusted: bool,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FirstmateState {
+    pub root: Option<PathBuf>,
+    pub enabled: bool,
+    pub trusted: bool,
+    pub last_error: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -481,6 +609,13 @@ pub struct ExtensionSnapshot {
     pub regression_runs: Vec<RegressionRun>,
     pub resident_process_count: usize,
     pub lifecycle: Vec<ExtensionLifecycleView>,
+    pub hooks: Vec<HookConfig>,
+    pub skills: Vec<ManagedSkill>,
+    pub firstmate: FirstmateState,
+    pub processes: Vec<WorkHandle>,
+    pub last_errors: BTreeMap<String, String>,
+    pub components: Vec<ExtensionComponentView>,
+    pub catalog_components: Vec<ManagedCatalogComponent>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -492,10 +627,28 @@ pub struct ExtensionLifecycleView {
     pub running_count: usize,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtensionComponentView {
+    pub id: String,
+    pub kind: String,
+    pub state: ExtensionLifecycle,
+    pub source: String,
+    pub version: String,
+    pub license: String,
+    pub permissions: Vec<String>,
+    pub last_error: Option<String>,
+    pub running_processes: Vec<WorkHandle>,
+    pub task_bindings: Vec<String>,
+    pub model_discoverable: bool,
+    pub health_check: Option<HealthCheck>,
+    pub resource_limits: Option<ResourceLimits>,
+}
+
 pub struct ExtensionService {
     root: PathBuf,
     state: Mutex<PersistedState>,
-    orchestration: Arc<OrchestrationService>,
+    work: Arc<WorkManager>,
     sampler: Mutex<ProcessSampler>,
     import_previews: Mutex<BTreeMap<String, ExternalImportPreview>>,
     mcp_previews: Mutex<BTreeMap<String, McpImportPreview>>,
@@ -503,7 +656,7 @@ pub struct ExtensionService {
 }
 
 impl ExtensionService {
-    pub fn open(root: &Path, orchestration: Arc<OrchestrationService>) -> Result<Self, String> {
+    pub fn open(root: &Path, work: Arc<WorkManager>) -> Result<Self, String> {
         fs::create_dir_all(root.join("imports"))
             .map_err(|error| format!("create extension store: {error}"))?;
         fs::create_dir_all(root.join("regressions"))
@@ -520,6 +673,9 @@ impl ExtensionService {
                 ..Default::default()
             }
         };
+        if state.schema_version == 1 {
+            state.schema_version = STATE_SCHEMA;
+        }
         if state.schema_version != STATE_SCHEMA {
             return Err(format!(
                 "unsupported extension state schema {}",
@@ -559,7 +715,7 @@ impl ExtensionService {
         let service = Self {
             root: root.to_owned(),
             state: Mutex::new(state),
-            orchestration,
+            work,
             sampler: Mutex::new(ProcessSampler::default()),
             import_previews: Mutex::new(BTreeMap::new()),
             mcp_previews: Mutex::new(BTreeMap::new()),
@@ -569,8 +725,9 @@ impl ExtensionService {
         Ok(service)
     }
 
-    pub fn install(&self, manifest: ExtensionManifest) -> Result<(), String> {
+    pub fn install(&self, mut manifest: ExtensionManifest) -> Result<(), String> {
         manifest.validate()?;
+        populate_local_source_hash(&mut manifest)?;
         let mut state = self.lock_state()?;
         if state.installations.contains_key(&manifest.id) {
             return Err("extension is already installed".into());
@@ -580,13 +737,35 @@ impl ExtensionService {
         self.persist()
     }
 
+    pub fn migrate_legacy_hook_state(&self, legacy_root: &Path) -> Result<usize, String> {
+        let path = legacy_root.join("state.json");
+        if !path.is_file() {
+            return Ok(0);
+        }
+        let legacy: LegacyHookState = serde_json::from_slice(
+            &fs::read(&path).map_err(|error| format!("read legacy hook state: {error}"))?,
+        )
+        .map_err(|error| format!("parse legacy hook state: {error}"))?;
+        let mut state = self.lock_state()?;
+        let before = state.hooks.len();
+        for (id, hook) in legacy.hooks {
+            state.hooks.entry(id).or_insert(hook);
+        }
+        let imported = state.hooks.len().saturating_sub(before);
+        drop(state);
+        self.persist()?;
+        fs::remove_file(&path).map_err(|error| format!("remove migrated hook state: {error}"))?;
+        Ok(imported)
+    }
+
     pub fn migrate(
         &self,
         extension_id: &str,
-        replacement: ExtensionManifest,
+        mut replacement: ExtensionManifest,
         permission_expansion_approved: bool,
     ) -> Result<(), String> {
         replacement.validate()?;
+        populate_local_source_hash(&mut replacement)?;
         if extension_id != replacement.id {
             return Err("migration cannot change extension identity".into());
         }
@@ -602,6 +781,12 @@ impl ExtensionService {
             && !permission_expansion_approved
         {
             return Err("extension permission expansion requires explicit review".into());
+        }
+        if (replacement.source_ref != current.source_ref
+            || replacement.source_hash != current.source_hash)
+            && !permission_expansion_approved
+        {
+            return Err("extension source pin or SHA change requires explicit review".into());
         }
         state.installations.insert(extension_id.into(), replacement);
         drop(state);
@@ -628,7 +813,7 @@ impl ExtensionService {
             }
         };
         for job_id in job_ids {
-            let _ = self.orchestration.cancel_job(&job_id);
+            let _ = self.work.cancel(&job_id);
         }
         self.refresh()?;
         self.persist()
@@ -651,12 +836,32 @@ impl ExtensionService {
             return Err("stop the extension before changing trust".into());
         }
         if trusted {
+            verify_manifest_source(manifest)?;
             state.trusted_extensions.insert(extension_id.to_owned());
         } else {
             state.trusted_extensions.remove(extension_id);
         }
         drop(state);
         self.persist()
+    }
+
+    pub fn authorize_permission(
+        &self,
+        extension_id: &str,
+        permission: Permission,
+    ) -> Result<(), String> {
+        let state = self.lock_state()?;
+        let manifest = state
+            .installations
+            .get(extension_id)
+            .ok_or_else(|| "extension is not installed".to_owned())?;
+        if !manifest.enabled || !state.trusted_extensions.contains(extension_id) {
+            return Err("extension must be enabled and trusted before authorization".into());
+        }
+        if !manifest.permissions.contains(&permission) {
+            return Err(format!("extension permission denied: {permission:?}"));
+        }
+        Ok(())
     }
 
     pub fn start_extension(
@@ -679,28 +884,40 @@ impl ExtensionService {
         if !self.lock_state()?.trusted_extensions.contains(extension_id) {
             return Err("extension is not trusted; review its source and permissions first".into());
         }
-        if !manifest.permissions.contains(&Permission::ProcessExecute) {
-            return Err("extension lacks processExecute permission".into());
+        if manifest.source_hash.is_some() && verify_manifest_source(&manifest).is_err() {
+            let mut state = self.lock_state()?;
+            state.trusted_extensions.remove(extension_id);
+            state.last_errors.insert(
+                extension_id.into(),
+                "extension executable SHA changed after trust review".into(),
+            );
+            drop(state);
+            self.persist()?;
+            return Err("extension executable SHA changed; trust was revoked".into());
         }
-        let job = self.orchestration.start_job(
-            task_id,
-            agent_run_id,
-            &manifest.executable,
-            &manifest.arguments,
-            cwd,
-            timeout,
-        )?;
+        self.authorize_permission(extension_id, Permission::ProcessExecute)?;
+        let job = self.work.start_process(&StartProcess {
+            task_id: task_id.into(),
+            run_id: agent_run_id.into(),
+            kind: WorkKind::Extension,
+            component_id: Some(extension_id.into()),
+            executable: manifest.executable.to_string_lossy().into_owned(),
+            args: manifest.arguments.clone(),
+            environment: BTreeMap::new(),
+            cwd: cwd.to_string_lossy().into_owned(),
+            timeout_ms: timeout.as_millis().try_into().unwrap_or(u64::MAX),
+        })?;
         let run = ExtensionRunView {
             id: Uuid::new_v4().to_string(),
             extension_id: extension_id.into(),
             task_id: task_id.into(),
             agent_run_id: agent_run_id.into(),
             job_id: job.id,
-            process_id: job.process_id,
+            process_id: job.process_id.unwrap_or_default(),
             state: ExtensionRunState::Running,
             observed_memory_bytes: 0,
             output_tail: Vec::new(),
-            full_output_hash: job.full_output_hash,
+            full_output_hash: String::new(),
             termination_result: None,
             started_at: job.started_at,
         };
@@ -716,7 +933,7 @@ impl ExtensionService {
             .get(run_id)
             .map(|run| run.job_id.clone())
             .ok_or_else(|| "extension run is missing".to_owned())?;
-        self.orchestration.cancel_job(&job_id)?;
+        self.work.cancel(&job_id)?;
         self.refresh()?;
         self.run(run_id)
     }
@@ -729,7 +946,7 @@ impl ExtensionService {
             let run = self.run(run_id)?;
             if run.state.terminal() {
                 let remaining = timeout.saturating_sub(started.elapsed());
-                self.orchestration.wait_job(&run.job_id, remaining)?;
+                self.work.wait(&run.job_id, remaining)?;
                 self.refresh()?;
                 return self.run(run_id);
             }
@@ -749,7 +966,7 @@ impl ExtensionService {
     }
 
     pub fn refresh(&self) -> Result<(), String> {
-        let jobs = self.orchestration.snapshot().jobs;
+        let jobs = self.work.snapshot()?;
         let run_ids: Vec<String> = self.lock_state()?.runs.keys().cloned().collect();
         let mut resource_stops = Vec::new();
         let changed = {
@@ -774,13 +991,13 @@ impl ExtensionService {
                 let Some(job) = jobs.iter().find(|job| job.id == run.job_id) else {
                     continue;
                 };
-                let output_tail = bounded_tail(&job.live_tail, limit.max_output_bytes);
+                let output_tail = bounded_tail(&job.bounded_output, limit.max_output_bytes);
                 // ResourceStopped is the extension owner's terminal reason.
                 // The underlying job is then cancelled as the mechanism used
                 // to stop it; that lower-level Cancelled state must not erase
                 // the more specific resource-policy outcome on the next poll.
                 let preserve_resource_stop = run.state == ExtensionRunState::ResourceStopped
-                    && job.status == ManagedJobStatus::Cancelled;
+                    && job.status == WorkStatus::Cancelled;
                 let next_state = if preserve_resource_stop {
                     ExtensionRunState::ResourceStopped
                 } else {
@@ -792,14 +1009,14 @@ impl ExtensionService {
                     job.termination_result.clone()
                 };
                 if run.output_tail != output_tail
-                    || run.full_output_hash != job.full_output_hash
+                    || run.full_output_hash != job.output_artifact.clone().unwrap_or_default()
                     || run.termination_result != next_termination
                     || run.state != next_state
                 {
                     changed = true;
                 }
                 run.output_tail = output_tail;
-                run.full_output_hash.clone_from(&job.full_output_hash);
+                run.full_output_hash = job.output_artifact.clone().unwrap_or_default();
                 run.termination_result = next_termination;
                 run.state = next_state;
                 if run.state == ExtensionRunState::Running {
@@ -823,9 +1040,32 @@ impl ExtensionService {
             changed
         };
         for job_id in resource_stops {
-            let _ = self.orchestration.cancel_job(&job_id);
+            let _ = self.work.cancel(&job_id);
         }
-        if changed {
+        let errors_changed = {
+            let mut state = self.lock_state()?;
+            let mut errors_changed = false;
+            for job in jobs.iter().filter(|job| {
+                matches!(
+                    job.status,
+                    WorkStatus::Failed | WorkStatus::TimedOut | WorkStatus::TerminationUnknown
+                )
+            }) {
+                let Some(id) = &job.component_id else {
+                    continue;
+                };
+                let error = job
+                    .termination_result
+                    .clone()
+                    .unwrap_or_else(|| format!("{:?}", job.status));
+                if state.last_errors.get(id) != Some(&error) {
+                    state.last_errors.insert(id.clone(), error);
+                    errors_changed = true;
+                }
+            }
+            errors_changed
+        };
+        if changed || errors_changed {
             self.persist()
         } else {
             Ok(())
@@ -851,21 +1091,22 @@ impl ExtensionService {
                     regression_runs: Vec::new(),
                     resident_process_count: 0,
                     lifecycle: Vec::new(),
+                    hooks: Vec::new(),
+                    skills: Vec::new(),
+                    firstmate: FirstmateState::default(),
+                    processes: Vec::new(),
+                    last_errors: BTreeMap::new(),
+                    components: Vec::new(),
+                    catalog_components: Vec::new(),
                 }
             }
         };
         let runs: Vec<_> = state.runs.values().cloned().collect();
-        let resident_process_count = runs.iter().filter(|run| !run.state.terminal()).count()
-            + state
-                .mcp_runs
-                .values()
-                .filter(|run| run.state == "running")
-                .count()
-            + state
-                .dap_sessions
-                .values()
-                .filter(|run| run.state == "running")
-                .count();
+        let processes = self.work.snapshot().unwrap_or_default();
+        let resident_process_count = processes
+            .iter()
+            .filter(|work| work.component_id.is_some() && work.status == WorkStatus::Running)
+            .count();
         let lifecycle = state
             .installations
             .values()
@@ -893,6 +1134,7 @@ impl ExtensionService {
                 }
             })
             .collect();
+        let components = component_views(&state, &processes);
         ExtensionSnapshot {
             installations: state.installations.values().cloned().collect(),
             runs,
@@ -907,7 +1149,347 @@ impl ExtensionService {
             regression_runs: state.regression_runs.clone(),
             resident_process_count,
             lifecycle,
+            hooks: state.hooks.values().cloned().collect(),
+            skills: state.skills.values().cloned().collect(),
+            firstmate: state.firstmate.clone(),
+            processes,
+            last_errors: state.last_errors.clone(),
+            components,
+            catalog_components: state.catalog_components.values().cloned().collect(),
         }
+    }
+
+    pub fn register_catalog_component(
+        &self,
+        mut component: ManagedCatalogComponent,
+    ) -> Result<(), String> {
+        validate_identifier(&component.id, "catalog component")?;
+        if !matches!(
+            component.kind.as_str(),
+            "lsp" | "dap" | "mcp" | "hook" | "firstmate"
+        ) || component.source.trim().is_empty()
+            || component.version.trim().is_empty()
+            || component.license.trim().is_empty()
+        {
+            return Err("catalog component metadata is incomplete".into());
+        }
+        let mut state = self.lock_state()?;
+        if let Some(previous) = state.catalog_components.get(&component.id) {
+            component.enabled = previous.enabled;
+            component.trusted = previous.trusted;
+        }
+        state
+            .catalog_components
+            .insert(component.id.clone(), component);
+        drop(state);
+        self.persist()
+    }
+
+    pub fn set_catalog_component_enabled(&self, id: &str, enabled: bool) -> Result<(), String> {
+        let mut state = self.lock_state()?;
+        let component = state
+            .catalog_components
+            .get_mut(id)
+            .ok_or_else(|| "extension component is not discovered".to_owned())?;
+        component.enabled = enabled;
+        if !enabled {
+            component.trusted = false;
+        }
+        drop(state);
+        self.persist()
+    }
+
+    pub fn set_catalog_component_trusted(&self, id: &str, trusted: bool) -> Result<(), String> {
+        let mut state = self.lock_state()?;
+        let component = state
+            .catalog_components
+            .get_mut(id)
+            .ok_or_else(|| "extension component is not discovered".to_owned())?;
+        if !component.enabled {
+            return Err("enable the extension component before changing trust".into());
+        }
+        component.trusted = trusted;
+        drop(state);
+        self.persist()
+    }
+
+    pub fn authorize_catalog_component(&self, id: &str) -> Result<(), String> {
+        let state = self.lock_state()?;
+        let component = state
+            .catalog_components
+            .get(id)
+            .ok_or_else(|| "extension component is not discovered".to_owned())?;
+        if !component.enabled {
+            return Err("extension component is disabled".into());
+        }
+        if !component.trusted {
+            return Err("extension component is not trusted".into());
+        }
+        Ok(())
+    }
+
+    pub fn set_component_enabled(&self, id: &str, enabled: bool) -> Result<(), String> {
+        let ownership = {
+            let state = self.lock_state()?;
+            if state.installations.contains_key(id) {
+                "extension"
+            } else if state.hooks.contains_key(id) {
+                "hook"
+            } else if state.skills.contains_key(id) {
+                "skill"
+            } else if state.mcp_configs.contains_key(id) {
+                "mcp"
+            } else if state.catalog_components.contains_key(id) {
+                "catalog"
+            } else if id == "firstmate" {
+                "firstmate"
+            } else {
+                return Err("extension component is not discovered".into());
+            }
+        };
+        match ownership {
+            "extension" => self.set_enabled(id, enabled),
+            "hook" => self.set_hook_enabled(id, enabled),
+            "skill" => self.set_skill_enabled(id, enabled),
+            "mcp" => self.set_mcp_enabled(id, enabled),
+            "catalog" => self.set_catalog_component_enabled(id, enabled),
+            _ => self.set_firstmate_enabled(enabled),
+        }
+    }
+
+    pub fn set_component_trusted(&self, id: &str, trusted: bool) -> Result<(), String> {
+        let ownership = {
+            let state = self.lock_state()?;
+            if state.installations.contains_key(id) {
+                "extension"
+            } else if state.hooks.contains_key(id) {
+                "hook"
+            } else if state.skills.contains_key(id) {
+                "skill"
+            } else if state.mcp_configs.contains_key(id) {
+                "mcp"
+            } else if state.catalog_components.contains_key(id) {
+                "catalog"
+            } else if id == "firstmate" {
+                "firstmate"
+            } else {
+                return Err("extension component is not discovered".into());
+            }
+        };
+        match ownership {
+            "extension" => self.set_trusted(id, trusted),
+            "hook" => self.set_hook_trusted(id, trusted),
+            "skill" => self.set_skill_trusted(id, trusted),
+            "mcp" => self.set_mcp_trusted(id, trusted),
+            "catalog" => self.set_catalog_component_trusted(id, trusted),
+            _ => self.set_firstmate_trusted(trusted),
+        }
+    }
+
+    pub fn sync_skills(&self, skills: Vec<ManagedSkill>) -> Result<(), String> {
+        let mut next = BTreeMap::new();
+        for mut skill in skills {
+            validate_identifier(&skill.id, "skill")?;
+            if skill.name.trim().is_empty() {
+                return Err("skill name is required".into());
+            }
+            if let Some(previous) = self.lock_state()?.skills.get(&skill.id).cloned() {
+                skill.enabled = previous.enabled;
+                skill.trusted = previous.trusted;
+            }
+            next.insert(skill.id.clone(), skill);
+        }
+        self.lock_state()?.skills = next;
+        self.persist()
+    }
+
+    pub fn set_skill_enabled(&self, id: &str, enabled: bool) -> Result<(), String> {
+        let mut state = self.lock_state()?;
+        let skill = state
+            .skills
+            .get_mut(id)
+            .ok_or_else(|| "skill is not discovered".to_owned())?;
+        skill.enabled = enabled;
+        if !enabled {
+            skill.trusted = false;
+        }
+        drop(state);
+        self.persist()
+    }
+
+    pub fn set_skill_trusted(&self, id: &str, trusted: bool) -> Result<(), String> {
+        let mut state = self.lock_state()?;
+        let skill = state
+            .skills
+            .get_mut(id)
+            .ok_or_else(|| "skill is not discovered".to_owned())?;
+        if !skill.enabled {
+            return Err("enable the skill before changing trust".into());
+        }
+        skill.trusted = trusted;
+        drop(state);
+        self.persist()
+    }
+
+    pub fn install_hook(&self, mut hook: HookConfig) -> Result<(), String> {
+        if hook.id.trim().is_empty()
+            || hook.event.trim().is_empty()
+            || hook.executable.trim().is_empty()
+            || hook.timeout_ms == 0
+            || hook.timeout_ms > 60_000
+        {
+            return Err(
+                "hook identity, event, executable, and bounded timeout are required".to_owned(),
+            );
+        }
+        hook.enabled = false;
+        hook.trusted = false;
+        let mut state = self.lock_state()?;
+        if state.hooks.insert(hook.id.clone(), hook).is_some() {
+            return Err("hook already exists".into());
+        }
+        drop(state);
+        self.persist()
+    }
+
+    pub fn set_hook_enabled(&self, id: &str, enabled: bool) -> Result<(), String> {
+        let mut state = self.lock_state()?;
+        let hook = state
+            .hooks
+            .get_mut(id)
+            .ok_or_else(|| "hook is not installed".to_owned())?;
+        hook.enabled = enabled;
+        if !enabled {
+            hook.trusted = false;
+        }
+        drop(state);
+        self.persist()
+    }
+
+    pub fn set_hook_trusted(&self, id: &str, trusted: bool) -> Result<(), String> {
+        let mut state = self.lock_state()?;
+        let hook = state
+            .hooks
+            .get_mut(id)
+            .ok_or_else(|| "hook is not installed".to_owned())?;
+        if !hook.enabled {
+            return Err("enable the hook before changing trust".to_owned());
+        }
+        hook.trusted = trusted;
+        drop(state);
+        self.persist()
+    }
+
+    pub fn invoke_hooks(
+        &self,
+        event: &str,
+        task_id: &str,
+        run_id: &str,
+    ) -> Result<Vec<HookOutcome>, String> {
+        let hooks = self
+            .lock_state()?
+            .hooks
+            .values()
+            .filter(|hook| hook.event == event)
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut outcomes = Vec::new();
+        for hook in hooks {
+            if !hook.enabled {
+                outcomes.push(HookOutcome::skipped(&hook.id, "hook is disabled"));
+                continue;
+            }
+            if !hook.trusted {
+                outcomes.push(HookOutcome::failed(&hook.id, None, "hook is not trusted"));
+                continue;
+            }
+            let work = self.work.start_process(&StartProcess {
+                task_id: task_id.into(),
+                run_id: run_id.into(),
+                kind: WorkKind::Hook,
+                component_id: Some(hook.id.clone()),
+                executable: hook.executable.clone(),
+                args: hook.arguments.clone(),
+                environment: BTreeMap::new(),
+                cwd: hook.cwd.clone(),
+                timeout_ms: hook.timeout_ms,
+            })?;
+            let finished = self.work.wait(
+                &work.id,
+                Duration::from_millis(hook.timeout_ms.saturating_add(100)),
+            )?;
+            let passed = finished.status == WorkStatus::Completed;
+            let message = if passed {
+                "hook completed"
+            } else if hook.fail_open {
+                "hook failed; workflow may continue but verification is blocked"
+            } else {
+                "hook failed"
+            };
+            outcomes.push(HookOutcome {
+                hook_id: hook.id.clone(),
+                state: if passed {
+                    HookState::Passed
+                } else {
+                    HookState::Failed
+                },
+                work_id: Some(work.id),
+                verification_allowed: passed,
+                message: message.into(),
+            });
+            if !passed {
+                self.lock_state()?
+                    .last_errors
+                    .insert(hook.id, message.into());
+            }
+        }
+        self.persist()?;
+        Ok(outcomes)
+    }
+
+    pub fn hooks(&self) -> Result<Vec<HookConfig>, String> {
+        Ok(self.lock_state()?.hooks.values().cloned().collect())
+    }
+
+    pub fn set_firstmate_root(&self, path: &Path) -> Result<PathBuf, String> {
+        if !path.is_dir() {
+            return Err("Firstmate directory does not exist".into());
+        }
+        let resolved = path
+            .canonicalize()
+            .map_err(|error| format!("resolve Firstmate directory: {error}"))?;
+        if !resolved.join("AGENTS.md").is_file() {
+            return Err("Firstmate directory must contain AGENTS.md".into());
+        }
+        self.lock_state()?.firstmate.root = Some(resolved.clone());
+        self.persist()?;
+        Ok(resolved)
+    }
+
+    pub fn set_firstmate_enabled(&self, enabled: bool) -> Result<(), String> {
+        let mut state = self.lock_state()?;
+        state.firstmate.enabled = enabled;
+        if !enabled {
+            state.firstmate.trusted = false;
+        }
+        drop(state);
+        self.persist()
+    }
+
+    pub fn set_firstmate_trusted(&self, trusted: bool) -> Result<(), String> {
+        let mut state = self.lock_state()?;
+        if !state.firstmate.enabled {
+            return Err("enable Firstmate before changing trust".into());
+        }
+        state.firstmate.trusted = trusted;
+        drop(state);
+        self.persist()
+    }
+
+    pub fn firstmate(&self) -> FirstmateState {
+        self.lock_state()
+            .map(|state| state.firstmate.clone())
+            .unwrap_or_default()
     }
 
     pub fn preview_external_import(
@@ -1211,7 +1793,8 @@ impl ExtensionService {
                 url: candidate.url.clone(),
                 environment: refs.clone(),
                 scope: scope.clone(),
-                enabled: true,
+                enabled: false,
+                trusted: false,
             });
         }
         let mut state = self.lock_state()?;
@@ -1250,6 +1833,9 @@ impl ExtensionService {
         if !config.enabled || !config.scope.task_matches(task_id) {
             return Err("MCP server is disabled or belongs to another task".into());
         }
+        if !config.trusted {
+            return Err("MCP server is not trusted".into());
+        }
         if config.transport != McpTransport::Stdio {
             return Err("Streamable HTTP MCP uses the Pi client transport and has no resident extension process".into());
         }
@@ -1266,15 +1852,17 @@ impl ExtensionService {
                 .to_owned();
             environment.insert(name.clone(), value);
         }
-        let job = self.orchestration.start_job_with_environment(
-            task_id,
-            agent_run_id,
-            executable,
-            &config.arguments,
-            cwd,
-            timeout,
-            &environment,
-        )?;
+        let job = self.work.start_process(&StartProcess {
+            task_id: task_id.into(),
+            run_id: agent_run_id.into(),
+            kind: WorkKind::Mcp,
+            component_id: Some(server_id.into()),
+            executable: executable.to_string_lossy().into_owned(),
+            args: config.arguments.clone(),
+            environment: environment.clone(),
+            cwd: cwd.to_string_lossy().into_owned(),
+            timeout_ms: timeout.as_millis().try_into().unwrap_or(u64::MAX),
+        })?;
         environment.values_mut().for_each(|value| value.clear());
         let run = ScopedProcessRun {
             id: Uuid::new_v4().to_string(),
@@ -1282,7 +1870,7 @@ impl ExtensionService {
             task_id: task_id.into(),
             agent_run_id: agent_run_id.into(),
             job_id: Some(job.id),
-            process_id: Some(job.process_id),
+            process_id: job.process_id,
             state: "running".into(),
             started_at: unix_millis(),
             termination_result: None,
@@ -1292,6 +1880,111 @@ impl ExtensionService {
             .insert(run.id.clone(), run.clone());
         self.persist()?;
         Ok(run)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn request_mcp_stdio(
+        &self,
+        server_id: &str,
+        task_id: &str,
+        agent_run_id: &str,
+        cwd: &Path,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+        secrets: &SecretStore,
+    ) -> Result<Value, String> {
+        let run = self.start_mcp(server_id, task_id, agent_run_id, cwd, timeout, secrets)?;
+        let work_id = run.job_id.as_deref().ok_or("MCP work handle is missing")?;
+        let deadline = Instant::now() + timeout;
+        let result = (|| {
+            self.write_mcp_messages(
+                work_id,
+                &[serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2025-11-25",
+                        "capabilities": {},
+                        "clientInfo": { "name": "Picode", "version": "2" }
+                    }
+                })],
+            )?;
+            self.wait_mcp_response(work_id, 1, deadline)?;
+            self.write_mcp_messages(
+                work_id,
+                &[
+                    serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "method": "notifications/initialized",
+                        "params": {}
+                    }),
+                    serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "method": method,
+                        "params": params
+                    }),
+                ],
+            )?;
+            self.wait_mcp_response(work_id, 2, deadline)
+        })();
+        if self.work.status(work_id)?.status == WorkStatus::Running {
+            let _ = self.work.cancel(work_id);
+        }
+        self.refresh()?;
+        result
+    }
+
+    fn write_mcp_messages(&self, work_id: &str, messages: &[Value]) -> Result<(), String> {
+        let mut input = messages
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        input.push('\n');
+        for chunk in input.as_bytes().chunks(32 * 1024) {
+            self.work.write_stdin(work_id, chunk)?;
+        }
+        Ok(())
+    }
+
+    fn wait_mcp_response(
+        &self,
+        work_id: &str,
+        expected_id: u64,
+        deadline: Instant,
+    ) -> Result<Value, String> {
+        loop {
+            let work = self.work.status(work_id)?;
+            for line in String::from_utf8_lossy(&work.bounded_output).lines() {
+                let Ok(response) = serde_json::from_str::<Value>(line.trim()) else {
+                    continue;
+                };
+                if response.get("id").and_then(Value::as_u64) != Some(expected_id) {
+                    continue;
+                }
+                if let Some(error) = response.get("error") {
+                    let _ = self.work.cancel(work_id);
+                    self.refresh()?;
+                    return Err(format!("MCP request failed: {error}"));
+                }
+                return Ok(response.get("result").cloned().unwrap_or(Value::Null));
+            }
+            if work.status != WorkStatus::Running {
+                self.refresh()?;
+                return Err(work
+                    .termination_result
+                    .unwrap_or_else(|| "MCP process exited before returning a response".into()));
+            }
+            if Instant::now() >= deadline {
+                let _ = self.work.cancel(work_id);
+                self.refresh()?;
+                return Err("MCP request timed out".into());
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     pub fn prepare_mcp_client(
@@ -1308,6 +2001,20 @@ impl ExtensionService {
             .ok_or_else(|| "MCP server is not imported".to_owned())?;
         if !config.enabled || !config.scope.task_matches(task_id) {
             return Err("MCP server is disabled or belongs to another task".into());
+        }
+        if !config.trusted {
+            return Err("MCP server is not trusted".into());
+        }
+        if config.transport == McpTransport::Stdio {
+            return Ok(McpClientActivation {
+                server_id: config.id,
+                task_id: task_id.into(),
+                transport: config.transport,
+                command: None,
+                arguments: Vec::new(),
+                url: None,
+                environment: BTreeMap::new(),
+            });
         }
         let mut environment = BTreeMap::new();
         for (name, reference) in &config.environment {
@@ -1350,6 +2057,34 @@ impl ExtensionService {
             .insert(run.id.clone(), run.clone());
         self.persist()?;
         Ok(run)
+    }
+
+    pub fn set_mcp_enabled(&self, server_id: &str, enabled: bool) -> Result<(), String> {
+        let mut state = self.lock_state()?;
+        let config = state
+            .mcp_configs
+            .get_mut(server_id)
+            .ok_or_else(|| "MCP server is not imported".to_owned())?;
+        config.enabled = enabled;
+        if !enabled {
+            config.trusted = false;
+        }
+        drop(state);
+        self.persist()
+    }
+
+    pub fn set_mcp_trusted(&self, server_id: &str, trusted: bool) -> Result<(), String> {
+        let mut state = self.lock_state()?;
+        let config = state
+            .mcp_configs
+            .get_mut(server_id)
+            .ok_or_else(|| "MCP server is not imported".to_owned())?;
+        if !config.enabled {
+            return Err("enable the MCP server before changing trust".into());
+        }
+        config.trusted = trusted;
+        drop(state);
+        self.persist()
     }
 
     pub fn register_adapter(&self, adapter: ProjectAdapter) -> Result<(), String> {
@@ -1420,6 +2155,7 @@ impl ExtensionService {
         if !explicitly_authorized {
             return Err("DAP launch or attach requires explicit authorization".into());
         }
+        self.authorize_catalog_component("debug-adapter")?;
         if !matches!(config.request.as_str(), "launch" | "attach")
             || config.target.trim().is_empty()
         {
@@ -1428,20 +2164,23 @@ impl ExtensionService {
         if config.max_events == 0 || config.max_events > 10_000 {
             return Err("DAP event limit must be between 1 and 10000".into());
         }
-        let job = self.orchestration.start_job(
-            task_id,
-            agent_run_id,
-            &config.adapter,
-            &config.arguments,
-            cwd,
-            timeout,
-        )?;
+        let job = self.work.start_process(&StartProcess {
+            task_id: task_id.into(),
+            run_id: agent_run_id.into(),
+            kind: WorkKind::Dap,
+            component_id: Some("debug-adapter".into()),
+            executable: config.adapter.to_string_lossy().into_owned(),
+            args: config.arguments.clone(),
+            environment: BTreeMap::new(),
+            cwd: cwd.to_string_lossy().into_owned(),
+            timeout_ms: timeout.as_millis().try_into().unwrap_or(u64::MAX),
+        })?;
         let session = DapSession {
             id: Uuid::new_v4().to_string(),
             task_id: task_id.into(),
             agent_run_id: agent_run_id.into(),
             job_id: job.id,
-            process_id: job.process_id,
+            process_id: job.process_id.unwrap_or_default(),
             request: config.request,
             target: config.target,
             events: Vec::new(),
@@ -1526,7 +2265,7 @@ impl ExtensionService {
                 .collect::<BTreeSet<_>>()
         };
         for job_id in job_ids {
-            let _ = self.orchestration.cancel_job(&job_id);
+            let _ = self.work.cancel(&job_id);
         }
         self.refresh()
     }
@@ -1556,7 +2295,7 @@ impl ExtensionService {
                 .collect::<BTreeSet<_>>()
         };
         for job_id in job_ids {
-            let _ = self.orchestration.cancel_job(&job_id);
+            let _ = self.work.cancel(&job_id);
         }
         self.refresh()
     }
@@ -1799,11 +2538,9 @@ impl ExtensionService {
     }
 }
 
-fn sync_scoped_processes(
-    state: &mut PersistedState,
-    jobs: &[crate::orchestration_service::ManagedJobView],
-) -> bool {
+fn sync_scoped_processes(state: &mut PersistedState, jobs: &[WorkHandle]) -> bool {
     let mut changed = false;
+    let mut errors = Vec::new();
     for run in state.mcp_runs.values_mut() {
         let Some(job_id) = &run.job_id else { continue };
         if let Some(job) = jobs.iter().find(|job| &job.id == job_id) {
@@ -1812,6 +2549,17 @@ fn sync_scoped_processes(
                 changed = true;
                 run.state = next_state.into();
                 run.termination_result.clone_from(&job.termination_result);
+                if matches!(
+                    job.status,
+                    WorkStatus::Failed | WorkStatus::TimedOut | WorkStatus::TerminationUnknown
+                ) {
+                    errors.push((
+                        run.owner_id.clone(),
+                        job.termination_result
+                            .clone()
+                            .unwrap_or_else(|| next_state.to_owned()),
+                    ));
+                }
             }
         }
     }
@@ -1821,30 +2569,308 @@ fn sync_scoped_processes(
             if session.state != next_state {
                 changed = true;
                 session.state = next_state.into();
+                if matches!(
+                    job.status,
+                    WorkStatus::Failed | WorkStatus::TimedOut | WorkStatus::TerminationUnknown
+                ) {
+                    errors.push((
+                        job.component_id
+                            .clone()
+                            .unwrap_or_else(|| format!("dap:{}", session.id)),
+                        job.termination_result
+                            .clone()
+                            .unwrap_or_else(|| next_state.to_owned()),
+                    ));
+                }
             }
+        }
+    }
+    for (id, error) in errors {
+        if state.last_errors.get(&id) != Some(&error) {
+            state.last_errors.insert(id, error);
+            changed = true;
         }
     }
     changed
 }
 
-fn map_job_state(status: ManagedJobStatus) -> ExtensionRunState {
-    match status {
-        ManagedJobStatus::Running => ExtensionRunState::Running,
-        ManagedJobStatus::Completed => ExtensionRunState::Completed,
-        ManagedJobStatus::Failed => ExtensionRunState::Failed,
-        ManagedJobStatus::Cancelled => ExtensionRunState::Cancelled,
-        ManagedJobStatus::TimedOut => ExtensionRunState::TimedOut,
-        ManagedJobStatus::Terminated => ExtensionRunState::Terminated,
-        ManagedJobStatus::TerminationUnknown => ExtensionRunState::Failed,
+fn lifecycle(enabled: bool, trusted: bool, running: bool) -> ExtensionLifecycle {
+    if running {
+        ExtensionLifecycle::Running
+    } else if trusted {
+        ExtensionLifecycle::Trusted
+    } else if enabled {
+        ExtensionLifecycle::Enabled
+    } else {
+        ExtensionLifecycle::Discovered
     }
 }
 
-fn job_state_label(status: ManagedJobStatus) -> &'static str {
+fn component_views(
+    state: &PersistedState,
+    processes: &[WorkHandle],
+) -> Vec<ExtensionComponentView> {
+    let running_for = |id: &str| {
+        processes
+            .iter()
+            .filter(|work| {
+                work.component_id.as_deref() == Some(id) && work.status == WorkStatus::Running
+            })
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    let bindings_for = |running: &[WorkHandle]| {
+        running
+            .iter()
+            .map(|work| work.owner_task_id.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>()
+    };
+    let mut views = Vec::new();
+    for manifest in state.installations.values() {
+        let trusted = state.trusted_extensions.contains(&manifest.id);
+        for kind in &manifest.components {
+            let running_processes = running_for(&manifest.id);
+            let task_bindings = bindings_for(&running_processes);
+            views.push(ExtensionComponentView {
+                id: manifest.id.clone(),
+                kind: kind.clone(),
+                state: lifecycle(manifest.enabled, trusted, !running_processes.is_empty()),
+                source: format!(
+                    "{}{}{}",
+                    manifest.source,
+                    manifest
+                        .source_ref
+                        .as_ref()
+                        .map(|value| format!("#{value}"))
+                        .unwrap_or_default(),
+                    manifest
+                        .source_hash
+                        .as_ref()
+                        .map(|value| format!(" sha256:{value}"))
+                        .unwrap_or_default()
+                ),
+                version: manifest.version.clone(),
+                license: manifest.license.clone(),
+                permissions: manifest
+                    .permissions
+                    .iter()
+                    .map(|permission| format!("{permission:?}"))
+                    .collect(),
+                last_error: state.last_errors.get(&manifest.id).cloned(),
+                running_processes,
+                task_bindings,
+                model_discoverable: manifest.enabled,
+                health_check: manifest.health_check.clone(),
+                resource_limits: Some(manifest.limits),
+            });
+        }
+    }
+    for hook in state.hooks.values() {
+        let running_processes = running_for(&hook.id);
+        let task_bindings = bindings_for(&running_processes);
+        views.push(ExtensionComponentView {
+            id: hook.id.clone(),
+            kind: "hook".into(),
+            state: lifecycle(hook.enabled, hook.trusted, !running_processes.is_empty()),
+            source: "local:hook-manifest".into(),
+            version: "2".into(),
+            license: "user-provided".into(),
+            permissions: vec!["ProcessExecute".into()],
+            last_error: state.last_errors.get(&hook.id).cloned(),
+            running_processes,
+            task_bindings,
+            model_discoverable: hook.enabled,
+            health_check: None,
+            resource_limits: None,
+        });
+    }
+    for skill in state.skills.values() {
+        views.push(ExtensionComponentView {
+            id: skill.id.clone(),
+            kind: "skill".into(),
+            state: lifecycle(skill.enabled, skill.trusted, false),
+            source: skill.source.clone(),
+            version: skill.version.clone(),
+            license: "provided-by-package".into(),
+            permissions: Vec::new(),
+            last_error: state.last_errors.get(&skill.id).cloned(),
+            running_processes: Vec::new(),
+            task_bindings: Vec::new(),
+            model_discoverable: skill.enabled,
+            health_check: None,
+            resource_limits: None,
+        });
+    }
+    for mcp in state.mcp_configs.values() {
+        let running_processes = running_for(&mcp.id);
+        views.push(ExtensionComponentView {
+            id: mcp.id.clone(),
+            kind: "mcp".into(),
+            state: lifecycle(mcp.enabled, mcp.trusted, !running_processes.is_empty()),
+            source: match mcp.transport {
+                McpTransport::Stdio => "local:mcp-stdio",
+                McpTransport::StreamableHttp => "remote:mcp-http",
+            }
+            .into(),
+            version: "imported".into(),
+            license: "unverified".into(),
+            permissions: match mcp.transport {
+                McpTransport::Stdio => vec!["ProcessExecute".into()],
+                McpTransport::StreamableHttp => vec!["Network".into()],
+            },
+            last_error: state.last_errors.get(&mcp.id).cloned(),
+            running_processes,
+            task_bindings: match &mcp.scope {
+                ExtensionScope::Global => Vec::new(),
+                ExtensionScope::Task(task) => vec![task.clone()],
+            },
+            model_discoverable: mcp.enabled,
+            health_check: None,
+            resource_limits: None,
+        });
+    }
+    for component in state.catalog_components.values() {
+        let running_processes = running_for(&component.id);
+        let task_bindings = bindings_for(&running_processes);
+        views.push(ExtensionComponentView {
+            id: component.id.clone(),
+            kind: component.kind.clone(),
+            state: lifecycle(
+                component.enabled,
+                component.trusted,
+                !running_processes.is_empty(),
+            ),
+            source: component.source.clone(),
+            version: component.version.clone(),
+            license: component.license.clone(),
+            permissions: component.permissions.clone(),
+            last_error: state.last_errors.get(&component.id).cloned(),
+            running_processes,
+            task_bindings,
+            model_discoverable: component.enabled,
+            health_check: None,
+            resource_limits: None,
+        });
+    }
+    if state.firstmate.root.is_some() || state.firstmate.enabled {
+        let running_processes = running_for("firstmate");
+        views.push(ExtensionComponentView {
+            id: "firstmate".into(),
+            kind: "firstmate".into(),
+            state: lifecycle(
+                state.firstmate.enabled,
+                state.firstmate.trusted,
+                !running_processes.is_empty(),
+            ),
+            source: state
+                .firstmate
+                .root
+                .as_ref()
+                .map(|path| path.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "local:unconfigured".into()),
+            version: "workspace".into(),
+            license: "project-defined".into(),
+            permissions: vec!["WorkspaceRead".into(), "ProcessExecute".into()],
+            last_error: state.firstmate.last_error.clone(),
+            running_processes,
+            task_bindings: Vec::new(),
+            model_discoverable: state.firstmate.enabled,
+            health_check: None,
+            resource_limits: None,
+        });
+    }
+    let runtime_components = processes
+        .iter()
+        .filter(|work| matches!(work.kind, WorkKind::Lsp | WorkKind::Dap))
+        .filter(|work| {
+            !views.iter().any(|view| {
+                work.component_id.as_deref() == Some(view.id.as_str())
+                    && view.kind.eq_ignore_ascii_case(match work.kind {
+                        WorkKind::Lsp => "lsp",
+                        _ => "dap",
+                    })
+            })
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    for work in runtime_components {
+        let id = work
+            .component_id
+            .clone()
+            .unwrap_or_else(|| format!("{:?}:{}", work.kind, work.id));
+        views.push(ExtensionComponentView {
+            id,
+            kind: match work.kind {
+                WorkKind::Lsp => "lsp",
+                _ => "dap",
+            }
+            .into(),
+            state: lifecycle(true, true, work.status == WorkStatus::Running),
+            source: "runtime-adapter".into(),
+            version: "runtime".into(),
+            license: "adapter-defined".into(),
+            permissions: vec!["ProcessExecute".into()],
+            last_error: work.termination_result.clone(),
+            running_processes: if work.status == WorkStatus::Running {
+                vec![work.clone()]
+            } else {
+                Vec::new()
+            },
+            task_bindings: vec![work.owner_task_id.clone()],
+            model_discoverable: true,
+            health_check: None,
+            resource_limits: None,
+        });
+    }
+    views.sort_by(|left, right| (&left.kind, &left.id).cmp(&(&right.kind, &right.id)));
+    views
+}
+
+fn map_job_state(status: WorkStatus) -> ExtensionRunState {
+    match status {
+        WorkStatus::Running => ExtensionRunState::Running,
+        WorkStatus::Completed => ExtensionRunState::Completed,
+        WorkStatus::Failed => ExtensionRunState::Failed,
+        WorkStatus::Cancelled => ExtensionRunState::Cancelled,
+        WorkStatus::TimedOut => ExtensionRunState::TimedOut,
+        WorkStatus::Terminated => ExtensionRunState::Terminated,
+        WorkStatus::TerminationUnknown => ExtensionRunState::Failed,
+    }
+}
+
+fn job_state_label(status: WorkStatus) -> &'static str {
     map_job_state(status).as_str()
 }
 
 fn bounded_tail(bytes: &[u8], max: usize) -> Vec<u8> {
     bytes[bytes.len().saturating_sub(max)..].to_vec()
+}
+
+fn populate_local_source_hash(manifest: &mut ExtensionManifest) -> Result<(), String> {
+    if !manifest.executable.is_file() {
+        return Err("extension executable must be an existing file".into());
+    }
+    if manifest.source_hash.is_none() {
+        let bytes = fs::read(&manifest.executable)
+            .map_err(|error| format!("read extension executable for source hash: {error}"))?;
+        manifest.source_hash = Some(format!("{:x}", Sha256::digest(bytes)));
+    }
+    Ok(())
+}
+
+fn verify_manifest_source(manifest: &ExtensionManifest) -> Result<(), String> {
+    let Some(expected) = &manifest.source_hash else {
+        return Err("extension source hash is missing".into());
+    };
+    let bytes = fs::read(&manifest.executable)
+        .map_err(|error| format!("read extension executable for SHA check: {error}"))?;
+    let actual = format!("{:x}", Sha256::digest(bytes));
+    if !actual.eq_ignore_ascii_case(expected) {
+        return Err("extension executable SHA does not match its reviewed manifest".into());
+    }
+    Ok(())
 }
 
 fn validate_identifier(value: &str, label: &str) -> Result<(), String> {
@@ -2085,12 +3111,13 @@ fn lock_error<T>(_: std::sync::PoisonError<T>) -> String {
 mod tests {
     use super::{
         AdvisoryRecord, DapLaunchConfig, DiagnosticFinding, DiagnosticSeverity, ExtensionManifest,
-        ExtensionScope, ExtensionService, ExternalSource, FindingKind, ProjectAdapter,
-        RegressionMetrics, RegressionScenario, ResourceLimits,
+        ExtensionScope, ExtensionService, ExternalSource, FindingKind, ManagedCatalogComponent,
+        ProjectAdapter, RegressionMetrics, RegressionScenario, ResourceLimits,
     };
-    use crate::extension_host::Permission;
+    use crate::extension_manager::Permission;
     use crate::orchestration_service::OrchestrationService;
     use crate::secrets::{SecretReference, SecretStore};
+    use crate::work_manager::WorkManager;
     use std::collections::BTreeSet;
     use std::sync::Arc;
 
@@ -2099,7 +3126,11 @@ mod tests {
         let root =
             std::env::temp_dir().join(format!("picode-extension-service-{}", uuid::Uuid::new_v4()));
         let orchestration = Arc::new(OrchestrationService::open(&root.join("jobs"), 1024).unwrap());
-        let service = ExtensionService::open(&root.join("extensions"), orchestration).unwrap();
+        let service = ExtensionService::open(
+            &root.join("extensions"),
+            Arc::new(WorkManager::new(orchestration)),
+        )
+        .unwrap();
         let manifest = ExtensionManifest::new(
             "review",
             1,
@@ -2156,7 +3187,9 @@ mod tests {
         assert_eq!(service.snapshot().resident_process_count, 0);
         let reopened = ExtensionService::open(
             &root.join("extensions"),
-            Arc::new(OrchestrationService::open(&root.join("jobs"), 1024).unwrap()),
+            Arc::new(WorkManager::new(Arc::new(
+                OrchestrationService::open(&root.join("jobs"), 1024).unwrap(),
+            ))),
         )
         .unwrap();
         assert!(reopened
@@ -2412,6 +3445,31 @@ mod tests {
                 ExtensionScope::Task("task-a".into()),
             )
             .unwrap();
+        assert!(service
+            .start_mcp(
+                "memory",
+                "task-a",
+                "run-a",
+                &root,
+                std::time::Duration::from_secs(5),
+                &SecretStore::new(root.join("temporary-secrets-preflight")).unwrap(),
+            )
+            .unwrap_err()
+            .contains("disabled"));
+        service.set_mcp_enabled("memory", true).unwrap();
+        assert!(service
+            .start_mcp(
+                "memory",
+                "task-a",
+                "run-a",
+                &root,
+                std::time::Duration::from_secs(5),
+                &SecretStore::new(root.join("temporary-secrets-untrusted")).unwrap(),
+            )
+            .unwrap_err()
+            .contains("not trusted"));
+        assert_eq!(service.snapshot().resident_process_count, 0);
+        assert!(service.set_mcp_trusted("memory", true).is_ok());
         let secret_store = SecretStore::new(root.join("temporary-secrets")).unwrap();
         let run = service
             .start_mcp(
@@ -2448,6 +3506,183 @@ mod tests {
             assert_eq!(value, "resolved-at-launch");
         }
         println!("MCP ready");
+    }
+
+    #[test]
+    #[ignore]
+    fn mcp_protocol_fixture() {
+        use std::io::{BufRead, Write};
+
+        for line in std::io::stdin().lock().lines() {
+            let request: serde_json::Value =
+                serde_json::from_str(&line.expect("read MCP request")).expect("parse MCP request");
+            if request.get("id").and_then(serde_json::Value::as_u64) == Some(1) {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": {
+                            "protocolVersion": "2025-11-25",
+                            "capabilities": {},
+                            "serverInfo": {"name": "fixture", "version": "1"}
+                        }
+                    })
+                );
+                std::io::stdout().flush().expect("flush MCP response");
+            }
+            if request.get("id").and_then(serde_json::Value::as_u64) == Some(2) {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "result": {"tools": [{"name": "fixture_tool"}]}
+                    })
+                );
+                std::io::stdout().flush().expect("flush MCP response");
+                return;
+            }
+        }
+    }
+
+    #[test]
+    fn mcp_protocol_requests_run_through_work_manager() {
+        let root = test_root("mcp-protocol-work-manager");
+        let service = test_service(&root);
+        let executable = std::env::current_exe()
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "\\\\");
+        let preview = service
+            .preview_mcp_json(&format!(
+                r#"{{"mcpServers":{{"protocol":{{"command":"{executable}","args":["--ignored","--exact","extension_service::tests::mcp_protocol_fixture","--nocapture"]}}}}}}"#
+            ))
+            .unwrap();
+        service
+            .apply_mcp_import(
+                &preview.id,
+                &std::collections::BTreeMap::from([(
+                    "protocol".into(),
+                    std::collections::BTreeMap::new(),
+                )]),
+                ExtensionScope::Global,
+            )
+            .unwrap();
+        service.set_mcp_enabled("protocol", true).unwrap();
+        service.set_mcp_trusted("protocol", true).unwrap();
+
+        let result = service
+            .request_mcp_stdio(
+                "protocol",
+                "task-a",
+                "run-a",
+                &root,
+                "tools/list",
+                serde_json::json!({}),
+                std::time::Duration::from_secs(5),
+                &SecretStore::new(root.join("secrets")).unwrap(),
+            )
+            .unwrap();
+
+        assert_eq!(result["tools"][0]["name"], "fixture_tool");
+        wait_for_no_residents(&service);
+        let snapshot = service.snapshot();
+        assert_eq!(snapshot.mcp_runs[0].owner_id, "protocol");
+        assert_ne!(snapshot.mcp_runs[0].state, "running");
+        assert_eq!(snapshot.resident_process_count, 0);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[ignore]
+    fn crashing_mcp_fixture() {
+        panic!("controlled MCP crash");
+    }
+
+    #[test]
+    fn crashing_mcp_is_terminal_and_releases_its_process() {
+        let root = test_root("mcp-crash");
+        let service = test_service(&root);
+        let executable = std::env::current_exe()
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "\\\\");
+        let preview = service
+            .preview_mcp_json(&format!(
+                r#"{{"mcpServers":{{"crash":{{"command":"{executable}","args":["--ignored","--exact","extension_service::tests::crashing_mcp_fixture","--nocapture"]}}}}}}"#
+            ))
+            .unwrap();
+        service
+            .apply_mcp_import(
+                &preview.id,
+                &std::collections::BTreeMap::from([(
+                    "crash".into(),
+                    std::collections::BTreeMap::new(),
+                )]),
+                ExtensionScope::Global,
+            )
+            .unwrap();
+        service.set_mcp_enabled("crash", true).unwrap();
+        service.set_mcp_trusted("crash", true).unwrap();
+        service
+            .start_mcp(
+                "crash",
+                "task-a",
+                "run-a",
+                &root,
+                std::time::Duration::from_secs(5),
+                &SecretStore::new(root.join("secrets")).unwrap(),
+            )
+            .unwrap();
+        wait_for_no_residents(&service);
+        assert_eq!(service.snapshot().mcp_runs[0].state, "failed");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn disabled_http_mcp_is_model_invisible_and_cannot_prepare_network_access() {
+        let root = test_root("mcp-disabled-http");
+        let service = test_service(&root);
+        let preview = service
+            .preview_mcp_json(r#"{"mcpServers":{"remote":{"url":"https://example.invalid/mcp"}}}"#)
+            .unwrap();
+        service
+            .apply_mcp_import(
+                &preview.id,
+                &std::collections::BTreeMap::from([(
+                    "remote".into(),
+                    std::collections::BTreeMap::new(),
+                )]),
+                ExtensionScope::Global,
+            )
+            .unwrap();
+        let snapshot = service.snapshot();
+        let component = snapshot
+            .components
+            .iter()
+            .find(|component| component.id == "remote")
+            .unwrap();
+        assert_eq!(
+            component.state,
+            crate::extension_manager::ExtensionLifecycle::Discovered
+        );
+        assert!(!component.model_discoverable);
+        assert!(component.running_processes.is_empty());
+        assert!(snapshot.processes.is_empty());
+        assert!(
+            snapshot.mcp_runs.is_empty(),
+            "no MCP transport was activated"
+        );
+        assert!(service
+            .prepare_mcp_client(
+                "remote",
+                "task-a",
+                &SecretStore::new(root.join("secrets")).unwrap(),
+            )
+            .unwrap_err()
+            .contains("disabled"));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -2507,6 +3742,30 @@ mod tests {
             )
             .unwrap_err()
             .contains("authorization"));
+        service
+            .set_catalog_component_trusted("debug-adapter", false)
+            .unwrap();
+        assert!(service
+            .launch_dap(
+                "task-a",
+                "run-a",
+                &workspace,
+                DapLaunchConfig {
+                    adapter: std::env::current_exe().unwrap(),
+                    arguments: args.clone(),
+                    request: "launch".into(),
+                    target: "game.exe".into(),
+                    max_events: 2,
+                },
+                true,
+                std::time::Duration::from_secs(5),
+            )
+            .unwrap_err()
+            .contains("not trusted"));
+        assert_eq!(service.snapshot().resident_process_count, 0);
+        service
+            .set_catalog_component_trusted("debug-adapter", true)
+            .unwrap();
         let dap = service
             .launch_dap(
                 "task-a",
@@ -2645,6 +3904,42 @@ mod tests {
         println!("DAP initialized");
     }
 
+    #[test]
+    #[ignore]
+    fn hanging_dap_fixture() {
+        std::thread::sleep(std::time::Duration::from_secs(10));
+    }
+
+    #[test]
+    fn hanging_dap_times_out_and_releases_its_process() {
+        let root = test_root("dap-hang");
+        let service = test_service(&root);
+        service
+            .launch_dap(
+                "task-a",
+                "run-a",
+                &root,
+                DapLaunchConfig {
+                    adapter: std::env::current_exe().unwrap(),
+                    arguments: vec![
+                        "--ignored".into(),
+                        "--exact".into(),
+                        "extension_service::tests::hanging_dap_fixture".into(),
+                        "--nocapture".into(),
+                    ],
+                    request: "launch".into(),
+                    target: "fixture".into(),
+                    max_events: 8,
+                },
+                true,
+                std::time::Duration::from_millis(100),
+            )
+            .unwrap();
+        wait_for_no_residents(&service);
+        assert_eq!(service.snapshot().dap_sessions[0].state, "timedOut");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     fn test_root(label: &str) -> std::path::PathBuf {
         let root =
             std::env::temp_dir().join(format!("picode-extension-{label}-{}", uuid::Uuid::new_v4()));
@@ -2655,7 +3950,24 @@ mod tests {
     fn test_service(root: &std::path::Path) -> ExtensionService {
         let orchestration =
             Arc::new(OrchestrationService::open(&root.join("jobs"), 64 * 1024).unwrap());
-        ExtensionService::open(&root.join("extensions"), orchestration).unwrap()
+        let service = ExtensionService::open(
+            &root.join("extensions"),
+            Arc::new(WorkManager::new(orchestration)),
+        )
+        .unwrap();
+        service
+            .register_catalog_component(ManagedCatalogComponent {
+                id: "debug-adapter".into(),
+                kind: "dap".into(),
+                source: "builtin:picode".into(),
+                version: "2".into(),
+                license: "MIT".into(),
+                permissions: vec!["process.exec".into(), "debug.attach".into()],
+                enabled: true,
+                trusted: true,
+            })
+            .unwrap();
+        service
     }
 
     fn wait_for_no_residents(service: &ExtensionService) {

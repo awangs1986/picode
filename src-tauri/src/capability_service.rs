@@ -5,7 +5,6 @@ use crate::capability::{
 };
 use crate::execution::TaskKind;
 use serde::{Deserialize, Serialize};
-#[cfg(test)]
 use serde_json::Value;
 use sha2::Digest;
 use std::collections::{BTreeMap, BTreeSet};
@@ -27,8 +26,6 @@ struct PersistedCapabilityState {
     catalog_opt_in: BTreeMap<String, bool>,
     #[serde(default)]
     module_tiers: BTreeMap<String, CapabilityTier>,
-    #[serde(default)]
-    firstmate_root: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -48,6 +45,49 @@ pub struct CapabilitySnapshot {
     pub resident_core: ResidentCore,
     pub resident_process_count: usize,
     pub capabilities: Vec<CapabilitySummary>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EffectiveSource {
+    pub id: String,
+    pub provenance: String,
+    pub active: bool,
+}
+
+impl EffectiveSource {
+    #[cfg(test)]
+    pub fn active(id: &str, provenance: &str) -> Self {
+        Self {
+            id: id.to_owned(),
+            provenance: provenance.to_owned(),
+            active: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EffectiveCapability {
+    pub id: String,
+    pub tier: CapabilityTier,
+    pub prompt_visible: bool,
+    pub active_for_task: bool,
+    pub loaded: bool,
+    pub provenance: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EffectiveCapabilityReport {
+    pub task_id: String,
+    pub task_kind: TaskKind,
+    pub catalog_visible: bool,
+    pub resident_core: Vec<String>,
+    pub capabilities: Vec<EffectiveCapability>,
+    pub rules: Vec<EffectiveSource>,
+    pub skills: Vec<EffectiveSource>,
+    pub overrides: Vec<EffectiveSource>,
 }
 
 pub struct CapabilityService {
@@ -72,7 +112,6 @@ impl CapabilityService {
                 schema_version: STATE_VERSION,
                 catalog_opt_in: BTreeMap::new(),
                 module_tiers: BTreeMap::new(),
-                firstmate_root: None,
             }
         };
         if state.schema_version != STATE_VERSION {
@@ -106,6 +145,63 @@ impl CapabilityService {
         }
     }
 
+    pub fn effective_report(
+        &self,
+        task_id: &str,
+        kind: TaskKind,
+        rules: &[EffectiveSource],
+        skills: &[EffectiveSource],
+        overrides: &[EffectiveSource],
+    ) -> EffectiveCapabilityReport {
+        let catalog_visible = kind == TaskKind::Harness
+            || self
+                .state
+                .catalog_opt_in
+                .get(task_id)
+                .copied()
+                .unwrap_or(false);
+        let task_bindings = self.catalog.task_capabilities(task_id);
+        let capabilities = self
+            .catalog
+            .summaries()
+            .into_iter()
+            .map(|item| {
+                let active_for_task = task_bindings.iter().any(|id| id == &item.id);
+                EffectiveCapability {
+                    id: item.id,
+                    tier: item.tier,
+                    prompt_visible: active_for_task
+                        || (catalog_visible && item.tier != CapabilityTier::Disabled),
+                    active_for_task,
+                    loaded: item.loaded,
+                    provenance: if active_for_task {
+                        "TOOLS.md task binding".into()
+                    } else if item.tier == CapabilityTier::Disabled {
+                        "disabled in Settings".into()
+                    } else {
+                        "capability catalog".into()
+                    },
+                }
+            })
+            .collect();
+        EffectiveCapabilityReport {
+            task_id: task_id.to_owned(),
+            task_kind: kind,
+            catalog_visible,
+            resident_core: self
+                .catalog
+                .resident_core
+                .capabilities
+                .iter()
+                .cloned()
+                .collect(),
+            capabilities,
+            rules: rules.to_vec(),
+            skills: skills.to_vec(),
+            overrides: overrides.to_vec(),
+        }
+    }
+
     pub fn set_catalog_opt_in(&mut self, task_id: &str, enabled: bool) -> Result<(), String> {
         if task_id.trim().is_empty() {
             return Err("task id is required".into());
@@ -120,29 +216,6 @@ impl CapabilityService {
         self.catalog.set_tier(id, tier)?;
         self.state.module_tiers.insert(id.to_owned(), tier);
         self.persist()
-    }
-
-    pub fn firstmate_root(&self) -> Option<PathBuf> {
-        self.state
-            .firstmate_root
-            .clone()
-            .filter(|path| path.is_dir())
-            .or_else(discover_firstmate_root)
-    }
-
-    pub fn set_firstmate_root(&mut self, path: &Path) -> Result<PathBuf, String> {
-        if !path.is_dir() {
-            return Err("Firstmate directory does not exist".into());
-        }
-        let resolved = path
-            .canonicalize()
-            .map_err(|error| format!("resolve Firstmate directory: {error}"))?;
-        if !resolved.join("AGENTS.md").is_file() {
-            return Err("Firstmate directory must contain AGENTS.md".into());
-        }
-        self.state.firstmate_root = Some(resolved.clone());
-        self.persist()?;
-        Ok(resolved)
     }
 
     pub fn search(
@@ -596,34 +669,6 @@ fn builtin_manifests() -> Vec<CapabilityManifest> {
     ]
 }
 
-fn discover_firstmate_root() -> Option<PathBuf> {
-    let mut candidates = Vec::new();
-    for key in ["FIRSTMATE_ROOT", "FM_HOME"] {
-        if let Ok(value) = std::env::var(key) {
-            let path = PathBuf::from(value);
-            candidates.push(path.clone());
-            if key == "FM_HOME" {
-                candidates.push(path.join("firstmate"));
-            }
-        }
-    }
-    if let Ok(home) = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")) {
-        let home = PathBuf::from(home);
-        candidates.extend([
-            home.join("firstmate"),
-            home.join("src").join("firstmate"),
-            home.join("Documents").join("firstmate"),
-        ]);
-    }
-    candidates.extend([
-        PathBuf::from(r"D:\firstmate"),
-        PathBuf::from(r"D:\temp\firstmate"),
-    ]);
-    candidates
-        .into_iter()
-        .find(|path| path.is_dir() && path.join("AGENTS.md").is_file())
-}
-
 fn build_compact_prompt(enabled: bool, task_capabilities: &[String], state: &str) -> String {
     let mut lines = vec![
         "Picode task capabilities are lazy; do not assume optional tools are running.".to_owned(),
@@ -654,7 +699,6 @@ fn excluded_path(path: &Path) -> bool {
     })
 }
 
-#[cfg(test)]
 pub fn encode_lsp_frame(value: &Value) -> Result<Vec<u8>, String> {
     let body = serde_json::to_vec(value).map_err(|error| format!("encode LSP payload: {error}"))?;
     let mut frame = format!("Content-Length: {}\r\n\r\n", body.len()).into_bytes();
@@ -875,20 +919,51 @@ mod tests {
     }
 
     #[test]
-    fn firstmate_root_requires_agents_file_and_persists() {
-        let root = std::env::temp_dir().join(format!("picode-firstmate-{}", uuid::Uuid::new_v4()));
-        let state = root.join("state");
-        let invalid = root.join("invalid");
-        let valid = root.join("firstmate");
-        fs::create_dir_all(&invalid).unwrap();
-        fs::create_dir_all(&valid).unwrap();
-        let mut service = CapabilityService::open(&state).unwrap();
-        assert!(service.set_firstmate_root(&invalid).is_err());
-        fs::write(valid.join("AGENTS.md"), "# Firstmate\n").unwrap();
-        let saved = service.set_firstmate_root(&valid).unwrap();
-        assert_eq!(service.firstmate_root(), Some(saved.clone()));
-        let reopened = CapabilityService::open(&state).unwrap();
-        assert_eq!(reopened.firstmate_root(), Some(saved));
+    fn effective_report_explains_prompt_visibility_and_source_provenance_without_loading_tools() {
+        let root = std::env::temp_dir().join(format!("picode-effective-{}", uuid::Uuid::new_v4()));
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(
+            workspace.join("TOOLS.md"),
+            "# Tools\n```picode-tools\n{\"schemaVersion\":1,\"capabilities\":[\"task-build\"]}\n```\n",
+        )
+        .unwrap();
+        let mut service = CapabilityService::open(&root.join("state")).unwrap();
+        service
+            .prepare_task("task-a", TaskKind::Harness, Some(&workspace))
+            .unwrap();
+
+        let report = service.effective_report(
+            "task-a",
+            TaskKind::Harness,
+            &[EffectiveSource::active("AGENTS.md", "workspace/AGENTS.md")],
+            &[EffectiveSource::active(
+                "mattpocock-skills",
+                "runtime skill catalog",
+            )],
+            &[EffectiveSource::active("user-workflow", "task override")],
+        );
+
+        assert!(report.catalog_visible);
+        assert_eq!(report.rules[0].provenance, "workspace/AGENTS.md");
+        assert_eq!(report.skills[0].id, "mattpocock-skills");
+        assert_eq!(report.overrides[0].id, "user-workflow");
+        let task_build = report
+            .capabilities
+            .iter()
+            .find(|item| item.id == "task-build")
+            .unwrap();
+        assert!(task_build.prompt_visible);
+        assert!(task_build.active_for_task);
+        assert_eq!(task_build.provenance, "TOOLS.md task binding");
+        let firstmate = report
+            .capabilities
+            .iter()
+            .find(|item| item.id == "firstmate-crew-orchestrator")
+            .unwrap();
+        assert!(!firstmate.prompt_visible);
+        assert!(!firstmate.loaded);
+        assert_eq!(service.resident_process_count(), 0);
         fs::remove_dir_all(root).unwrap();
     }
 }

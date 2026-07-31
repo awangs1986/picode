@@ -1,5 +1,6 @@
 import { getTransport } from "../app/transport.js";
 import { t } from "../i18n/index.js";
+import { presentWorkState } from "./work-status.js";
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -21,7 +22,12 @@ function attribution(value) {
 }
 
 function stateLabel(state) {
-  return t(`runtime.state.${state}`, {}, state || "unknown");
+  const presentation = presentWorkState(state);
+  return t(presentation.labelKey, {}, presentation.fallbackLabel);
+}
+
+function statePhase(state) {
+  return presentWorkState(state).phase;
 }
 
 function formatBytes(bytes) {
@@ -129,9 +135,9 @@ export class PicodeRuntimeMonitor extends HTMLElement {
     }
     this.innerHTML = `
       <div class="picode-runtime-monitor__backdrop" data-runtime-close></div>
-      <aside class="picode-runtime-monitor__drawer" aria-label="${escapeHtml(t("runtime.title", {}, "Runtime Monitor"))}">
+      <aside class="picode-runtime-monitor__drawer" aria-label="${escapeHtml(t("runtime.title", {}, "Activity & verification"))}">
         <header>
-          <div><span class="picode-eyebrow">RUNTIME</span><h2>${escapeHtml(t("runtime.title", {}, "Runtime Monitor"))}</h2></div>
+          <div><span class="picode-eyebrow">ACTIVITY</span><h2>${escapeHtml(t("runtime.title", {}, "Activity & verification"))}</h2></div>
           <button class="picode-icon-button" data-runtime-close aria-label="${escapeHtml(t("common.close", {}, "Close"))}">×</button>
         </header>
         <div class="picode-runtime-summary">
@@ -199,7 +205,7 @@ export class PicodeRuntimeMonitor extends HTMLElement {
       <div class="picode-agent-run__head">
         <span class="picode-agent-avatar">${depth ? "S" : "P"}</span>
         <div><strong>${escapeHtml(task?.goal || run.taskId)}</strong><small>${escapeHtml(run.provider)} · ${escapeHtml(run.model)}</small></div>
-        <span class="picode-agent-state" data-state="${escapeHtml(run.state)}">${escapeHtml(stateLabel(run.state))}</span>
+        <span class="picode-agent-state" data-state="${escapeHtml(statePhase(run.state))}" title="${escapeHtml(t(`runtime.state.${run.state}`, {}, run.state || "unknown"))}">${escapeHtml(stateLabel(run.state))}</span>
       </div>
       <p class="picode-agent-action">${escapeHtml(run.currentAction || "—")}</p>
       <dl class="picode-agent-metrics">
@@ -208,7 +214,7 @@ export class PicodeRuntimeMonitor extends HTMLElement {
         <div><dt>${escapeHtml(t("runtime.tokens", {}, "Tokens"))}</dt><dd>${usageValue(run.usage?.inputTokens)}</dd></div>
         <div><dt>${escapeHtml(t("runtime.attribution", {}, "Attribution"))}</dt><dd>${escapeHtml(attribution(sample?.attribution || run.usage?.inputTokens?.attribution || "unavailable"))}</dd></div>
       </dl>
-      <div class="picode-agent-run__identity"><code>${escapeHtml(run.id)}</code><span>PID ${escapeHtml(run.processId)}</span><span>${escapeHtml(run.accountId)}</span><span>${escapeHtml(usageValue(run.usage?.costMicros))}</span></div>
+      <details class="picode-work-details"><summary>${escapeHtml(t("runtime.details", {}, "Run details"))}</summary><div class="picode-agent-run__identity"><code>${escapeHtml(run.id)}</code><span>PID ${escapeHtml(run.processId)}</span><span>${escapeHtml(run.accountId)}</span><span>${escapeHtml(usageValue(run.usage?.costMicros))}</span><span>${escapeHtml(t(`runtime.state.${run.state}`, {}, run.state || "unknown"))}</span></div></details>
       <div class="picode-agent-run__actions">
         <button class="picode-button picode-button--secondary" data-open-chat="${escapeHtml(run.chatId)}">${escapeHtml(t("runtime.openChat", {}, "Open chat"))}</button>
         ${terminal ? "" : `<button class="picode-button picode-button--danger" data-cancel-run="${escapeHtml(run.id)}">${escapeHtml(t("runtime.cancelRun", {}, "Cancel run"))}</button>`}
@@ -224,9 +230,9 @@ export class PicodeRuntimeMonitor extends HTMLElement {
       <div class="picode-agent-run__head">
         <span class="picode-agent-avatar">J</span>
         <div><strong>${escapeHtml(task?.goal || job.taskId)}</strong><small>${escapeHtml(job.command)}</small></div>
-        <span class="picode-agent-state" data-state="${escapeHtml(job.status)}">${escapeHtml(stateLabel(job.status))}</span>
+        <span class="picode-agent-state" data-state="${escapeHtml(statePhase(job.status))}" title="${escapeHtml(t(`runtime.state.${job.status}`, {}, job.status || "unknown"))}">${escapeHtml(stateLabel(job.status))}</span>
       </div>
-      <div class="picode-agent-run__identity"><code>${escapeHtml(job.id)}</code><span>PID ${escapeHtml(job.processId)}</span><span>${escapeHtml(job.fullOutputHash || "—")}</span></div>
+      <details class="picode-work-details"><summary>${escapeHtml(t("runtime.details", {}, "Run details"))}</summary><div class="picode-agent-run__identity"><code>${escapeHtml(job.id)}</code><span>PID ${escapeHtml(job.processId)}</span><span>${escapeHtml(job.fullOutputHash || "—")}</span></div></details>
       ${terminal ? "" : `<div class="picode-agent-run__actions"><button class="picode-button picode-button--danger" data-cancel-job="${escapeHtml(job.id)}">${escapeHtml(t("runtime.cancelJob", {}, "Cancel job"))}</button></div>`}
     </article>`;
   }
@@ -236,9 +242,9 @@ export class PicodeRuntimeMonitor extends HTMLElement {
       <div class="picode-agent-run__head">
         <span class="picode-agent-avatar">T</span>
         <div><strong>${escapeHtml(runtime.label)}</strong><small>${escapeHtml(t("runtime.lazyRuntime", {}, "Lazy task runtime"))}</small></div>
-        <span class="picode-agent-state" data-state="running">${escapeHtml(stateLabel("running"))}</span>
+        <span class="picode-agent-state" data-state="working">${escapeHtml(stateLabel("running"))}</span>
       </div>
-      <div class="picode-agent-run__identity"><code>${escapeHtml(runtime.count)}</code><span>PID ${escapeHtml(snapshot.processId)}</span><span>${formatBytes(snapshot.memoryBytes)}</span><span>${escapeHtml(attribution("shared"))}</span></div>
+      <details class="picode-work-details"><summary>${escapeHtml(t("runtime.details", {}, "Run details"))}</summary><div class="picode-agent-run__identity"><code>${escapeHtml(runtime.count)}</code><span>PID ${escapeHtml(snapshot.processId)}</span><span>${formatBytes(snapshot.memoryBytes)}</span><span>${escapeHtml(attribution("shared"))}</span></div></details>
     </article>`;
   }
 
@@ -249,10 +255,10 @@ export class PicodeRuntimeMonitor extends HTMLElement {
       <div class="picode-agent-run__head">
         <span class="picode-agent-avatar">S</span>
         <div><strong>${escapeHtml(label)}</strong><small>${escapeHtml(agents)} · ${escapeHtml(run.mode || "single")}</small></div>
-        <span class="picode-agent-state" data-state="${escapeHtml(run.state)}">${escapeHtml(stateLabel(run.state))}</span>
+        <span class="picode-agent-state" data-state="${escapeHtml(statePhase(run.state))}">${escapeHtml(stateLabel(run.state))}</span>
       </div>
       ${run.summary ? `<p class="picode-agent-action">${escapeHtml(run.summary)}</p>` : ""}
-      <div class="picode-agent-run__identity"><code>${escapeHtml(run.id)}</code><span>${run.processId ? `PID ${escapeHtml(run.processId)}` : "PID —"}</span><span>${escapeHtml(t("runtime.piSubagentManaged", {}, "Manage with /subagents"))}</span></div>
+      <details class="picode-work-details"><summary>${escapeHtml(t("runtime.details", {}, "Run details"))}</summary><div class="picode-agent-run__identity"><code>${escapeHtml(run.id)}</code><span>${run.processId ? `PID ${escapeHtml(run.processId)}` : "PID —"}</span><span>${escapeHtml(t("runtime.piSubagentManaged", {}, "Manage with /subagents"))}</span></div></details>
     </article>`;
   }
 
@@ -266,16 +272,16 @@ export class PicodeRuntimeMonitor extends HTMLElement {
       "resourceStopped",
     ].includes(run.state);
     return `<article class="picode-background-job" data-extension-run="${escapeHtml(run.id)}">
-      <div class="picode-agent-run__head"><span class="picode-agent-avatar">${glyph}</span><div><strong>${escapeHtml(run.extensionId)}</strong><small>${escapeHtml(run.taskId)} · ${formatBytes(run.observedMemoryBytes || 0)}</small></div><span class="picode-agent-state" data-state="${escapeHtml(run.state)}">${escapeHtml(stateLabel(run.state))}</span></div>
-      <div class="picode-agent-run__identity"><code>${escapeHtml(run.id)}</code><span>PID ${escapeHtml(run.processId)}</span><span>${escapeHtml(run.fullOutputHash || "—")}</span></div>
+      <div class="picode-agent-run__head"><span class="picode-agent-avatar">${glyph}</span><div><strong>${escapeHtml(run.extensionId)}</strong><small>${escapeHtml(run.taskId)} · ${formatBytes(run.observedMemoryBytes || 0)}</small></div><span class="picode-agent-state" data-state="${escapeHtml(statePhase(run.state))}">${escapeHtml(stateLabel(run.state))}</span></div>
+      <details class="picode-work-details"><summary>${escapeHtml(t("runtime.details", {}, "Run details"))}</summary><div class="picode-agent-run__identity"><code>${escapeHtml(run.id)}</code><span>PID ${escapeHtml(run.processId)}</span><span>${escapeHtml(run.fullOutputHash || "—")}</span></div></details>
       ${terminal ? "" : `<div class="picode-agent-run__actions"><button class="picode-button picode-button--danger" data-cancel-extension="${escapeHtml(run.id)}">${escapeHtml(t("runtime.cancelExtension", {}, "Cancel extension"))}</button></div>`}
     </article>`;
   }
 
   _scopedProcessCard(run, glyph) {
     return `<article class="picode-background-job" data-scoped-process="${escapeHtml(run.id)}">
-      <div class="picode-agent-run__head"><span class="picode-agent-avatar">${glyph}</span><div><strong>${escapeHtml(run.ownerId || run.target || glyph)}</strong><small>${escapeHtml(run.taskId)}</small></div><span class="picode-agent-state" data-state="${escapeHtml(run.state)}">${escapeHtml(stateLabel(run.state))}</span></div>
-      <div class="picode-agent-run__identity"><code>${escapeHtml(run.id)}</code><span>${run.processId ? `PID ${escapeHtml(run.processId)}` : "client transport"}</span></div>
+      <div class="picode-agent-run__head"><span class="picode-agent-avatar">${glyph}</span><div><strong>${escapeHtml(run.ownerId || run.target || glyph)}</strong><small>${escapeHtml(run.taskId)}</small></div><span class="picode-agent-state" data-state="${escapeHtml(statePhase(run.state))}">${escapeHtml(stateLabel(run.state))}</span></div>
+      <details class="picode-work-details"><summary>${escapeHtml(t("runtime.details", {}, "Run details"))}</summary><div class="picode-agent-run__identity"><code>${escapeHtml(run.id)}</code><span>${run.processId ? `PID ${escapeHtml(run.processId)}` : "client transport"}</span></div></details>
     </article>`;
   }
 }

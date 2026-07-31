@@ -27,7 +27,7 @@ export function groupInstalledSkills(skills) {
   const groups = new Map();
   for (const [index, skill] of (skills || []).entries()) {
     const source = String(skill?.source || "");
-    const bundled = skill?.origin === "package" && source && source !== "unknown";
+    const bundled = source && !["unknown", "runtime"].includes(source);
     const key = bundled ? `bundle:${source}` : `skill:${index}:${skill?.name || "unknown"}`;
     if (!groups.has(key)) {
       groups.set(key, {
@@ -47,8 +47,8 @@ export class PicodeProfessionalExtensions extends HTMLElement {
   connectedCallback() {
     this._snapshot ||= null;
     this._capabilitySnapshot ||= null;
-    this._skills ||= null;
-    this._firstmateStatus ||= null;
+    this._effectiveReport ||= null;
+    this._effectiveTask ||= "";
     this._importPreview ||= null;
     this._mcpPreview ||= null;
     this._selectedImports ||= new Set();
@@ -69,15 +69,23 @@ export class PicodeProfessionalExtensions extends HTMLElement {
 
   async refresh() {
     const errors = [];
-    const taskSnapshot = this.transport.taskSnapshot
+
+    if (this.transport.listSkills && this.transport.syncExtensionSkills) {
+      await Promise.resolve()
+        .then(() => this.transport.listSkills())
+        .then((skills) => this.transport.syncExtensionSkills(skills))
+        .catch((error) => errors.push(error));
+    }
+
+    const extensionSnapshot = this.transport.extensionSnapshot
       ? await Promise.resolve()
-          .then(() => this.transport.taskSnapshot())
+          .then(() => this.transport.extensionSnapshot())
           .catch((error) => {
             errors.push(error);
             return null;
           })
       : null;
-    if (taskSnapshot) this._snapshot = taskSnapshot?.extensions || {};
+    if (extensionSnapshot) this._snapshot = extensionSnapshot;
 
     const capabilitySnapshot = this.transport.capabilitySnapshot
       ? await Promise.resolve()
@@ -88,26 +96,6 @@ export class PicodeProfessionalExtensions extends HTMLElement {
           })
       : null;
     if (capabilitySnapshot) this._capabilitySnapshot = capabilitySnapshot;
-
-    if (this.transport.listSkills) {
-      const skills = await Promise.resolve()
-        .then(() => this.transport.listSkills())
-        .catch((error) => {
-          errors.push(error);
-          return null;
-        });
-      if (skills) this._skills = Array.isArray(skills) ? skills : [];
-    }
-
-    if (this.transport.firstmateStatus) {
-      const firstmateStatus = await Promise.resolve()
-        .then(() => this.transport.firstmateStatus())
-        .catch((error) => {
-          errors.push(error);
-          return null;
-        });
-      if (firstmateStatus) this._firstmateStatus = firstmateStatus;
-    }
 
     this._error = errors.length
       ? errors.map((error) => error?.message || String(error)).join("; ")
@@ -129,8 +117,10 @@ export class PicodeProfessionalExtensions extends HTMLElement {
     const imports = snapshot.imports || [];
     const mcp = snapshot.mcpConfigs || [];
     const capabilities = this._capabilitySnapshot?.capabilities || [];
-    const skills = this._skills || [];
+    const skills = snapshot.skills || [];
+    const firstmate = snapshot.firstmate || {};
     const skillGroups = groupInstalledSkills(skills);
+    const components = snapshot.components || [];
     const residents = Number(snapshot.residentProcessCount || 0);
     this.innerHTML = `
       <div class="picode-professional-head">
@@ -141,15 +131,26 @@ export class PicodeProfessionalExtensions extends HTMLElement {
       ${this._error ? `<p class="picode-runtime-error">${escapeHtml(this._error)}</p>` : ""}
       <div class="picode-professional-grid">
         <section class="picode-professional-card picode-professional-card--wide">
-          <header><div><span class="picode-eyebrow">SKILLS</span><h3>${escapeHtml(t("professional.skills", {}, "Installed skills"))}</h3></div><small>${this._skills === null ? "—" : skills.length}</small></header>
-          <p class="settings-help">${escapeHtml(t("professional.skillsHelp", {}, "Skills loaded by the current Pi runtime are available from the slash menu and are shown here for verification."))}</p>
-          ${this._skills === null ? `<p class="picode-runtime-empty">${escapeHtml(t("professional.skillsLoading", {}, "Loading skills…"))}</p>` : skills.length ? `<div class="picode-imported-list">${skillGroups.map((group) => this._skillGroup(group)).join("")}</div>` : `<p class="picode-runtime-empty">${escapeHtml(t("professional.noSkills", {}, "No skills are currently loaded."))}</p>`}
+          <header><div><span class="picode-eyebrow">RUNTIME</span><h3>${escapeHtml(t("professional.componentStatus", {}, "Extension component status"))}</h3></div><small>${components.length}</small></header>
+          <p class="settings-help">${escapeHtml(t("professional.componentStatusHelp", {}, "Authoritative state from Extension Manager, including source, version, permissions, task bindings, running processes, and the latest error."))}</p>
+          ${components.length ? `<div class="picode-imported-list">${components.map((item) => this._componentRow(item)).join("")}</div>` : `<p class="picode-runtime-empty">${escapeHtml(t("professional.noComponents", {}, "No extension components discovered."))}</p>`}
+        </section>
+        <section class="picode-professional-card picode-professional-card--wide">
+          <header><div><span class="picode-eyebrow">SKILLS</span><h3>${escapeHtml(t("professional.skills", {}, "Installed skills"))}</h3></div><small>${this._snapshot === null ? "—" : skills.length}</small></header>
+          <p class="settings-help">${escapeHtml(t("professional.skillsHelp", {}, "Skills discovered by the current Pi runtime are synchronized into Extension Manager before they are shown here."))}</p>
+          ${this._snapshot === null ? `<p class="picode-runtime-empty">${escapeHtml(t("professional.skillsLoading", {}, "Loading skills…"))}</p>` : skills.length ? `<div class="picode-imported-list">${skillGroups.map((group) => this._skillGroup(group)).join("")}</div>` : `<p class="picode-runtime-empty">${escapeHtml(t("professional.noSkills", {}, "No skills are currently loaded."))}</p>`}
         </section>
         ${`<section class="picode-professional-card picode-professional-card--wide">
           <header><div><span class="picode-eyebrow">CAPABILITIES</span><h3>${escapeHtml(t("professional.capabilities", {}, "Optional capabilities"))}</h3></div><small>${capabilities.length}</small></header>
           <p class="settings-help">${escapeHtml(t("professional.capabilitiesHelp", {}, "Disabled modules stay out of the Agent catalog and consume no process resources."))}</p>
-          ${capabilities.length ? `<div class="picode-imported-list">${capabilities.map((item) => this._capabilityRow(item)).join("")}</div>` : `<p class="picode-runtime-empty">${escapeHtml(t("professional.noCapabilities", {}, "No optional capabilities are available."))}</p>`}
+          ${capabilities.length ? `<div class="picode-imported-list">${capabilities.map((item) => this._capabilityRow(item, firstmate)).join("")}</div>` : `<p class="picode-runtime-empty">${escapeHtml(t("professional.noCapabilities", {}, "No optional capabilities are available."))}</p>`}
         </section>`}
+        <section class="picode-professional-card picode-professional-card--wide">
+          <header><div><span class="picode-eyebrow">DIAGNOSTICS</span><h3>${escapeHtml(t("professional.effectiveTitle", {}, "Effective task configuration"))}</h3></div></header>
+          <p class="settings-help">${escapeHtml(t("professional.effectiveHelp", {}, "Read-only view of what the model can actually see and invoke for one task."))}</p>
+          <div class="picode-professional-controls"><input class="ui-input" data-effective-task value="${escapeHtml(this._effectiveTask)}" placeholder="Task ID"><button type="button" class="ui-button ui-button--secondary" data-effective-report>${escapeHtml(t("professional.inspectEffective", {}, "Inspect"))}</button></div>
+          <div data-effective-output>${this._renderEffectiveReport()}</div>
+        </section>
         <section class="picode-professional-card">
           <header><div><span class="picode-eyebrow">HOST</span><h3>${escapeHtml(t("professional.installed", {}, "Isolated host"))}</h3></div><small>${installations.length}</small></header>
           ${installations.length ? installations.map((item) => this._extensionRow(item)).join("") : `<p class="picode-runtime-empty">${escapeHtml(t("professional.noneInstalled", {}, "No heavy extensions installed."))}</p>`}
@@ -176,7 +177,7 @@ export class PicodeProfessionalExtensions extends HTMLElement {
           <textarea class="picode-professional-json" data-mcp-json rows="5" spellcheck="false" placeholder='{"mcpServers":{}}'></textarea>
           <button type="button" class="ui-button ui-button--secondary" data-preview-mcp>${escapeHtml(t("professional.previewMcp", {}, "Preview MCP JSON"))}</button>
           ${this._renderMcpPreview()}
-          ${mcp.length ? `<div class="picode-imported-list">${mcp.map((item) => `<div class="picode-import-candidate"><span><strong>${escapeHtml(item.id)}</strong><small>${escapeHtml(item.transport)} · ${escapeHtml(item.scope === "global" ? "global" : item.scope?.task || "task")}</small></span><button type="button" class="ui-button ui-button--secondary" data-activate-mcp="${escapeHtml(item.id)}">${escapeHtml(t("professional.activateMcp", {}, "Enable for task"))}</button></div>`).join("")}</div>` : ""}
+          ${mcp.length ? `<div class="picode-imported-list">${mcp.map((item) => `<div class="picode-import-candidate"><span><strong>${escapeHtml(item.id)}</strong><small>${escapeHtml(item.transport)} · ${escapeHtml(item.scope === "global" ? "global" : item.scope?.task || "task")}</small></span><label><small>${escapeHtml(t("professional.enabled", {}, "Enabled"))}</small><input type="checkbox" data-mcp-enable="${escapeHtml(item.id)}" ${item.enabled ? "checked" : ""}></label><label><small>${escapeHtml(t("professional.trusted", {}, "Trusted"))}</small><input type="checkbox" data-mcp-trust="${escapeHtml(item.id)}" ${item.trusted ? "checked" : ""} ${item.enabled ? "" : "disabled"}></label><button type="button" class="ui-button ui-button--secondary" data-activate-mcp="${escapeHtml(item.id)}" ${item.enabled && item.trusted ? "" : "disabled"}>${escapeHtml(t("professional.activateMcp", {}, "Enable for task"))}</button></div>`).join("")}</div>` : ""}
         </section>
         <section class="picode-professional-card picode-professional-card--wide">
           <header><div><span class="picode-eyebrow">DAP</span><h3>${escapeHtml(t("professional.dapTitle", {}, "Optional debugger"))}</h3></div><small>${(snapshot.dapSessions || []).length}</small></header>
@@ -204,6 +205,55 @@ export class PicodeProfessionalExtensions extends HTMLElement {
     </div>`;
   }
 
+  _componentRow(item) {
+    const processText = (item.runningProcesses || [])
+      .map((process) => `PID ${process.processId || "—"} · ${process.kind}`)
+      .join(" · ");
+    const bindings = (item.taskBindings || []).join(" · ");
+    const detail = [
+      `${item.source || "unknown"} @ ${item.version || "unknown"}`,
+      `license: ${item.license || "unknown"}`,
+      (item.permissions || []).join(", ") || "no permissions",
+      bindings ? `tasks: ${bindings}` : "global",
+      processText || "zero processes",
+      item.resourceLimits
+        ? `limits: ${item.resourceLimits.maxMemoryBytes} B / ${item.resourceLimits.maxOutputBytes} B`
+        : "",
+      item.healthCheck ? `health: ${item.healthCheck.kind}` : "",
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    const managed = [
+      ...(this._snapshot?.catalogComponents || []),
+      ...(this._snapshot?.hooks || []),
+    ].some((component) => component.id === item.id);
+    const controls = managed
+      ? `<label><small>${escapeHtml(t("professional.enabled", {}, "Enabled"))}</small><input type="checkbox" data-component-enable="${escapeHtml(item.id)}" ${item.state !== "discovered" ? "checked" : ""}></label><label><small>${escapeHtml(t("professional.trusted", {}, "Trusted"))}</small><input type="checkbox" data-component-trust="${escapeHtml(item.id)}" ${["trusted", "running"].includes(item.state) ? "checked" : ""} ${item.state === "discovered" ? "disabled" : ""}></label>`
+      : "";
+    return `<div class="picode-extension-install" data-component="${escapeHtml(item.id)}">
+      <span><strong>${escapeHtml(item.id)}</strong><small>${escapeHtml(item.kind)} · ${escapeHtml(item.state)} · ${escapeHtml(detail)}</small>${item.lastError ? `<small class="picode-runtime-error">${escapeHtml(item.lastError)}</small>` : ""}</span>
+      ${controls}
+    </div>`;
+  }
+
+  _renderEffectiveReport() {
+    const report = this._effectiveReport;
+    if (!report) return "";
+    const sources = [
+      ...(report.rules || []),
+      ...(report.skills || []),
+      ...(report.overrides || []),
+    ];
+    const visible = (report.capabilities || []).filter(
+      (item) => item.promptVisible || item.activeForTask || item.loaded,
+    );
+    return `<div class="picode-imported-list">
+      <div class="picode-import-candidate"><span><strong>${escapeHtml(t("professional.residentCore", {}, "Resident core"))}</strong><small>${escapeHtml((report.residentCore || []).join(" · "))}</small></span></div>
+      ${visible.map((item) => `<div class="picode-import-candidate"><span><strong>${escapeHtml(item.id)}</strong><small>${escapeHtml(item.provenance)} · ${item.loaded ? "loaded" : item.activeForTask ? "task-bound" : "discoverable"}</small></span></div>`).join("")}
+      ${sources.map((item) => `<div class="picode-import-candidate"><span><strong>${escapeHtml(item.id)}</strong><small>${escapeHtml(item.provenance)}</small></span></div>`).join("")}
+    </div>`;
+  }
+
   _skillGroup(group) {
     if (!group.bundled) return this._skillRow(group.skills[0]);
     return `<details class="picode-skill-bundle">
@@ -216,7 +266,7 @@ export class PicodeProfessionalExtensions extends HTMLElement {
     return `<div class="picode-skill-row"><span><strong>/${escapeHtml(skill?.name || skill?.command || "skill")}</strong><small>${escapeHtml(skill?.description || "")}</small></span><small>${escapeHtml(skill?.scope || "runtime")}</small></div>`;
   }
 
-  _capabilityRow(item) {
+  _capabilityRow(item, firstmate) {
     const tier = item.tier || "discoverable";
     const disabled = tier === "disabled";
     const name = t(`professional.capability.${item.id}.name`, {}, item.id);
@@ -230,14 +280,17 @@ export class PicodeProfessionalExtensions extends HTMLElement {
       : t("professional.capabilityAvailable", {}, "Available on demand");
     const firstmateRoot =
       item.id === "firstmate-crew-orchestrator"
-        ? `<div class="picode-firstmate-root"><small>${escapeHtml(this._firstmateStatus?.available ? `${t("professional.firstmateRootReady", {}, "Root ready")}: ${this._firstmateStatus.root}` : t("professional.firstmateRootMissing", {}, "Choose a Firstmate directory containing AGENTS.md"))}</small><button type="button" class="ui-button ui-button--secondary ui-button--sm" data-firstmate-pick-root>${escapeHtml(t("professional.firstmateChooseRoot", {}, "Choose root"))}</button></div>`
+        ? `<div class="picode-firstmate-root"><small>${escapeHtml(firstmate?.root ? `${t("professional.firstmateRootReady", {}, "Root ready")}: ${firstmate.root}` : t("professional.firstmateRootMissing", {}, "Choose a Firstmate directory containing AGENTS.md"))}</small><button type="button" class="ui-button ui-button--secondary ui-button--sm" data-firstmate-pick-root>${escapeHtml(t("professional.firstmateChooseRoot", {}, "Choose root"))}</button><label><input type="checkbox" data-firstmate-trust ${firstmate?.trusted ? "checked" : ""} ${firstmate?.enabled ? "" : "disabled"}>${escapeHtml(t("professional.trusted", {}, "Trusted"))}</label></div>`
         : "";
+    const centrallyManaged = (this._snapshot?.catalogComponents || []).some(
+      (component) => component.id === item.id,
+    );
+    const control = centrallyManaged
+      ? `<small>${escapeHtml(t("professional.managedByExtensionManager", {}, "Managed above by Extension Manager"))}</small>`
+      : `<select class="ui-select" data-capability-tier="${escapeHtml(item.id)}" aria-label="${escapeHtml(item.id)} tier"><option value="disabled" ${disabled ? "selected" : ""}>${escapeHtml(t("professional.capabilityDisabled", {}, "Disabled"))}</option><option value="discoverable" ${tier === "discoverable" ? "selected" : ""}>${escapeHtml(t("professional.capabilityDiscoverable", {}, "Discoverable"))}</option></select>`;
     return `<label class="picode-import-candidate" data-capability="${escapeHtml(item.id)}">
       <span><strong>${escapeHtml(name)}</strong><small>${escapeHtml(summary)} · ${escapeHtml(status)} · ${escapeHtml(tierLabel)}</small>${firstmateRoot}</span>
-      <select class="ui-select" data-capability-tier="${escapeHtml(item.id)}" aria-label="${escapeHtml(item.id)} tier">
-        <option value="disabled" ${disabled ? "selected" : ""}>${escapeHtml(t("professional.capabilityDisabled", {}, "Disabled"))}</option>
-        <option value="discoverable" ${tier === "discoverable" ? "selected" : ""}>${escapeHtml(t("professional.capabilityDiscoverable", {}, "Discoverable"))}</option>
-      </select>
+      ${control}
     </label>`;
   }
 
@@ -277,6 +330,9 @@ export class PicodeProfessionalExtensions extends HTMLElement {
   }
 
   _bind() {
+    this.querySelector("[data-effective-report]")?.addEventListener("click", () =>
+      this._inspectEffectiveReport(),
+    );
     this.querySelectorAll("[data-capability-tier]").forEach((select) => {
       select.addEventListener("change", async () => {
         try {
@@ -302,6 +358,15 @@ export class PicodeProfessionalExtensions extends HTMLElement {
           this._status = t("professional.firstmateRootSaved", {}, "Firstmate root saved.");
           await this.refresh();
         }
+      } catch (error) {
+        this._error = error?.message || String(error);
+        this._render();
+      }
+    });
+    this.querySelector("[data-firstmate-trust]")?.addEventListener("change", async (event) => {
+      try {
+        await this.transport.setFirstmateTrusted(event.target.checked);
+        await this.refresh();
       } catch (error) {
         this._error = error?.message || String(error);
         this._render();
@@ -333,6 +398,28 @@ export class PicodeProfessionalExtensions extends HTMLElement {
     this.querySelector("[data-preview-mcp]")?.addEventListener("click", () => this._previewMcp());
     this.querySelectorAll("[data-activate-mcp]").forEach((button) => {
       button.addEventListener("click", () => this._activateMcp(button.dataset.activateMcp));
+    });
+    this.querySelectorAll("[data-mcp-enable]").forEach((input) => {
+      input.addEventListener("change", async () => {
+        try {
+          await this.transport.setMcpEnabled(input.dataset.mcpEnable, input.checked);
+          await this.refresh();
+        } catch (error) {
+          this._error = error?.message || String(error);
+          this._render();
+        }
+      });
+    });
+    this.querySelectorAll("[data-mcp-trust]").forEach((input) => {
+      input.addEventListener("change", async () => {
+        try {
+          await this.transport.setMcpTrusted(input.dataset.mcpTrust, input.checked);
+          await this.refresh();
+        } catch (error) {
+          this._error = error?.message || String(error);
+          this._render();
+        }
+      });
     });
     this.querySelectorAll("[data-mcp-candidate]").forEach((input) => {
       input.addEventListener("change", () => {
@@ -370,6 +457,34 @@ export class PicodeProfessionalExtensions extends HTMLElement {
         }
       });
     });
+    this.querySelectorAll("[data-component-enable]").forEach((input) => {
+      input.addEventListener("change", async () => {
+        try {
+          await this.transport.setExtensionComponentEnabled(
+            input.dataset.componentEnable,
+            input.checked,
+          );
+          await this.refresh();
+        } catch (error) {
+          this._error = error?.message || String(error);
+          this._render();
+        }
+      });
+    });
+    this.querySelectorAll("[data-component-trust]").forEach((input) => {
+      input.addEventListener("change", async () => {
+        try {
+          await this.transport.setExtensionComponentTrusted(
+            input.dataset.componentTrust,
+            input.checked,
+          );
+          await this.refresh();
+        } catch (error) {
+          this._error = error?.message || String(error);
+          this._render();
+        }
+      });
+    });
     this.querySelector("[data-install-extension]")?.addEventListener("click", () =>
       this._installExtension(),
     );
@@ -377,6 +492,29 @@ export class PicodeProfessionalExtensions extends HTMLElement {
     this.querySelector("[data-extension-scope]")?.addEventListener("change", (event) => {
       this.querySelector("[data-extension-task]").disabled = event.target.value !== "task";
     });
+  }
+
+  async _inspectEffectiveReport() {
+    try {
+      const taskId = this.querySelector("[data-effective-task]")?.value.trim();
+      if (!taskId) throw new Error(t("professional.taskRequired", {}, "Enter a Task ID."));
+      this._effectiveTask = taskId;
+      const skills = (this._snapshot?.skills || []).map((skill) => ({
+        id: skill.name || "skill",
+        provenance: skill.source || skill.scope || "runtime skill catalog",
+        active: true,
+      }));
+      this._effectiveReport = await this.transport.effectiveCapabilityReport(
+        taskId,
+        [],
+        skills,
+        [],
+      );
+      this._error = "";
+    } catch (error) {
+      this._error = error?.message || String(error);
+    }
+    this._render();
   }
 
   async _previewImport() {
@@ -405,9 +543,20 @@ export class PicodeProfessionalExtensions extends HTMLElement {
       if (this.querySelector("[data-manifest-read]").checked) permissions.push("workspaceRead");
       if (this.querySelector("[data-manifest-process]").checked) permissions.push("processExecute");
       if (this.querySelector("[data-manifest-network]").checked) permissions.push("network");
+      const id = this.querySelector("[data-manifest-id]").value.trim();
       await this.transport.installProfessionalExtension({
-        id: this.querySelector("[data-manifest-id]").value.trim(),
+        id,
+        manifestVersion: 2,
         schemaVersion: 1,
+        name: id,
+        version: "local-1",
+        source: "local:manual",
+        sourceRef: null,
+        sourceHash: null,
+        license: "unknown",
+        components: ["native-helper"],
+        platforms: [navigator.platform || "unknown"],
+        healthCheck: { kind: "process", timeoutMs: 5000 },
         executable: this.querySelector("[data-manifest-executable]").value.trim(),
         arguments: this.querySelector("[data-manifest-args]").value.split(/\r?\n/).filter(Boolean),
         permissions,

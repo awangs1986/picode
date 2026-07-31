@@ -27,6 +27,18 @@ pub struct DelegationPlan {
     pub routing: RoutingDecision,
     pub requires_parent_review: bool,
     pub effective_tools: Vec<String>,
+    pub contract: DelegationContract,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DelegationContract {
+    pub objective: String,
+    pub scope: Vec<String>,
+    pub required_output: String,
+    pub acceptance_checks: Vec<String>,
+    pub stop_conditions: Vec<String>,
+    pub permissions: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -111,6 +123,14 @@ impl DelegationEngine {
             routing,
             requires_parent_review: true,
             effective_tools: work.envelope.tools.iter().cloned().collect(),
+            contract: DelegationContract {
+                objective: work.envelope.goal.clone(),
+                scope: work.envelope.scope.clone(),
+                required_output: work.envelope.expected_result.clone(),
+                acceptance_checks: work.envelope.stop_conditions.clone(),
+                stop_conditions: work.envelope.stop_conditions.clone(),
+                permissions: work.envelope.permissions.iter().cloned().collect(),
+            },
         })
     }
 }
@@ -163,6 +183,11 @@ mod tests {
         assert_eq!(plan.isolation, DelegationIsolation::SafeWorktree);
         assert_eq!(plan.routing.model_id, "codex/account-a/gpt-5.6");
         assert!(plan.requires_parent_review);
+        assert_eq!(plan.contract.objective, "implement parser");
+        assert_eq!(plan.contract.scope, ["src/parser.rs"]);
+        assert_eq!(plan.contract.required_output, "patch and test evidence");
+        assert_eq!(plan.contract.acceptance_checks, ["focused tests pass"]);
+        assert_eq!(plan.contract.permissions, ["workspace.write"]);
     }
 
     #[test]

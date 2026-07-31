@@ -16,6 +16,12 @@ pub enum WorkKind {
     Server,
     Monitor,
     Subagent,
+    Extension,
+    Hook,
+    Mcp,
+    Lsp,
+    Dap,
+    Firstmate,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
@@ -34,6 +40,7 @@ pub enum WorkStatus {
 #[serde(rename_all = "camelCase")]
 pub struct WorkHandle {
     pub id: String,
+    pub component_id: Option<String>,
     pub owner_task_id: String,
     pub owner_run_id: String,
     pub parent_work_id: Option<String>,
@@ -58,11 +65,36 @@ pub struct StartCommand {
     pub timeout_ms: u64,
 }
 
+/// The single process-adapter request used by extension components.  Component
+/// owners describe work; WorkManager alone starts and supervises the process.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StartProcess {
+    pub task_id: String,
+    pub run_id: String,
+    pub kind: WorkKind,
+    pub component_id: Option<String>,
+    pub executable: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub environment: BTreeMap<String, String>,
+    pub cwd: String,
+    pub timeout_ms: u64,
+}
+
 pub struct WorkManager {
     commands: Arc<OrchestrationService>,
+    process_metadata: Mutex<BTreeMap<String, ProcessMetadata>>,
     external: Mutex<BTreeMap<String, WorkHandle>>,
     external_changed: Condvar,
     external_canceller: Mutex<Option<ExternalCanceller>>,
+}
+
+#[derive(Clone)]
+struct ProcessMetadata {
+    kind: WorkKind,
+    component_id: Option<String>,
 }
 
 type ExternalCanceller = Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
@@ -71,6 +103,7 @@ impl WorkManager {
     pub fn new(commands: Arc<OrchestrationService>) -> Self {
         Self {
             commands,
+            process_metadata: Mutex::new(BTreeMap::new()),
             external: Mutex::new(BTreeMap::new()),
             external_changed: Condvar::new(),
             external_canceller: Mutex::new(None),
@@ -83,21 +116,50 @@ impl WorkManager {
     }
 
     pub fn start_command(&self, request: &StartCommand) -> Result<WorkHandle, String> {
+        self.start_process(&StartProcess {
+            task_id: request.task_id.clone(),
+            run_id: request.run_id.clone(),
+            kind: WorkKind::Command,
+            component_id: None,
+            executable: request.executable.clone(),
+            args: request.args.clone(),
+            environment: BTreeMap::new(),
+            cwd: request.cwd.clone(),
+            timeout_ms: request.timeout_ms,
+        })
+    }
+
+    pub fn start_process(&self, request: &StartProcess) -> Result<WorkHandle, String> {
+        if matches!(request.kind, WorkKind::Agent | WorkKind::Subagent) {
+            return Err("agent work must be registered by its owning runtime adapter".to_owned());
+        }
         let timeout = Duration::from_millis(request.timeout_ms);
-        let view = self.commands.start_job(
+        let view = self.commands.start_job_with_environment(
             &request.task_id,
             &request.run_id,
             Path::new(&request.executable),
             &request.args,
             Path::new(&request.cwd),
             timeout,
+            &request.environment,
         )?;
-        Ok(command_handle(view))
+        self.process_metadata.lock().map_err(lock_error)?.insert(
+            view.id.clone(),
+            ProcessMetadata {
+                kind: request.kind,
+                component_id: request.component_id.clone(),
+            },
+        );
+        Ok(process_handle(
+            view,
+            request.kind,
+            request.component_id.clone(),
+        ))
     }
 
     pub fn status(&self, work_id: &str) -> Result<WorkHandle, String> {
         if let Ok(view) = self.commands.job(work_id) {
-            return Ok(command_handle(view));
+            return self.decorate_command(view);
         }
         self.external
             .lock()
@@ -107,9 +169,18 @@ impl WorkManager {
             .ok_or_else(|| "work handle missing".to_owned())
     }
 
+    pub fn write_stdin(&self, work_id: &str, input: &[u8]) -> Result<WorkHandle, String> {
+        self.commands
+            .write_job_stdin(work_id, input)
+            .and_then(|view| self.decorate_command(view))
+    }
+
     pub fn wait(&self, work_id: &str, timeout: Duration) -> Result<WorkHandle, String> {
         if self.commands.job(work_id).is_ok() {
-            return self.commands.wait_job(work_id, timeout).map(command_handle);
+            return self
+                .commands
+                .wait_job(work_id, timeout)
+                .and_then(|view| self.decorate_command(view));
         }
         let deadline = std::time::Instant::now() + timeout;
         let mut external = self.external.lock().map_err(lock_error)?;
@@ -136,7 +207,10 @@ impl WorkManager {
 
     pub fn cancel(&self, work_id: &str) -> Result<WorkHandle, String> {
         if self.commands.job(work_id).is_ok() {
-            return self.commands.cancel_job(work_id).map(command_handle);
+            return self
+                .commands
+                .cancel_job(work_id)
+                .and_then(|view| self.decorate_command(view));
         }
         let current = self
             .external
@@ -196,21 +270,43 @@ impl WorkManager {
             .snapshot()
             .jobs
             .into_iter()
-            .map(command_handle)
-            .collect::<Vec<_>>();
+            .map(|view| self.decorate_command(view))
+            .collect::<Result<Vec<_>, _>>()?;
         handles.extend(self.external.lock().map_err(lock_error)?.values().cloned());
         handles.sort_by_key(|handle| handle.started_at);
         Ok(handles)
     }
+
+    fn decorate_command(&self, view: ManagedJobView) -> Result<WorkHandle, String> {
+        let metadata = self
+            .process_metadata
+            .lock()
+            .map_err(lock_error)?
+            .get(&view.id)
+            .cloned();
+        Ok(match metadata {
+            Some(metadata) => process_handle(view, metadata.kind, metadata.component_id),
+            None => command_handle(view),
+        })
+    }
 }
 
 fn command_handle(view: ManagedJobView) -> WorkHandle {
+    process_handle(view, WorkKind::Command, None)
+}
+
+fn process_handle(
+    view: ManagedJobView,
+    kind: WorkKind,
+    component_id: Option<String>,
+) -> WorkHandle {
     WorkHandle {
         id: view.id,
+        component_id,
         owner_task_id: view.task_id,
         owner_run_id: view.agent_run_id,
         parent_work_id: None,
-        kind: WorkKind::Command,
+        kind,
         status: match view.status {
             ManagedJobStatus::Running => WorkStatus::Running,
             ManagedJobStatus::Completed => WorkStatus::Completed,
@@ -234,8 +330,9 @@ fn lock_error<T>(_: std::sync::PoisonError<T>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{StartCommand, WorkHandle, WorkKind, WorkManager, WorkStatus};
+    use super::{StartCommand, StartProcess, WorkHandle, WorkKind, WorkManager, WorkStatus};
     use crate::orchestration_service::OrchestrationService;
+    use std::collections::BTreeMap;
     use std::fs;
     use std::sync::Arc;
     use std::time::Duration;
@@ -281,6 +378,43 @@ mod tests {
     }
 
     #[test]
+    fn process_adapter_preserves_component_identity_through_terminal_refresh() {
+        let root =
+            std::env::temp_dir().join(format!("picode-work-adapter-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let service = Arc::new(OrchestrationService::open(&root, 1024).unwrap());
+        let manager = WorkManager::new(service);
+        let work = manager
+            .start_process(&StartProcess {
+                task_id: "task-a".into(),
+                run_id: "run-a".into(),
+                kind: WorkKind::Mcp,
+                component_id: Some("memory".into()),
+                executable: std::env::current_exe()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+                args: vec![
+                    "--ignored".into(),
+                    "--exact".into(),
+                    "work_manager::tests::command_fixture".into(),
+                    "--nocapture".into(),
+                ],
+                environment: BTreeMap::new(),
+                cwd: root.to_string_lossy().into_owned(),
+                timeout_ms: 10_000,
+            })
+            .unwrap();
+        let finished = manager.wait(&work.id, Duration::from_secs(10)).unwrap();
+        assert_eq!(finished.kind, WorkKind::Mcp);
+        assert_eq!(finished.component_id.as_deref(), Some("memory"));
+        let snapshot = manager.snapshot().unwrap();
+        assert_eq!(snapshot[0].kind, WorkKind::Mcp);
+        assert_eq!(snapshot[0].component_id.as_deref(), Some("memory"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn external_wait_observes_owner_updates_and_cancel_uses_the_owner_adapter() {
         let root =
             std::env::temp_dir().join(format!("picode-work-external-{}", uuid::Uuid::new_v4()));
@@ -290,6 +424,7 @@ mod tests {
         manager
             .upsert_external(WorkHandle {
                 id: "agent-a".into(),
+                component_id: None,
                 owner_task_id: "task-a".into(),
                 owner_run_id: "agent-a".into(),
                 parent_work_id: None,

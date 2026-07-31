@@ -84,6 +84,12 @@ const checks = [
     args: ["scripts/performance-gate.mjs"],
   },
   {
+    name: "p4-extension-red-gate",
+    executable: node,
+    displayExecutable: "node",
+    args: ["scripts/p4-extension-gate.mjs"],
+  },
+  {
     name: "design-css",
     executable: node,
     displayExecutable: "node",
@@ -142,6 +148,8 @@ const artifact = {
     "orchestration_long_running_child_fixture",
     "extension_crash_fixture",
     "extension_hang_fixture",
+    "mcp_protocol_fixture",
+    "lsp_protocol_fixture",
   ],
   providerUsage: {
     tokens: "unavailable: local gate does not call a model provider",

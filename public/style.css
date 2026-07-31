@@ -6758,15 +6758,28 @@ picode-professional-extensions {
   white-space: nowrap;
 }
 
-.picode-agent-state[data-state="running"] {
+.picode-agent-state[data-state="working"],
+.picode-agent-state[data-state="verifying"] {
   background: #e7f2ed;
   color: #246b55;
 }
 
-.picode-agent-state[data-state="suspectedStall"],
-.picode-agent-state[data-state="unresponsive"] {
+.picode-agent-state[data-state="needsInput"],
+.picode-agent-state[data-state="notCompleted"] {
   background: #f7eee3;
   color: #8a6541;
+}
+
+.picode-work-details {
+  margin-top: var(--space-2);
+  color: var(--text-faint);
+  font-size: var(--font-size-xs);
+}
+
+.picode-work-details summary {
+  width: fit-content;
+  cursor: pointer;
+  user-select: none;
 }
 
 .picode-agent-action {

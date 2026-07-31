@@ -69,7 +69,18 @@ struct SessionRecord {
 pub struct SessionLoad {
     pub descriptor: SessionDescriptor,
     pub events: Vec<SessionEvent>,
+    pub journal_events: Vec<SessionEvent>,
     pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionRewindPreview {
+    pub session_id: String,
+    pub target_sequence: u64,
+    pub current_sequence: u64,
+    pub events_to_hide: usize,
+    pub confirmation: String,
 }
 
 pub struct SessionKernel {
@@ -252,7 +263,8 @@ impl SessionKernel {
             .ok_or_else(|| "Unknown session".to_owned())?;
         Ok(SessionLoad {
             descriptor: record.descriptor.clone(),
-            events: record.events.clone(),
+            events: effective_events(&record.events),
+            journal_events: record.events.clone(),
             warnings: record.warnings.clone(),
         })
     }
@@ -461,7 +473,7 @@ impl SessionKernel {
         descriptor.updated_at = at;
         descriptor.archived = false;
         descriptor.deleted_at = None;
-        let events = source.events.clone();
+        let events = effective_events(&source.events);
         let event_sequences = source.event_sequences.clone();
         let session_dir = self.root.join(new_id);
         fs::create_dir(&session_dir).map_err(|error| format!("Cannot create fork: {error}"))?;
@@ -481,29 +493,62 @@ impl SessionKernel {
         Ok(())
     }
 
-    pub fn rewind(&mut self, session_id: &str, sequence: u64, at: u64) -> Result<(), String> {
+    pub fn preview_rewind(
+        &self,
+        session_id: &str,
+        sequence: u64,
+    ) -> Result<SessionRewindPreview, String> {
         validate_id(session_id)?;
         let record = self
             .sessions
-            .get_mut(session_id)
+            .get(session_id)
             .ok_or_else(|| "Unknown session".to_owned())?;
-        record.events.retain(|event| event.sequence <= sequence);
-        record.event_sequences = record
-            .events
+        let current_sequence = record.events.last().map_or(0, |event| event.sequence);
+        if sequence > current_sequence {
+            return Err("Rewind target is beyond the current session sequence".to_owned());
+        }
+        let events_to_hide = effective_events(&record.events)
             .iter()
-            .map(|event| (event.event_id.clone(), event.sequence))
-            .collect();
-        record.descriptor.updated_at = at;
-        write_events(
-            &self.root.join(session_id).join("events.jsonl"),
-            &record.events,
+            .filter(|event| event.sequence > sequence)
+            .count();
+        Ok(SessionRewindPreview {
+            session_id: session_id.to_owned(),
+            target_sequence: sequence,
+            current_sequence,
+            events_to_hide,
+            confirmation: format!("REWIND {session_id} TO {sequence} FROM {current_sequence}"),
+        })
+    }
+
+    pub fn apply_rewind(
+        &mut self,
+        preview: &SessionRewindPreview,
+        confirmation: &str,
+        at: u64,
+    ) -> Result<(), String> {
+        if confirmation != preview.confirmation {
+            return Err("Session rewind confirmation does not match the preview".to_owned());
+        }
+        let current = self.preview_rewind(&preview.session_id, preview.target_sequence)?;
+        if current.current_sequence != preview.current_sequence
+            || current.events_to_hide != preview.events_to_hide
+        {
+            return Err("Session changed after the rewind preview".to_owned());
+        }
+        self.append(
+            &preview.session_id,
+            SessionEvent {
+                sequence: 0,
+                event_id: format!("rewind-{}", uuid::Uuid::new_v4()),
+                event_type: "rewind".to_owned(),
+                at,
+                payload: serde_json::json!({
+                    "targetSequence": preview.target_sequence,
+                    "hiddenEventCount": preview.events_to_hide,
+                }),
+            },
         )?;
-        write_json_atomic(
-            &self.root.join(session_id).join("session.json"),
-            &record.descriptor,
-        )?;
-        let descriptor = record.descriptor.clone();
-        self.sync_index(&descriptor)
+        Ok(())
     }
 
     fn update_descriptor(
@@ -553,6 +598,20 @@ impl SessionKernel {
             .map_err(|error| format!("Cannot update session index: {error}"))?;
         Ok(())
     }
+}
+
+fn effective_events(journal: &[SessionEvent]) -> Vec<SessionEvent> {
+    let mut active = Vec::new();
+    for event in journal {
+        if event.event_type == "rewind" {
+            if let Some(target) = event.payload.get("targetSequence").and_then(Value::as_u64) {
+                active.retain(|candidate: &SessionEvent| candidate.sequence <= target);
+            }
+            continue;
+        }
+        active.push(event.clone());
+    }
+    active
 }
 
 fn collect_pi_content(
@@ -784,6 +843,56 @@ mod tests {
         assert!(kernel.purge("session-a", "wrong-confirmation").is_err());
         kernel.purge("session-a", "session-a").unwrap();
         assert!(kernel.load("session-a").is_err());
+        drop(kernel);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rewind_is_previewed_and_preserves_the_append_only_audit_journal() {
+        let root =
+            std::env::temp_dir().join(format!("picode-session-rewind-{}", uuid::Uuid::new_v4()));
+        let mut kernel = SessionKernel::open(&root, 1024).unwrap();
+        kernel.create(descriptor()).unwrap();
+        for (id, text) in [("one", "first"), ("two", "second"), ("three", "third")] {
+            kernel
+                .append(
+                    "session-a",
+                    SessionEvent {
+                        sequence: 0,
+                        event_id: id.to_owned(),
+                        event_type: "user_message".to_owned(),
+                        at: 20,
+                        payload: json!({ "text": text }),
+                    },
+                )
+                .unwrap();
+        }
+
+        let preview = kernel.preview_rewind("session-a", 1).unwrap();
+        assert_eq!(preview.events_to_hide, 2);
+        assert!(kernel.apply_rewind(&preview, "wrong", 30).is_err());
+        kernel
+            .apply_rewind(&preview, &preview.confirmation, 30)
+            .unwrap();
+
+        let loaded = kernel.load("session-a").unwrap();
+        assert_eq!(loaded.events.len(), 1);
+        assert_eq!(loaded.journal_events.len(), 4);
+        assert_eq!(loaded.journal_events.last().unwrap().event_type, "rewind");
+        kernel
+            .append(
+                "session-a",
+                SessionEvent {
+                    sequence: 0,
+                    event_id: "after-rewind".to_owned(),
+                    event_type: "user_message".to_owned(),
+                    at: 31,
+                    payload: json!({ "text": "new branch" }),
+                },
+            )
+            .unwrap();
+        assert_eq!(kernel.load("session-a").unwrap().events.len(), 2);
+        assert_eq!(kernel.events_after("session-a", 4).unwrap()[0].sequence, 5);
         drop(kernel);
         fs::remove_dir_all(root).unwrap();
     }

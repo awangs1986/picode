@@ -86,7 +86,20 @@ fn parse_options(args: &[String]) -> Result<HeadlessOptions, String> {
 
 fn control_frame(request: Value, source_port: Option<u16>) -> (String, Value) {
     let request_id = Uuid::new_v4().to_string();
-    let mut args = json!({ "request": request });
+    let command = request
+        .get("command")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or_else(|| "acp_request".into());
+    let mut args = if command == "acp_request" {
+        json!({ "request": request })
+    } else {
+        request
+            .get("args")
+            .cloned()
+            .filter(Value::is_object)
+            .unwrap_or_else(|| json!({}))
+    };
     if let Some(source_port) = source_port {
         args["sourcePort"] = json!(source_port);
     }
@@ -94,7 +107,7 @@ fn control_frame(request: Value, source_port: Option<u16>) -> (String, Value) {
         request_id.clone(),
         json!({
             "type": "broker_control",
-            "command": "acp_request",
+            "command": command,
             "requestId": request_id,
             "args": args,
         }),
@@ -304,5 +317,29 @@ mod tests {
         assert!(options.read_stdin);
         assert!(options.stream);
         assert_eq!(options.stream_timeout_ms, 2500);
+    }
+
+    #[test]
+    fn cli_forwards_the_same_task_control_envelope_used_by_the_gui() {
+        let (_, frame) = control_frame(
+            json!({
+                "command": "task_snapshot",
+                "args": {}
+            }),
+            None,
+        );
+        assert_eq!(frame["command"], "task_snapshot");
+        assert_eq!(frame["args"], json!({}));
+
+        let (_, create) = control_frame(
+            json!({
+                "command": "task_create_simple",
+                "args": { "chatId": "chat-a", "goal": "" }
+            }),
+            Some(47821),
+        );
+        assert_eq!(create["command"], "task_create_simple");
+        assert_eq!(create["args"]["chatId"], "chat-a");
+        assert_eq!(create["args"]["sourcePort"], 47821);
     }
 }

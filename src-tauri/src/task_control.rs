@@ -36,6 +36,13 @@ pub struct AgentCancelTarget {
 }
 
 #[derive(Clone, Debug)]
+pub struct RuntimeEventContext {
+    pub task_id: String,
+    pub parent_id: Option<String>,
+    pub active_run: Option<AgentRun>,
+}
+
+#[derive(Clone, Debug)]
 struct RuntimeRoute {
     task_id: String,
     chat_id: String,
@@ -164,6 +171,38 @@ impl TaskControl {
 
     pub fn task_kind(&self, task_id: &str) -> Result<TaskKind, String> {
         Ok(self.execution.task(task_id)?.kind)
+    }
+
+    pub fn task_chat_id(&self, task_id: &str) -> Result<String, String> {
+        Ok(self.execution.task(task_id)?.chat_id.clone())
+    }
+
+    pub fn runtime_event_context(&self, source_port: u16) -> Option<RuntimeEventContext> {
+        let route = self.runtime_routes.get(&source_port)?;
+        let active_run = self
+            .registry
+            .runs
+            .iter()
+            .rev()
+            .find(|run| {
+                run.task_id == route.task_id
+                    && run.source_port == source_port
+                    && !run.state.is_terminal()
+            })
+            .cloned();
+        Some(RuntimeEventContext {
+            task_id: route.task_id.clone(),
+            parent_id: route.parent_id.clone(),
+            active_run,
+        })
+    }
+
+    pub fn complete_task(&mut self, task_id: &str) -> Result<(), String> {
+        if self.execution.task(task_id)?.status == TaskStatus::Completed {
+            return Ok(());
+        }
+        self.execution.complete_task(task_id)?;
+        self.persist()
     }
 
     /// Records an explicitly invoked imported workflow as a visible Harness
@@ -434,6 +473,17 @@ impl TaskControl {
                     let provider = route.provider.as_deref().unwrap_or(&epoch.provider);
                     let account_id = route.account_id.as_deref().unwrap_or(&epoch.account_id);
                     let model = route.model.as_deref().unwrap_or(&epoch.model);
+                    let continues_from = self
+                        .registry
+                        .runs
+                        .iter()
+                        .rev()
+                        .find(|run| {
+                            run.task_id == route.task_id
+                                && run.parent_id == route.parent_id
+                                && run.state.is_terminal()
+                        })
+                        .map(|run| run.id.clone());
                     let request = if let Some(parent_id) = route.parent_id.as_deref() {
                         StartAgentRun::child(
                             &route.chat_id,
@@ -456,7 +506,8 @@ impl TaskControl {
                             process_id,
                         )
                     }
-                    .on_port(source_port);
+                    .on_port(source_port)
+                    .continues_from(continues_from);
                     Some(self.registry.start(request)?)
                 }
             }
@@ -505,7 +556,6 @@ impl TaskControl {
                     )?;
                     finished = self.registry.get(id).cloned();
                 }
-                self.runtime_routes.remove(&source_port);
                 finished
             }
             _ => None,
@@ -883,10 +933,31 @@ mod tests {
         );
         assert_eq!(observed.current_action, "bash");
 
+        let ended = control
+            .observe_pi_event(
+                47_821,
+                12_345,
+                Some("D:/project/session-a.jsonl"),
+                &serde_json::json!({ "type": "agent_end" }),
+            )
+            .unwrap()
+            .expect("agent_end closes the current Agent Run");
+        let continued = control
+            .observe_pi_event(
+                47_821,
+                12_345,
+                Some("D:/project/session-a.jsonl"),
+                &serde_json::json!({ "type": "agent_start" }),
+            )
+            .unwrap()
+            .expect("a later turn creates a new Agent Run");
+        assert_ne!(continued.id, ended.id);
+        assert_eq!(continued.continues_from.as_deref(), Some(ended.id.as_str()));
+
         control
             .activate_subagent_runtime(
                 &task.id,
-                &run.id,
+                &continued.id,
                 47_822,
                 "deepseek",
                 "account-b",
@@ -902,10 +973,10 @@ mod tests {
             )
             .unwrap()
             .expect("Subagent start creates an attributed child run");
-        assert_eq!(child.parent_id.as_deref(), Some(run.id.as_str()));
+        assert_eq!(child.parent_id.as_deref(), Some(continued.id.as_str()));
         assert_eq!(child.model, "deepseek-search");
 
-        let cancel = control.cancel_target(&run.id).unwrap();
+        let cancel = control.cancel_target(&continued.id).unwrap();
         assert_eq!(cancel.source_port, 47_821);
         assert_eq!(cancel.process_id, 12_345);
         fs::remove_dir_all(root).unwrap();

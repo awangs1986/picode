@@ -178,7 +178,12 @@ export class WsTransport {
       ...(task.taskId ? { taskId: task.taskId } : {}),
       ...(task.model ? { model: task.model } : {}),
       ...(Number.isFinite(task.sourcePort) ? { sourcePort: task.sourcePort } : {}),
+      ...(task.guidance ? { guidance: task.guidance } : {}),
     });
+  }
+
+  decideGuidance(request) {
+    return this._control("guidance_decide", { request });
   }
 
   taskSnapshot() {
@@ -187,6 +192,15 @@ export class WsTransport {
 
   capabilitySnapshot() {
     return this._control("capability_snapshot", {});
+  }
+
+  effectiveCapabilityReport(taskId, rules = [], skills = [], overrides = []) {
+    return this._control("capability_effective_report", {
+      taskId,
+      rules,
+      skills,
+      overrides,
+    });
   }
 
   async listSkills() {
@@ -202,6 +216,26 @@ export class WsTransport {
     return payload.data?.skills || [];
   }
 
+  extensionSnapshot() {
+    return this._control("extension_snapshot", {});
+  }
+
+  syncExtensionSkills(skills) {
+    return this._control("extension_sync_skills", {
+      skills: (skills || []).map((skill, index) => ({
+        id: String(skill.name || skill.command || `skill-${index}`)
+          .toLowerCase()
+          .replace(/[^a-z0-9._-]+/g, "-"),
+        name: skill.name || skill.command || `skill-${index}`,
+        description: skill.description || "",
+        source: skill.source || skill.scope || "runtime",
+        version: skill.version || "runtime",
+        enabled: true,
+        trusted: true,
+      })),
+    });
+  }
+
   setCapabilityTier(id, tier) {
     return this._control("capability_set_tier", { id, tier });
   }
@@ -212,6 +246,10 @@ export class WsTransport {
 
   setFirstmateRoot(path) {
     return this._control("firstmate_set_root", { path });
+  }
+
+  setFirstmateTrusted(trusted) {
+    return this._control("firstmate_set_trusted", { trusted });
   }
 
   openFirstmate() {
@@ -331,6 +369,14 @@ export class WsTransport {
     return this._control("extension_set_trusted", { extensionId, trusted });
   }
 
+  setExtensionComponentEnabled(id, enabled) {
+    return this._control("extension_component_set_enabled", { id, enabled });
+  }
+
+  setExtensionComponentTrusted(id, trusted) {
+    return this._control("extension_component_set_trusted", { id, trusted });
+  }
+
   startProfessionalExtension(extensionId, taskId, agentRunId, timeoutMs) {
     return this._control(
       "extension_start",
@@ -373,6 +419,14 @@ export class WsTransport {
 
   activateMcpServer(serverId, taskId, sourcePort = currentPort(this.env)) {
     return this._control("mcp_activate", { serverId, taskId, sourcePort });
+  }
+
+  setMcpEnabled(serverId, enabled) {
+    return this._control("mcp_set_enabled", { serverId, enabled });
+  }
+
+  setMcpTrusted(serverId, trusted) {
+    return this._control("mcp_set_trusted", { serverId, trusted });
   }
 
   registerProjectAdapter(adapter) {

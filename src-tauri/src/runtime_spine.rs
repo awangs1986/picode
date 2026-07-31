@@ -23,6 +23,11 @@ pub enum RuntimeEventKind {
     WorkUpdated,
     WorkFinished,
     BeforeComplete,
+    CompletionPassed,
+    CompletionBlocked,
+    CompletionRetryRequested,
+    RuntimeCancelled,
+    RuntimeDisconnected,
     CompactionStarted,
     CompactionFinished,
     SessionEnded,
@@ -69,7 +74,13 @@ pub enum RecordOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeSessionState {
+    Starting,
     Running,
+    AwaitingCompletion,
+    WaitingForUser,
+    Completed,
+    Cancelled,
+    Disconnected,
     Reconciling,
     Ended,
 }
@@ -88,6 +99,7 @@ struct SessionEvents {
     next_sequence: u64,
     events: VecDeque<RecordedRuntimeEvent>,
     event_ids: HashSet<String>,
+    projections: HashMap<String, HashSet<String>>,
     state: RuntimeSessionState,
 }
 
@@ -101,9 +113,24 @@ pub struct RuntimeSpine {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "recordType", rename_all = "snake_case")]
 enum SpineLogRecord {
-    Begin { target: RuntimeTarget },
-    Event { event: RecordedRuntimeEvent },
-    End { target: RuntimeTarget },
+    Begin {
+        target: RuntimeTarget,
+    },
+    Event {
+        event: RecordedRuntimeEvent,
+    },
+    Projection {
+        target: RuntimeTarget,
+        event_id: String,
+        projection: String,
+    },
+    State {
+        target: RuntimeTarget,
+        state: RuntimeSessionState,
+    },
+    End {
+        target: RuntimeTarget,
+    },
 }
 
 impl RuntimeSpine {
@@ -155,7 +182,12 @@ impl RuntimeSpine {
             spine.replay_record(record)?;
         }
         for session in spine.sessions.values_mut() {
-            if session.state == RuntimeSessionState::Running {
+            if matches!(
+                session.state,
+                RuntimeSessionState::Starting
+                    | RuntimeSessionState::Running
+                    | RuntimeSessionState::AwaitingCompletion
+            ) {
                 session.state = RuntimeSessionState::Reconciling;
             }
         }
@@ -163,12 +195,7 @@ impl RuntimeSpine {
     }
 
     pub fn begin_session(&mut self, target: RuntimeTarget) -> Result<(), RuntimeSpineError> {
-        if self.sessions.contains_key(&target.instance_id)
-            || self.sessions.values().any(|session| {
-                session.target.workspace_id == target.workspace_id
-                    && session.target.session_id == target.session_id
-            })
-        {
+        if self.sessions.contains_key(&target.instance_id) {
             return Err(RuntimeSpineError::DuplicateSession);
         }
         self.append_log(&SpineLogRecord::Begin {
@@ -181,7 +208,8 @@ impl RuntimeSpine {
                 next_sequence: 1,
                 events: VecDeque::new(),
                 event_ids: HashSet::new(),
-                state: RuntimeSessionState::Running,
+                projections: HashMap::new(),
+                state: RuntimeSessionState::Starting,
             },
         );
         self.compact_if_needed()?;
@@ -227,10 +255,16 @@ impl RuntimeSpine {
         let session = self.session_mut(target)?;
         session.next_sequence = session.next_sequence.saturating_add(1);
         session.event_ids.insert(event.input.event_id.clone());
+        session
+            .projections
+            .entry(event.input.event_id.clone())
+            .or_default();
+        session.state = reduce_state(session.state, event.input.kind);
         session.events.push_back(event.clone());
         while session.events.len() > retained_events {
             if let Some(removed) = session.events.pop_front() {
                 session.event_ids.remove(&removed.input.event_id);
+                session.projections.remove(&removed.input.event_id);
             }
         }
         if event.sequence.is_multiple_of(256) {
@@ -260,6 +294,89 @@ impl RuntimeSpine {
         Ok(self.session(target)?.state)
     }
 
+    pub fn mark_projection(
+        &mut self,
+        target: &RuntimeTarget,
+        event_id: &str,
+        projection: &str,
+    ) -> Result<bool, RuntimeSpineError> {
+        if projection.trim().is_empty() {
+            return Err(RuntimeSpineError::Persistence(
+                "projection name is required".to_owned(),
+            ));
+        }
+        let already_projected = self
+            .session(target)?
+            .projections
+            .get(event_id)
+            .ok_or(RuntimeSpineError::MissingEventId)?
+            .contains(projection);
+        if already_projected {
+            return Ok(false);
+        }
+        self.append_log(&SpineLogRecord::Projection {
+            target: target.clone(),
+            event_id: event_id.to_owned(),
+            projection: projection.to_owned(),
+        })?;
+        self.session_mut(target)?
+            .projections
+            .get_mut(event_id)
+            .ok_or(RuntimeSpineError::MissingEventId)?
+            .insert(projection.to_owned());
+        Ok(true)
+    }
+
+    pub fn has_projection(
+        &self,
+        target: &RuntimeTarget,
+        event_id: &str,
+        projection: &str,
+    ) -> Result<bool, RuntimeSpineError> {
+        Ok(self
+            .session(target)?
+            .projections
+            .get(event_id)
+            .ok_or(RuntimeSpineError::MissingEventId)?
+            .contains(projection))
+    }
+
+    pub fn missing_projections(
+        &self,
+        target: &RuntimeTarget,
+        event_id: &str,
+        required: &[&str],
+    ) -> Result<Vec<String>, RuntimeSpineError> {
+        let completed = self
+            .session(target)?
+            .projections
+            .get(event_id)
+            .ok_or(RuntimeSpineError::MissingEventId)?;
+        Ok(required
+            .iter()
+            .filter(|projection| !completed.contains(**projection))
+            .map(|projection| (*projection).to_owned())
+            .collect())
+    }
+
+    pub fn mark_reconciling(&mut self, target: &RuntimeTarget) -> Result<(), RuntimeSpineError> {
+        self.set_session_state(target, RuntimeSessionState::Reconciling)
+    }
+
+    pub fn set_session_state(
+        &mut self,
+        target: &RuntimeTarget,
+        state: RuntimeSessionState,
+    ) -> Result<(), RuntimeSpineError> {
+        self.session(target)?;
+        self.append_log(&SpineLogRecord::State {
+            target: target.clone(),
+            state,
+        })?;
+        self.session_mut(target)?.state = state;
+        Ok(())
+    }
+
     pub fn end_session(&mut self, target: &RuntimeTarget) -> Result<(), RuntimeSpineError> {
         self.session(target)?;
         self.append_log(&SpineLogRecord::End {
@@ -283,7 +400,8 @@ impl RuntimeSpine {
                         next_sequence: 1,
                         events: VecDeque::new(),
                         event_ids: HashSet::new(),
-                        state: RuntimeSessionState::Running,
+                        projections: HashMap::new(),
+                        state: RuntimeSessionState::Starting,
                     },
                 );
             }
@@ -293,13 +411,33 @@ impl RuntimeSpine {
                 if session.event_ids.insert(event.input.event_id.clone()) {
                     session.next_sequence =
                         session.next_sequence.max(event.sequence.saturating_add(1));
+                    session
+                        .projections
+                        .entry(event.input.event_id.clone())
+                        .or_default();
+                    session.state = reduce_state(session.state, event.input.kind);
                     session.events.push_back(event);
                     while session.events.len() > retained_events {
                         if let Some(removed) = session.events.pop_front() {
                             session.event_ids.remove(&removed.input.event_id);
+                            session.projections.remove(&removed.input.event_id);
                         }
                     }
                 }
+            }
+            SpineLogRecord::Projection {
+                target,
+                event_id,
+                projection,
+            } => {
+                self.session_mut(&target)?
+                    .projections
+                    .get_mut(&event_id)
+                    .ok_or(RuntimeSpineError::MissingEventId)?
+                    .insert(projection);
+            }
+            SpineLogRecord::State { target, state } => {
+                self.session_mut(&target)?.state = state;
             }
             SpineLogRecord::End { target } => {
                 self.session_mut(&target)?.state = RuntimeSessionState::Ended;
@@ -364,7 +502,28 @@ impl RuntimeSpine {
                         event: event.clone(),
                     },
                 )?;
+                if let Some(projections) = session.projections.get(&event.input.event_id) {
+                    let mut projections = projections.iter().collect::<Vec<_>>();
+                    projections.sort();
+                    for projection in projections {
+                        write_log_record(
+                            &mut file,
+                            &SpineLogRecord::Projection {
+                                target: session.target.clone(),
+                                event_id: event.input.event_id.clone(),
+                                projection: projection.clone(),
+                            },
+                        )?;
+                    }
+                }
             }
+            write_log_record(
+                &mut file,
+                &SpineLogRecord::State {
+                    target: session.target.clone(),
+                    state: session.state,
+                },
+            )?;
             if session.state == RuntimeSessionState::Ended {
                 write_log_record(
                     &mut file,
@@ -395,6 +554,44 @@ impl RuntimeSpine {
             .get_mut(&target.instance_id)
             .filter(|session| session.target == *target)
             .ok_or(RuntimeSpineError::UnknownSession)
+    }
+}
+
+fn reduce_state(current: RuntimeSessionState, kind: RuntimeEventKind) -> RuntimeSessionState {
+    if matches!(
+        current,
+        RuntimeSessionState::Completed
+            | RuntimeSessionState::Cancelled
+            | RuntimeSessionState::Disconnected
+            | RuntimeSessionState::Reconciling
+            | RuntimeSessionState::Ended
+    ) {
+        return current;
+    }
+    match kind {
+        RuntimeEventKind::SessionStarted
+        | RuntimeEventKind::PromptSubmitted
+        | RuntimeEventKind::BeforeTool
+        | RuntimeEventKind::ToolFinished
+        | RuntimeEventKind::ToolFailed
+        | RuntimeEventKind::PermissionDenied
+        | RuntimeEventKind::WorkStarted
+        | RuntimeEventKind::WorkUpdated
+        | RuntimeEventKind::WorkFinished
+        | RuntimeEventKind::CompactionStarted
+        | RuntimeEventKind::CompactionFinished => match current {
+            RuntimeSessionState::AwaitingCompletion | RuntimeSessionState::WaitingForUser => {
+                current
+            }
+            _ => RuntimeSessionState::Running,
+        },
+        RuntimeEventKind::BeforeComplete => RuntimeSessionState::AwaitingCompletion,
+        RuntimeEventKind::CompletionPassed => RuntimeSessionState::AwaitingCompletion,
+        RuntimeEventKind::CompletionBlocked => RuntimeSessionState::WaitingForUser,
+        RuntimeEventKind::CompletionRetryRequested => RuntimeSessionState::AwaitingCompletion,
+        RuntimeEventKind::RuntimeCancelled => RuntimeSessionState::Cancelled,
+        RuntimeEventKind::RuntimeDisconnected => RuntimeSessionState::Disconnected,
+        RuntimeEventKind::SessionEnded => RuntimeSessionState::Ended,
     }
 }
 
@@ -455,7 +652,8 @@ fn sanitize_observation_payload(payload: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::{
-        RecordOutcome, RuntimeEventInput, RuntimeEventKind, RuntimeSpine, RuntimeSpineError,
+        RecordOutcome, RuntimeEventInput, RuntimeEventKind, RuntimeSessionState, RuntimeSpine,
+        RuntimeSpineError,
     };
     use crate::runtime_coordinator::RuntimeTarget;
     use serde_json::json;
@@ -588,6 +786,106 @@ mod tests {
         drop(spine);
         let reopened = RuntimeSpine::open(&root, 4096, 8).unwrap();
         assert_eq!(reopened.events_after(&target(), 0).unwrap().len(), 8);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn agent_end_waits_for_an_explicit_completion_decision() {
+        let mut spine = RuntimeSpine::new(1024, 8);
+        spine.begin_session(target()).unwrap();
+        let mut started = event("started", "");
+        started.kind = RuntimeEventKind::SessionStarted;
+        spine.record(&target(), started).unwrap();
+        let mut stopped = event("stopped", "");
+        stopped.kind = RuntimeEventKind::BeforeComplete;
+        spine.record(&target(), stopped).unwrap();
+        assert_eq!(
+            spine.session_state(&target()).unwrap(),
+            RuntimeSessionState::AwaitingCompletion
+        );
+        let mut passed = event("passed", "");
+        passed.kind = RuntimeEventKind::CompletionPassed;
+        spine.record(&target(), passed).unwrap();
+        assert_eq!(
+            spine.session_state(&target()).unwrap(),
+            RuntimeSessionState::AwaitingCompletion
+        );
+        spine
+            .set_session_state(&target(), RuntimeSessionState::Completed)
+            .unwrap();
+        assert_eq!(
+            spine.session_state(&target()).unwrap(),
+            RuntimeSessionState::Completed
+        );
+    }
+
+    #[test]
+    fn one_chat_can_have_sequential_runtime_instances() {
+        let mut spine = RuntimeSpine::new(1024, 8);
+        spine.begin_session(target()).unwrap();
+        spine
+            .begin_session(RuntimeTarget::new("workspace-a", "session-a", "instance-b"))
+            .unwrap();
+    }
+
+    #[test]
+    fn lifecycle_owner_can_retire_a_runtime_instance() {
+        let mut spine = RuntimeSpine::new(1024, 8);
+        spine.begin_session(target()).unwrap();
+        spine.end_session(&target()).unwrap();
+        assert_eq!(
+            spine.session_state(&target()).unwrap(),
+            RuntimeSessionState::Ended
+        );
+    }
+
+    #[test]
+    fn projection_checkpoints_are_idempotent_and_survive_replay() {
+        let root = std::env::temp_dir().join(format!(
+            "picode-runtime-projections-{}",
+            uuid::Uuid::new_v4()
+        ));
+        {
+            let mut spine = RuntimeSpine::open(&root, 1024, 8).unwrap();
+            spine.begin_session(target()).unwrap();
+            spine.record(&target(), event("event-1", "")).unwrap();
+            assert!(spine
+                .mark_projection(&target(), "event-1", "task_control")
+                .unwrap());
+            assert!(!spine
+                .mark_projection(&target(), "event-1", "task_control")
+                .unwrap());
+            assert_eq!(
+                spine
+                    .missing_projections(&target(), "event-1", &["task_control", "work_manager"])
+                    .unwrap(),
+                vec!["work_manager"]
+            );
+        }
+        let spine = RuntimeSpine::open(&root, 1024, 8).unwrap();
+        assert!(spine
+            .has_projection(&target(), "event-1", "task_control")
+            .unwrap());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn projection_failure_state_is_durable() {
+        let root = std::env::temp_dir().join(format!(
+            "picode-runtime-reconciling-{}",
+            uuid::Uuid::new_v4()
+        ));
+        {
+            let mut spine = RuntimeSpine::open(&root, 1024, 8).unwrap();
+            spine.begin_session(target()).unwrap();
+            spine.record(&target(), event("event-1", "")).unwrap();
+            spine.mark_reconciling(&target()).unwrap();
+        }
+        let spine = RuntimeSpine::open(&root, 1024, 8).unwrap();
+        assert_eq!(
+            spine.session_state(&target()).unwrap(),
+            RuntimeSessionState::Reconciling
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 }

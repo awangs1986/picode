@@ -86,6 +86,8 @@ pub struct AgentRun {
     pub epoch_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continues_from: Option<String>,
     pub provider: String,
     pub account_id: String,
     pub model: String,
@@ -110,6 +112,7 @@ pub struct StartAgentRun {
     task_id: String,
     epoch_id: String,
     parent_id: Option<String>,
+    continues_from: Option<String>,
     provider: String,
     account_id: String,
     model: String,
@@ -172,6 +175,7 @@ impl StartAgentRun {
             task_id: task_id.to_owned(),
             epoch_id: epoch_id.to_owned(),
             parent_id,
+            continues_from: None,
             provider: provider.to_owned(),
             account_id: account_id.to_owned(),
             model: model.to_owned(),
@@ -182,6 +186,11 @@ impl StartAgentRun {
 
     pub fn on_port(mut self, source_port: u16) -> Self {
         self.source_port = source_port;
+        self
+    }
+
+    pub fn continues_from(mut self, run_id: Option<String>) -> Self {
+        self.continues_from = run_id;
         self
     }
 }
@@ -216,6 +225,16 @@ impl AgentRunRegistry {
                 return Err("child Agent Run must belong to its parent task".into());
             }
         }
+        if let Some(previous_id) = request.continues_from.as_deref() {
+            let previous = self
+                .get(previous_id)
+                .ok_or_else(|| "continued Agent Run does not exist".to_owned())?;
+            if previous.task_id != request.task_id || !previous.state.is_terminal() {
+                return Err(
+                    "continued Agent Run must be terminal and belong to the same task".into(),
+                );
+            }
+        }
         let now = unix_millis();
         let run = AgentRun {
             id: Uuid::new_v4().to_string(),
@@ -223,6 +242,7 @@ impl AgentRunRegistry {
             task_id: request.task_id,
             epoch_id: request.epoch_id,
             parent_id: request.parent_id,
+            continues_from: request.continues_from,
             provider: request.provider,
             account_id: request.account_id,
             model: request.model,

@@ -4,11 +4,13 @@ use crate::code_intelligence::{CodeIntelligence, CodeLspRequest};
 use crate::completion_engine::{CompletionEngine, CompletionRequest};
 use crate::context_engine::{ContextEngine, ContextItem};
 use crate::delegation_engine::{DelegationEngine, DelegationOptions};
+use crate::extension_manager::ExtensionManager;
+use crate::guidance_policy::{GuidancePolicy, GuidanceRequest};
 use crate::hook_manager::{HookConfig, HookManager};
 use crate::orchestration::{DelegatedWork, RoutingEvaluations, SubagentModelPolicy};
 use crate::pi_manager::PiManager;
 use crate::runtime_coordinator::RuntimeTarget;
-use crate::runtime_spine::{RuntimeEventInput, RuntimeSpine};
+use crate::runtime_spine::RuntimeSpine;
 use crate::task_control::TaskControl;
 use crate::work_manager::WorkManager;
 use serde_json::Value;
@@ -25,6 +27,7 @@ pub struct HarnessV2Router<'a> {
     pub context: &'a Arc<ContextEngine>,
     pub code: &'a Arc<CodeIntelligence>,
     pub hooks: &'a Arc<HookManager>,
+    pub extensions: &'a Arc<ExtensionManager>,
 }
 
 impl HarnessV2Router<'_> {
@@ -32,10 +35,8 @@ impl HarnessV2Router<'_> {
         matches!(
             command,
             "acp_request"
-                | "runtime_spine_begin"
-                | "runtime_spine_record"
                 | "runtime_spine_events"
-                | "runtime_spine_end"
+                | "runtime_spine_state"
                 | "work_snapshot"
                 | "work_status"
                 | "work_wait"
@@ -51,6 +52,7 @@ impl HarnessV2Router<'_> {
                 | "hook_set_enabled"
                 | "hook_set_trusted"
                 | "hook_invoke"
+                | "guidance_decide"
         )
     }
 
@@ -112,27 +114,6 @@ impl HarnessV2Router<'_> {
                 }
                 encode(response, "ACP response")
             }
-            "runtime_spine_begin" => {
-                let target = decode_required(args, "target", "runtime target")?;
-                self.spine
-                    .lock()
-                    .map_err(|_| "Runtime Spine lock is poisoned".to_owned())?
-                    .begin_session(target)
-                    .map_err(|error| format!("Cannot begin runtime session: {error:?}"))?;
-                Ok(Value::Null)
-            }
-            "runtime_spine_record" => {
-                let target: RuntimeTarget = decode_required(args, "target", "runtime target")?;
-                let event: RuntimeEventInput = decode_required(args, "event", "runtime event")?;
-                let recorded = self
-                    .spine
-                    .lock()
-                    .map_err(|_| "Runtime Spine lock is poisoned".to_owned())?
-                    .record(&target, event)
-                    .map_err(|error| format!("Cannot record runtime event: {error:?}"))?
-                    .1;
-                encode(recorded, "runtime event")
-            }
             "runtime_spine_events" => {
                 let target: RuntimeTarget = decode_required(args, "target", "runtime target")?;
                 let cursor = args.get("cursor").and_then(Value::as_u64).unwrap_or(0);
@@ -144,14 +125,15 @@ impl HarnessV2Router<'_> {
                     .map_err(|error| format!("Cannot replay runtime events: {error:?}"))?;
                 encode(events, "runtime events")
             }
-            "runtime_spine_end" => {
+            "runtime_spine_state" => {
                 let target: RuntimeTarget = decode_required(args, "target", "runtime target")?;
-                self.spine
+                let state = self
+                    .spine
                     .lock()
                     .map_err(|_| "Runtime Spine lock is poisoned".to_owned())?
-                    .end_session(&target)
-                    .map_err(|error| format!("Cannot end runtime session: {error:?}"))?;
-                Ok(Value::Null)
+                    .session_state(&target)
+                    .map_err(|error| format!("Cannot read runtime state: {error:?}"))?;
+                encode(state, "runtime state")
             }
             "work_snapshot" => encode(self.work.snapshot()?, "work snapshot"),
             "work_status" => encode(
@@ -216,6 +198,7 @@ impl HarnessV2Router<'_> {
                 )
             }
             "code_lsp_request" => {
+                self.extensions.authorize_catalog_component("rust-lsp")?;
                 let task_id = arg_str("taskId").ok_or("taskId is required")?;
                 let request: CodeLspRequest = decode_required(args, "request", "LSP request")?;
                 let kind = self
@@ -223,13 +206,14 @@ impl HarnessV2Router<'_> {
                     .lock()
                     .map_err(|_| "Task Control lock is poisoned".to_owned())?
                     .task_kind(&task_id)?;
-                let source_port = args
-                    .get("sourcePort")
-                    .and_then(Value::as_u64)
-                    .and_then(|port| u16::try_from(port).ok());
-                let port = crate::resolve_control_port(source_port, self.broker)?;
+                let workspace = self
+                    .task_control
+                    .lock()
+                    .map_err(|_| "Task Control lock is poisoned".to_owned())?
+                    .task_working_dir(&task_id)?;
+                let run_id = arg_str("agentRunId").unwrap_or_else(|| format!("lsp:{task_id}"));
                 self.code
-                    .request_lsp(self.broker, port, kind, &request)
+                    .request_lsp(&task_id, &run_id, &workspace, kind, &request)
                     .await
             }
             "delegation_plan" => {
@@ -254,6 +238,11 @@ impl HarnessV2Router<'_> {
                     DelegationEngine::plan_with_options(&work, &policy, &evaluations, &options)?,
                     "delegation plan",
                 )
+            }
+            "guidance_decide" => {
+                let request: GuidanceRequest =
+                    decode_required(args, "request", "guidance request")?;
+                encode(GuidancePolicy::decide(&request), "guidance decision")
             }
             "hook_list" => encode(self.hooks.list()?, "hooks"),
             "hook_install" => {
@@ -311,8 +300,11 @@ mod tests {
 
     #[test]
     fn router_owns_the_harness_v2_surface_but_not_account_commands() {
-        assert!(HarnessV2Router::owns("runtime_spine_record"));
+        assert!(HarnessV2Router::owns("runtime_spine_events"));
+        assert!(HarnessV2Router::owns("runtime_spine_state"));
+        assert!(!HarnessV2Router::owns("runtime_spine_record"));
         assert!(HarnessV2Router::owns("code_lsp_request"));
+        assert!(HarnessV2Router::owns("guidance_decide"));
         assert!(!HarnessV2Router::owns("account_list"));
     }
 }

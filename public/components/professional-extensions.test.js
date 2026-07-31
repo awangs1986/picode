@@ -10,21 +10,54 @@ describe("picode-professional-extensions", () => {
 
   it("loads only state and requires manual selective import and enablement", async () => {
     const transport = {
-      taskSnapshot: vi.fn(async () => ({
-        extensions: {
-          installations: [
-            {
-              id: "review",
-              schemaVersion: 1,
-              permissions: ["workspaceRead"],
-              enabled: false,
-            },
-          ],
-          runs: [],
-          imports: [],
-          mcpConfigs: [],
-          residentProcessCount: 0,
-        },
+      extensionSnapshot: vi.fn(async () => ({
+        installations: [
+          {
+            id: "review",
+            schemaVersion: 1,
+            permissions: ["workspaceRead"],
+            enabled: false,
+          },
+        ],
+        runs: [],
+        imports: [],
+        mcpConfigs: [],
+        residentProcessCount: 0,
+        firstmate: { enabled: false, trusted: false, root: null },
+        skills: [
+          {
+            id: "tdd",
+            name: "tdd",
+            description: "Test-driven development",
+            source: "git:github.com/mattpocock/skills",
+            enabled: true,
+            trusted: true,
+          },
+          {
+            id: "grill-with-docs",
+            name: "grill-with-docs",
+            description: "Planning interview",
+            source: "git:github.com/mattpocock/skills",
+            enabled: true,
+            trusted: true,
+          },
+        ],
+        catalogComponents: [{ id: "rust-lsp", kind: "lsp", enabled: true, trusted: false }],
+        components: [
+          {
+            id: "rust-lsp",
+            kind: "lsp",
+            state: "enabled",
+            source: "builtin:picode",
+            version: "2",
+            license: "MIT",
+            permissions: ["workspace.read", "process.exec"],
+            taskBindings: ["task-a"],
+            runningProcesses: [],
+            lastError: "server stopped",
+            modelDiscoverable: true,
+          },
+        ],
       })),
       capabilitySnapshot: vi.fn(async () => ({
         capabilities: [
@@ -51,7 +84,7 @@ describe("picode-professional-extensions", () => {
           origin: "package",
         },
       ]),
-      firstmateStatus: vi.fn(async () => ({ enabled: false, available: false, root: null })),
+      syncExtensionSkills: vi.fn(async () => ({})),
       setCapabilityTier: vi.fn(async () => ({})),
       pickFolder: vi.fn(async () => "D:\\game"),
       setFirstmateRoot: vi.fn(async () => ({})),
@@ -70,6 +103,23 @@ describe("picode-professional-extensions", () => {
       applyExternalCapabilityImport: vi.fn(async () => []),
       setProfessionalExtensionEnabled: vi.fn(async () => ({})),
       setProfessionalExtensionTrusted: vi.fn(async () => ({})),
+      setExtensionComponentEnabled: vi.fn(async () => ({})),
+      setExtensionComponentTrusted: vi.fn(async () => ({})),
+      effectiveCapabilityReport: vi.fn(async () => ({
+        residentCore: ["conversation", "task-control"],
+        capabilities: [
+          {
+            id: "task-build",
+            promptVisible: true,
+            activeForTask: true,
+            loaded: false,
+            provenance: "TOOLS.md task binding",
+          },
+        ],
+        rules: [{ id: "AGENTS.md", provenance: "workspace/AGENTS.md", active: true }],
+        skills: [],
+        overrides: [],
+      })),
     };
     const Panel = customElements.get("picode-professional-extensions");
     const panel = new Panel();
@@ -77,7 +127,7 @@ describe("picode-professional-extensions", () => {
     document.body.appendChild(panel);
     await panel.refresh();
 
-    expect(transport.taskSnapshot).toHaveBeenCalled();
+    expect(transport.extensionSnapshot).toHaveBeenCalled();
     expect(transport.capabilitySnapshot).toHaveBeenCalled();
     expect(transport.listSkills).toHaveBeenCalled();
     expect(transport.previewExternalCapabilityImport).not.toHaveBeenCalled();
@@ -91,6 +141,28 @@ describe("picode-professional-extensions", () => {
     expect(panel.querySelectorAll(".picode-skill-bundle .picode-skill-row")).toHaveLength(2);
     expect(panel.querySelector('[data-capability="firstmate-crew-orchestrator"]')).not.toBeNull();
     expect(panel.querySelector("[data-firstmate-pick-root]")).not.toBeNull();
+    expect(panel.querySelector('[data-component="rust-lsp"]')?.textContent).toContain(
+      "builtin:picode @ 2",
+    );
+    expect(panel.querySelector('[data-component="rust-lsp"]')?.textContent).toContain(
+      "server stopped",
+    );
+    expect(panel.querySelector('[data-component-trust="rust-lsp"]')).not.toBeNull();
+
+    panel.querySelector("[data-effective-task]").value = "task-a";
+    panel.querySelector("[data-effective-report]").click();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(transport.effectiveCapabilityReport).toHaveBeenCalledWith(
+      "task-a",
+      [],
+      expect.arrayContaining([
+        expect.objectContaining({ id: "tdd", provenance: "git:github.com/mattpocock/skills" }),
+      ]),
+      [],
+    );
+    expect(panel.querySelector("[data-effective-output]").textContent).toContain("task-build");
+    expect(panel.querySelector("[data-effective-output]").textContent).toContain("AGENTS.md");
 
     const tier = panel.querySelector('[data-capability-tier="firstmate-crew-orchestrator"]');
     tier.value = "discoverable";
@@ -124,7 +196,7 @@ describe("picode-professional-extensions", () => {
 
   it("still renders optional capabilities when the task snapshot is unavailable", async () => {
     const transport = {
-      taskSnapshot: vi.fn(async () => {
+      extensionSnapshot: vi.fn(async () => {
         throw new Error("task snapshot timed out");
       }),
       capabilitySnapshot: vi.fn(async () => ({

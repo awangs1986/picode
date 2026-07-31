@@ -147,6 +147,12 @@ describe("picode-runtime-monitor", () => {
     expect(monitor.querySelectorAll('[data-pi-subagent="async-1"]')).toHaveLength(1);
     expect(monitor.textContent).toContain("Inspect then implement");
     expect(monitor.textContent).toContain("Manage with /subagents");
+    expect(
+      monitor.querySelector('[data-agent-run="run-main"] .picode-agent-state').textContent,
+    ).toBe("Working");
+    expect(monitor.querySelector('[data-agent-run="run-main"] .picode-work-details').open).toBe(
+      false,
+    );
     expect(monitor.querySelectorAll("[data-tool-runtime]")).toHaveLength(3);
     expect(monitor.textContent).toContain("JavaScript Eval");
     monitor.querySelector('[data-cancel-extension="extension-a"]').click();

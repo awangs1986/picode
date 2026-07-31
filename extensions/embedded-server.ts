@@ -29,7 +29,7 @@
  *   `PI_STUDIO_PI_VERSION` env var.
  */
 
-import { execFile, execFileSync, spawn } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as http from "node:http";
 import * as os from "node:os";
@@ -382,373 +382,16 @@ async function runMcpHttpRequest(
   return response?.result;
 }
 
-async function runMcpStdioRequest(
-  config: McpClientContext,
-  method: string,
-  params: unknown,
-  signal?: AbortSignal,
-): Promise<unknown> {
-  if (!config.command) throw new Error("stdio MCP requires a command");
-  const child = spawn(config.command, config.arguments, {
-    cwd: process.cwd(),
-    env: { ...process.env, ...config.environment },
-    shell: false,
-    windowsHide: true,
-    stdio: ["pipe", "pipe", "pipe"],
-  });
-  const pending = new Map<
-    number,
-    { resolve: (value: unknown) => void; reject: (error: Error) => void }
-  >();
-  let buffer = "";
-  let outputBytes = 0;
-  let stderr = "";
-  const rejectAll = (error: Error) => {
-    for (const waiter of pending.values()) waiter.reject(error);
-    pending.clear();
-  };
-  const abort = () => {
-    rejectAll(new Error("MCP request was cancelled"));
-    child.kill();
-  };
-  signal?.addEventListener("abort", abort, { once: true });
-  child.once("error", (error) => rejectAll(new Error(`start MCP process: ${error.message}`)));
-  child.stderr?.on("data", (chunk: Buffer) => {
-    outputBytes += chunk.length;
-    stderr = `${stderr}${chunk.toString("utf8")}`.slice(-16 * 1024);
-    if (outputBytes > 4 * 1024 * 1024) abort();
-  });
-  child.stdout?.on("data", (chunk: Buffer) => {
-    outputBytes += chunk.length;
-    if (outputBytes > 4 * 1024 * 1024) {
-      rejectAll(new Error("MCP output exceeds 4 MiB"));
-      child.kill();
-      return;
-    }
-    buffer += chunk.toString("utf8");
-    while (buffer.includes("\n")) {
-      const newline = buffer.indexOf("\n");
-      const line = buffer.slice(0, newline).trim();
-      buffer = buffer.slice(newline + 1);
-      if (!line) continue;
-      let response: McpJsonRpcResponse;
-      try {
-        response = JSON.parse(line);
-      } catch {
-        continue;
-      }
-      if (typeof response.id !== "number") continue;
-      const waiter = pending.get(response.id);
-      if (!waiter) continue;
-      pending.delete(response.id);
-      if (response.error) waiter.reject(new Error(response.error.message || "MCP request failed"));
-      else waiter.resolve(response.result);
-    }
-  });
-  const send = (payload: unknown) => child.stdin?.write(`${JSON.stringify(payload)}\n`);
-  const request = (id: number, requestMethod: string, requestParams: unknown) =>
-    new Promise<unknown>((resolve, reject) => {
-      pending.set(id, { resolve, reject });
-      send({ jsonrpc: "2.0", id, method: requestMethod, params: requestParams });
-    });
-  let timer: NodeJS.Timeout | undefined;
-  try {
-    const protocol = (async () => {
-      await request(1, "initialize", {
-        protocolVersion: "2025-11-25",
-        capabilities: {},
-        clientInfo: { name: "Picode", version: "1" },
-      });
-      send({ jsonrpc: "2.0", method: "notifications/initialized", params: {} });
-      return request(2, method, params);
-    })();
-    return await Promise.race([
-      protocol,
-      new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new Error("MCP request timed out after 30000ms")), 30_000);
-      }),
-    ]);
-  } catch (error) {
-    const detail = stderr.trim() ? `: ${stderr.trim()}` : "";
-    throw new Error(`${error instanceof Error ? error.message : String(error)}${detail}`);
-  } finally {
-    if (timer) clearTimeout(timer);
-    signal?.removeEventListener("abort", abort);
-    rejectAll(new Error("MCP session closed"));
-    if (!child.killed) child.kill();
-  }
-}
-
 export async function runScopedMcpRequest(
   config: McpClientContext,
   method: "tools/list" | "tools/call",
   params: unknown,
   signal?: AbortSignal,
 ): Promise<unknown> {
-  return config.transport === "stdio"
-    ? runMcpStdioRequest(config, method, params, signal)
-    : runMcpHttpRequest(config, method, params, signal);
-}
-
-type ScopedLspRequest = {
-  command: string;
-  args: string[];
-  cwd: string;
-  method: string;
-  params: unknown;
-  timeoutMs: number;
-  maxOutputBytes: number;
-  notifications?: Array<{ method: string; params: unknown }>;
-  signal?: AbortSignal;
-};
-
-type LspResponse = { id?: number; result?: unknown; error?: { message?: string } };
-
-export async function runScopedLspRequest(options: ScopedLspRequest): Promise<unknown> {
-  const command = options.command.trim();
-  if (
-    !command ||
-    /[|&;<>()`\r\n]/.test(command) ||
-    /\s(?:\/c|-c)\s/i.test(command) ||
-    /^(?:cmd|powershell|pwsh|sh|bash)\s/i.test(command)
-  ) {
-    throw new Error("LSP command must be a single executable, never a shell expression");
+  if (config.transport === "stdio") {
+    throw new Error("stdio MCP lifecycle belongs to the native WorkManager adapter");
   }
-  if (!path.isAbsolute(options.cwd) || !fs.statSync(options.cwd).isDirectory()) {
-    throw new Error("LSP cwd must be an existing absolute workspace directory");
-  }
-  const maxOutputBytes = Math.max(1024, Math.min(4 * 1024 * 1024, options.maxOutputBytes));
-  const timeoutMs = Math.max(100, Math.min(30_000, options.timeoutMs));
-  const child = spawn(command, options.args, {
-    cwd: options.cwd,
-    shell: false,
-    windowsHide: true,
-    stdio: ["pipe", "pipe", "pipe"],
-  });
-  const stdout = child.stdout;
-  const stdin = child.stdin;
-  if (!stdout || !stdin) {
-    child.kill();
-    throw new Error("LSP process did not expose protocol streams");
-  }
-  // A compliant server may close immediately after the `exit` notification;
-  // suppress the expected late EPIPE from Node's buffered stdin writes.
-  stdin.on("error", () => {});
-
-  let buffer = Buffer.alloc(0);
-  let stderr = "";
-  let totalOutput = 0;
-  let protocolFailure: Error | null = null;
-  const pending = new Map<
-    number,
-    { resolve: (value: unknown) => void; reject: (error: Error) => void }
-  >();
-
-  const rejectAll = (error: Error) => {
-    for (const waiter of pending.values()) waiter.reject(error);
-    pending.clear();
-  };
-  const abortHandler = () => {
-    const error = new Error("LSP request was cancelled");
-    rejectAll(error);
-    child.kill();
-  };
-  options.signal?.addEventListener("abort", abortHandler, { once: true });
-  child.on("error", (error) => rejectAll(new Error(`start LSP process: ${error.message}`)));
-  child.stderr?.on("data", (chunk: Buffer) => {
-    totalOutput += chunk.length;
-    stderr = `${stderr}${chunk.toString("utf8")}`.slice(-16 * 1024);
-    if (totalOutput > maxOutputBytes && !protocolFailure) {
-      protocolFailure = new Error("LSP output exceeds configured limit");
-      rejectAll(protocolFailure);
-      child.kill();
-    }
-  });
-  stdout.on("data", (chunk: Buffer) => {
-    totalOutput += chunk.length;
-    if (totalOutput > maxOutputBytes && !protocolFailure) {
-      protocolFailure = new Error("LSP output exceeds configured limit");
-      rejectAll(protocolFailure);
-      child.kill();
-      return;
-    }
-    buffer = Buffer.concat([buffer, chunk]);
-    while (true) {
-      const headerEnd = buffer.indexOf("\r\n\r\n");
-      if (headerEnd < 0) return;
-      const header = buffer.subarray(0, headerEnd).toString("utf8");
-      const length = Number(/Content-Length:\s*(\d+)/i.exec(header)?.[1]);
-      if (!Number.isSafeInteger(length) || length < 0 || length > maxOutputBytes) {
-        protocolFailure = new Error("LSP response has an invalid or excessive Content-Length");
-        rejectAll(protocolFailure);
-        child.kill();
-        return;
-      }
-      const frameEnd = headerEnd + 4 + length;
-      if (buffer.length < frameEnd) return;
-      let response: LspResponse;
-      try {
-        response = JSON.parse(buffer.subarray(headerEnd + 4, frameEnd).toString("utf8"));
-      } catch {
-        protocolFailure = new Error("LSP returned invalid JSON");
-        rejectAll(protocolFailure);
-        child.kill();
-        return;
-      }
-      buffer = buffer.subarray(frameEnd);
-      if (typeof response.id !== "number") continue;
-      const waiter = pending.get(response.id);
-      if (!waiter) continue;
-      pending.delete(response.id);
-      if (response.error) waiter.reject(new Error(response.error.message || "LSP request failed"));
-      else waiter.resolve(response.result);
-    }
-  });
-
-  const send = (payload: unknown) => {
-    const body = Buffer.from(JSON.stringify(payload));
-    stdin.write(`Content-Length: ${body.length}\r\n\r\n`);
-    stdin.write(body);
-  };
-  const request = (id: number, method: string, params: unknown) => {
-    const response = new Promise<unknown>((resolve, reject) => {
-      pending.set(id, { resolve, reject });
-    });
-    send({ jsonrpc: "2.0", id, method, params });
-    return response;
-  };
-
-  const protocol = (async () => {
-    await request(1, "initialize", {
-      processId: process.pid,
-      rootUri: pathToFileUrl(options.cwd),
-      capabilities: {},
-      clientInfo: { name: "Picode", version: "1" },
-    });
-    send({ jsonrpc: "2.0", method: "initialized", params: {} });
-    for (const notification of options.notifications ?? []) {
-      send({ jsonrpc: "2.0", method: notification.method, params: notification.params });
-    }
-    const result = await request(2, options.method, options.params);
-    await request(3, "shutdown", null);
-    send({ jsonrpc: "2.0", method: "exit" });
-    return result;
-  })();
-  let timer: NodeJS.Timeout | undefined;
-  try {
-    return await Promise.race([
-      protocol,
-      new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(
-          () => reject(new Error(`LSP request timed out after ${timeoutMs}ms`)),
-          timeoutMs,
-        );
-      }),
-    ]);
-  } catch (error) {
-    if (protocolFailure) throw protocolFailure;
-    const detail = stderr.trim() ? `: ${stderr.trim()}` : "";
-    throw new Error(`${error instanceof Error ? error.message : String(error)}${detail}`);
-  } finally {
-    options.signal?.removeEventListener("abort", abortHandler);
-    if (timer) clearTimeout(timer);
-    rejectAll(new Error("LSP session closed"));
-    if (!child.killed) child.kill();
-  }
-}
-
-function pathToFileUrl(value: string): string {
-  const normalized = value.replace(/\\/g, "/");
-  return encodeURI(normalized.startsWith("/") ? `file://${normalized}` : `file:///${normalized}`);
-}
-
-function languageServerCommand(language: string): { command: string; args: string[] } | null {
-  switch (language) {
-    case "rust":
-      return { command: "rust-analyzer", args: [] };
-    case "typescript":
-    case "javascript":
-      return { command: "typescript-language-server", args: ["--stdio"] };
-    case "python":
-      return { command: "pyright-langserver", args: ["--stdio"] };
-    case "csharp":
-      return { command: "csharp-ls", args: [] };
-    case "cpp":
-    case "c":
-      return { command: "clangd", args: [] };
-    default:
-      return null;
-  }
-}
-
-function lspMethod(operation: string): string | null {
-  switch (operation) {
-    case "hover":
-      return "textDocument/hover";
-    case "definition":
-      return "textDocument/definition";
-    case "references":
-      return "textDocument/references";
-    case "documentSymbols":
-      return "textDocument/documentSymbol";
-    default:
-      return null;
-  }
-}
-
-async function executePicodeLspRequest(
-  rawParams: Record<string, unknown>,
-  cwd: string,
-  signal?: AbortSignal,
-) {
-  signal?.throwIfAborted?.();
-  const language = typeof rawParams.language === "string" ? rawParams.language : "";
-  const operation = typeof rawParams.operation === "string" ? rawParams.operation : "";
-  const requestedPath = typeof rawParams.path === "string" ? rawParams.path : "";
-  const server = languageServerCommand(language);
-  if (!server) throw new Error(`No Picode LSP adapter is configured for ${language || "unknown"}`);
-  const root = fs.realpathSync(cwd || process.cwd());
-  const file = fs.realpathSync(path.resolve(root, requestedPath));
-  const relative = path.relative(root, file);
-  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
-    throw new Error("LSP source file must stay inside the current workspace");
-  }
-  const method = lspMethod(operation);
-  if (!method) throw new Error(`Unsupported LSP operation: ${operation}`);
-  const source = fs.readFileSync(file, "utf8");
-  if (Buffer.byteLength(source) > 1024 * 1024) {
-    throw new Error("LSP source file exceeds the 1 MiB model-facing limit");
-  }
-  const uri = pathToFileUrl(file);
-  const position = {
-    line: Math.max(0, Number(rawParams.line || 1) - 1),
-    character: Math.max(0, Number(rawParams.character || 1) - 1),
-  };
-  const params =
-    operation === "documentSymbols"
-      ? { textDocument: { uri } }
-      : operation === "references"
-        ? { textDocument: { uri }, position, context: { includeDeclaration: true } }
-        : { textDocument: { uri }, position };
-  const result = await runScopedLspRequest({
-    command: server.command,
-    args: server.args,
-    cwd: root,
-    method,
-    params,
-    notifications: [
-      {
-        method: "textDocument/didOpen",
-        params: {
-          textDocument: { uri, languageId: language, version: 1, text: source },
-        },
-      },
-    ],
-    timeoutMs: 15_000,
-    maxOutputBytes: 2 * 1024 * 1024,
-    signal,
-  });
-  return { result, language, operation, path: relative.replace(/\\/g, "/") };
+  return runMcpHttpRequest(config, method, params, signal);
 }
 
 function findPublicDir(): string {
@@ -2682,12 +2325,15 @@ export default function (pi: ExtensionAPI) {
       "Start one known language server only for the current workspace request, return a bounded navigation result, then stop it.",
     promptSnippet: "Request scoped language-server navigation after discovering an LSP capability.",
     parameters: lspParameters,
-    async execute(_toolCallId, rawParams, signal, _onUpdate, ctx) {
-      const response = await executePicodeLspRequest(
-        rawParams as unknown as Record<string, unknown>,
-        ctx.cwd || process.cwd(),
-        signal,
-      );
+    async execute(_toolCallId, rawParams, signal) {
+      const taskId = globalState.taskCapabilityContext?.taskId;
+      if (!taskId) throw new Error("No active Picode task is bound to this Pi process");
+      const agentRunId = await activeAgentRunForTask(taskId, signal);
+      const response = (await callBrokerControl(
+        "code_lsp_request",
+        { taskId, agentRunId, request: rawParams },
+        { signal, timeoutMs: 20_000 },
+      )) as { result: unknown; language: string; operation: string; path: string };
       const encoded = JSON.stringify(response.result, null, 2);
       const bounded =
         encoded.length > 64 * 1024 ? `${encoded.slice(0, 64 * 1024)}\n… truncated` : encoded;
@@ -3094,7 +2740,7 @@ export default function (pi: ExtensionAPI) {
     name: "picode_mcp",
     label: "Picode MCP",
     description:
-      "List or call tools on an MCP server that the user explicitly imported and enabled for this exact task. Each stdio request uses a bounded one-shot child process.",
+      "List or call tools on an MCP server that the user explicitly imported and enabled for this exact task. Native WorkManager owns every stdio process.",
     promptSnippet: "Use an explicitly enabled task MCP server by server ID.",
     parameters: mcpParameters,
     async execute(_toolCallId, rawParams, signal) {
@@ -3113,14 +2759,25 @@ export default function (pi: ExtensionAPI) {
       if (params.action === "call" && !params.toolName?.trim()) {
         throw new Error("MCP toolName is required for call");
       }
-      const result = await runScopedMcpRequest(
-        config,
-        params.action === "call" ? "tools/call" : "tools/list",
+      const method = params.action === "call" ? "tools/call" : "tools/list";
+      const requestParams =
         params.action === "call"
           ? { name: params.toolName, arguments: params.arguments || {} }
-          : {},
-        signal,
-      );
+          : {};
+      const result =
+        config.transport === "stdio"
+          ? await callBrokerControl(
+              "mcp_tool_request",
+              {
+                serverId: config.serverId,
+                taskId: config.taskId,
+                agentRunId: await activeAgentRunForTask(config.taskId, signal),
+                method,
+                params: requestParams,
+              },
+              { signal, timeoutMs: 35_000 },
+            )
+          : await runScopedMcpRequest(config, method, requestParams, signal);
       const encoded = JSON.stringify(result, null, 2);
       return {
         content: [
@@ -3646,31 +3303,6 @@ export default function (pi: ExtensionAPI) {
               .filter((tool) => subagentToolAllowed(context, tool)),
           );
           sendTo(ws, success("picode_subagent_context", { parentRunId: context.parentRunId }));
-          break;
-        }
-
-        case "picode_lsp_request": {
-          if (!ctx) {
-            sendTo(ws, error("picode_lsp_request", "No active workspace context"));
-            break;
-          }
-          try {
-            const response = await executePicodeLspRequest(
-              command as unknown as Record<string, unknown>,
-              ctx.cwd || process.cwd(),
-            );
-            const encoded = JSON.stringify(response.result);
-            if (Buffer.byteLength(encoded) > 64 * 1024) {
-              sendTo(
-                ws,
-                error("picode_lsp_request", "LSP result exceeds the 64 KiB control limit"),
-              );
-              break;
-            }
-            sendTo(ws, success("picode_lsp_request", response));
-          } catch (cause) {
-            sendTo(ws, error("picode_lsp_request", errMessage(cause)));
-          }
           break;
         }
 

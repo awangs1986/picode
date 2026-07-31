@@ -18,9 +18,9 @@ mod context_engine;
 mod delegation_engine;
 mod execution;
 mod execution_store;
-mod extension_host;
 mod extension_manager;
 mod extension_service;
+mod guidance_policy;
 mod harness;
 mod harness_service;
 mod harness_v2_router;
@@ -38,6 +38,7 @@ mod pi_rpc_bridge;
 mod remote_auth;
 mod resource_sampler;
 mod runtime_coordinator;
+mod runtime_lifecycle;
 mod runtime_registry;
 mod runtime_spine;
 mod safe_files;
@@ -45,6 +46,7 @@ mod secrets;
 mod session_kernel;
 mod settings_store;
 mod task_control;
+mod task_experience_service;
 mod work_manager;
 
 use account_binding::AccountBindingStore;
@@ -53,7 +55,7 @@ use account_vault::AccountVault;
 use acp_adapter::AcpAdapter;
 use broker_ws::BrokerWs;
 use capability::CapabilityTier;
-use capability_service::CapabilityService;
+use capability_service::{CapabilityService, EffectiveSource};
 use chat_backup::{BackupSelectionFlags, ChatBackupService};
 use chat_migration::ChatMigrationService;
 use code_intelligence::CodeIntelligence;
@@ -65,8 +67,9 @@ use execution::TaskKind;
 use extension_manager::ExtensionManager;
 use extension_service::{
     DapLaunchConfig, DiagnosticFinding, ExtensionManifest, ExtensionScope, ExternalSource,
-    ProjectAdapter, RegressionMetrics, RegressionScenario,
+    ManagedCatalogComponent, ManagedSkill, ProjectAdapter, RegressionMetrics, RegressionScenario,
 };
+use guidance_policy::{GuidanceMode, GuidancePolicy, GuidanceRequest, ModelGuidanceProfile};
 use harness_service::HarnessService;
 use harness_v2_router::HarnessV2Router;
 use hook_manager::HookManager;
@@ -80,31 +83,33 @@ use pi_manager::{
     locked_pi_version, wait_for_endpoint, wait_for_health as wait_for_pi_health, PiManager,
 };
 use remote_auth::RemoteAuth;
-use resource_sampler::ProcessSampler;
 use runtime_coordinator::RuntimeTarget;
-use runtime_spine::{RuntimeEventInput, RuntimeEventKind, RuntimeSpine, RuntimeSpineError};
+use runtime_spine::RuntimeSpine;
 use secrets::{SecretReference, SecretStore};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use task_control::TaskControl;
+use task_experience_service::{
+    AccountSelection, CreateTask, TaskExperienceService, TaskTarget, TaskTransition,
+};
 use tauri::image::Image;
 #[cfg(target_os = "macos")]
 use tauri::TitleBarStyle;
 use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_dialog::MessageDialogKind;
-use work_manager::{WorkHandle, WorkKind, WorkManager, WorkStatus};
+use work_manager::WorkManager;
 use zeroize::Zeroize;
 
 type PiManagerState = Arc<PiManager>;
 type BrokerWsState = Arc<BrokerWs>;
 type NativePiManagerState = NativePiManager;
 type TaskControlState = Arc<Mutex<TaskControl>>;
+type TaskExperienceState = Arc<TaskExperienceService>;
 type CapabilityServiceState = Arc<Mutex<CapabilityService>>;
 type OrchestrationServiceState = Arc<OrchestrationService>;
 type ExtensionServiceState = Arc<ExtensionManager>;
@@ -828,11 +833,8 @@ fn find_static_dir(app: &tauri::App) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        extract_subagent_candidate, observe_runtime_spine_event, provider_model_urls,
-        resolve_static_dir,
-    };
-    use crate::runtime_spine::{RuntimeEventKind, RuntimeSpine};
+    use super::{provider_model_urls, resolve_static_dir};
+    use crate::runtime_lifecycle::extract_subagent_candidate;
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -899,37 +901,6 @@ mod tests {
             }
         }));
         assert_eq!(result, "candidate");
-    }
-
-    #[test]
-    fn pi_events_are_recorded_in_the_runtime_spine_without_a_manual_control_call() {
-        let root = unique_temp_dir("runtime-spine-observer");
-        let spine = std::sync::Arc::new(std::sync::Mutex::new(
-            RuntimeSpine::open(&root, 4096, 32).unwrap(),
-        ));
-        let event = serde_json::json!({
-            "event": { "type": "agent_start", "id": "agent-event-a" }
-        });
-        observe_runtime_spine_event(
-            &spine,
-            47821,
-            42,
-            Some("session-a"),
-            Some("workspace-a"),
-            Some("task-a"),
-            &event,
-        )
-        .unwrap();
-        let target = crate::runtime_coordinator::RuntimeTarget::new(
-            "workspace-a",
-            "session-a",
-            "pi-47821-42",
-        );
-        let events = spine.lock().unwrap().events_after(&target, 0).unwrap();
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].input.kind, RuntimeEventKind::SessionStarted);
-        assert_eq!(events[0].input.task_id.as_deref(), Some("task-a"));
-        fs::remove_dir_all(root).unwrap();
     }
 }
 
@@ -1342,418 +1313,21 @@ fn install_task_runtime_observer(
     hook_manager: HookManagerState,
     completion_coordinator: CompletionCoordinatorState,
 ) {
-    let event_manager = manager.clone();
-    let event_control = task_control.clone();
-    let event_broker = broker.clone();
-    let event_extensions = extension_service.clone();
-    let event_work = work_manager.clone();
-    let event_sessions = session_kernel.clone();
-    let event_spine = runtime_spine.clone();
-    let event_harness = harness_service.clone();
-    let event_hooks = hook_manager.clone();
-    let event_completion = completion_coordinator.clone();
-    broker.set_upstream_event_observer(Arc::new(move |source_port, payload| {
-        let Some(process_id) = event_manager.process_id(source_port) else {
-            return;
-        };
-        let session_id = payload
-            .get("sessionId")
-            .and_then(Value::as_str)
-            .or_else(|| payload.get("sessionFile").and_then(Value::as_str));
-        if let Some(external_session_id) = session_id {
-            let workspace_id = payload.get("workspaceId").and_then(Value::as_str);
-            if let Err(error) = event_sessions
-                .lock()
-                .map_err(|_| "Session Kernel lock is poisoned".to_owned())
-                .and_then(|mut sessions| {
-                    sessions
-                        .observe_pi_event(external_session_id, workspace_id, &payload, unix_millis())
-                        .map(|_| ())
-                })
-            {
-                log::warn!("[sessions] could not mirror Pi event: {error}");
-            }
-        }
-        let result = event_control
-            .lock()
-            .map_err(|_| "Task Control lock is poisoned".to_owned())
-            .and_then(|mut control| {
-                control.observe_pi_event(source_port, process_id, session_id, &payload)
-            });
-        let task_id = result
-            .as_ref()
-            .ok()
-            .and_then(|run| run.as_ref().map(|run| run.task_id.clone()))
-            .or_else(|| {
-                event_control.lock().ok().and_then(|control| {
-                    control
-                        .snapshot()
-                        .agent_runs
-                        .into_iter()
-                        .rev()
-                        .find(|run| run.source_port == source_port)
-                        .map(|run| run.task_id)
-                })
-            });
-        if let Err(error) = observe_runtime_spine_event(
-            &event_spine,
-            source_port,
-            process_id,
-            session_id,
-            payload.get("workspaceId").and_then(Value::as_str),
-            task_id.as_deref(),
-            &payload,
-        ) {
-            log::warn!("[runtime-spine] could not record Pi event: {error}");
-        }
-        let event = payload.get("event").unwrap_or(&payload);
-        if let (Some(session_id), Some(kind)) = (
-            session_id,
-            event.get("type").and_then(Value::as_str),
-        ) {
-            let observation = match kind {
-                "auto_compaction_start" => Some((true, None)),
-                "auto_compaction_end" => Some((
-                    false,
-                    Some(
-                        !event
-                            .get("summary")
-                            .and_then(Value::as_str)
-                            .is_some_and(|value| value.starts_with("Error:")),
-                    ),
-                )),
-                _ => None,
-            };
-            if let Some((started, succeeded)) = observation {
-                if let Err(error) = context_engine.observe_native_compaction(
-                    session_id,
-                    started,
-                    succeeded,
-                    unix_millis(),
-                ) {
-                    log::warn!("[context] could not observe native Pi compaction: {error}");
-                }
-            }
-        }
-        if let Ok(Some(run)) = &result {
-            if run.parent_id.is_none() && run.state.is_terminal() {
-                let task = event_control.lock().ok().and_then(|control| {
-                    let kind = control.task_kind(&run.task_id).ok()?;
-                    let workspace = control.task_workspace(&run.task_id).ok()?;
-                    Some((kind, workspace))
-                });
-                if let Some((TaskKind::Harness, workspace)) = task {
-                    let completion = event_completion.clone();
-                    let harness = event_harness.clone();
-                    let hooks = event_hooks.clone();
-                    let broker = event_broker.clone();
-                    let task_id = run.task_id.clone();
-                    let run_id = run.id.clone();
-                    let port = run.source_port;
-                    tauri::async_runtime::spawn(async move {
-                        match completion
-                            .evaluate(&task_id, &run_id, &workspace, &harness, &hooks)
-                            .await
-                        {
-                            Ok(decision) if decision.may_continue => {
-                                let blockers = decision.blockers.join("\n- ");
-                                let message = format!(
-                                    "Picode BeforeComplete Gate blocked completion. Fix the following bounded issues and retry:\n- {blockers}"
-                                );
-                                if let Err(error) = broker.send_command_to_port(
-                                    port,
-                                    serde_json::json!({ "type": "follow_up", "message": message }),
-                                ) {
-                                    log::warn!("[completion] could not continue blocked task: {error}");
-                                }
-                            }
-                            Ok(decision) => {
-                                log::info!(
-                                    "[completion] task={} level={:?} blockers={}",
-                                    task_id,
-                                    decision.level,
-                                    decision.blockers.len()
-                                );
-                            }
-                            Err(error) => {
-                                log::warn!("[completion] automatic evaluation failed: {error}");
-                            }
-                        }
-                    });
-                }
-            }
-        }
-        if let Ok(Some(run)) = &result {
-            let _ = event_work.upsert_external(agent_work_handle(run));
-            if let Some(handle) = tool_work_handle(run, &payload) {
-                let _ = event_work.upsert_external(handle);
-            }
-        }
-        match result {
-            Ok(Some(run)) if run.parent_id.is_some() && run.state.is_terminal() => {
-                let _ = event_extensions.cancel_agent_processes(&run.id);
-                let parent = event_control.lock().ok().and_then(|control| {
-                    control
-                        .snapshot()
-                        .agent_runs
-                        .into_iter()
-                        .find(|candidate| Some(candidate.id.as_str()) == run.parent_id.as_deref())
-                });
-                if let Some(parent) = parent.filter(|parent| !parent.state.is_terminal()) {
-                    let summary = extract_subagent_candidate(&payload);
-                    let advisory = event_extensions
-                        .complete_advisory_for_process(source_port, &run.id, &summary)
-                        .ok()
-                        .flatten();
-                    let message = match advisory {
-                        Some(advisory) => format!(
-                            "<picode-advisory-candidate advisoryId=\"{}\" childRunId=\"{}\">\nRole: {}\nModel: {}\n{}\n</picode-advisory-candidate>\nThis is a bounded read-only opinion, not evidence. Resolve conflicts yourself or ask the user.",
-                            advisory.id, run.id, advisory.role, advisory.model, summary
-                        ),
-                        None => format!(
-                            "<picode-subagent-candidate childRunId=\"{}\">\n{}\n</picode-subagent-candidate>\nReview this candidate against the parent task and effective Harness. Child completion is not verification.",
-                            run.id, summary
-                        ),
-                    };
-                    if let Err(error) = event_broker.send_command_to_port(
-                        parent.source_port,
-                        serde_json::json!({ "type": "follow_up", "message": message }),
-                    ) {
-                        log::warn!("[runtime] could not return Subagent candidate: {}", error);
-                    }
-                }
-                event_manager.kill(source_port);
-                event_broker.unregister_port(source_port);
-            }
-            Ok(Some(run)) if run.state.is_terminal() => {
-                let _ = event_extensions.cancel_agent_processes(&run.id);
-            }
-            Ok(_) => {}
-            Err(error) => {
-                log::warn!("[runtime] could not observe Pi event: {}", error);
-            }
-        }
-    }));
-
-    tauri::async_runtime::spawn(async move {
-        let mut sampler = ProcessSampler::default();
-        let mut interval = tokio::time::interval(Duration::from_secs(2));
-        loop {
-            interval.tick().await;
-            let runs = match task_control.lock() {
-                Ok(control) => control.snapshot().agent_runs,
-                Err(_) => continue,
-            };
-            for run in runs.into_iter().filter(|run| !run.state.is_terminal()) {
-                let _ = work_manager.upsert_external(agent_work_handle(&run));
-                let at = unix_millis();
-                let owned = manager.owns_process(run.source_port, run.process_id);
-                let sample = if owned {
-                    sampler.sample(run.process_id, at).ok().map(|metric| {
-                        runtime_registry::ResourceSample {
-                            at: metric.at,
-                            cpu_percent: metric.cpu_percent,
-                            memory_bytes: metric.memory_bytes,
-                            uptime_ms: metric.uptime_ms,
-                            attribution: metric.attribution,
-                        }
-                    })
-                } else {
-                    None
-                };
-                if let Ok(mut control) = task_control.lock() {
-                    if let Err(error) = control.sample_agent(&run.id, sample, owned, at) {
-                        log::warn!("[runtime] sample rejected for {}: {}", run.id, error);
-                    }
-                }
-            }
-        }
-    });
-}
-
-fn observe_runtime_spine_event(
-    spine: &RuntimeSpineState,
-    source_port: u16,
-    process_id: u32,
-    session_id: Option<&str>,
-    workspace_id: Option<&str>,
-    task_id: Option<&str>,
-    payload: &Value,
-) -> Result<(), String> {
-    let event = payload.get("event").unwrap_or(payload);
-    let Some(raw_kind) = event.get("type").and_then(Value::as_str) else {
-        return Ok(());
-    };
-    let kind = match raw_kind {
-        "agent_start" => RuntimeEventKind::SessionStarted,
-        "turn_start" | "auto_retry_start" => RuntimeEventKind::WorkStarted,
-        "message_end" => RuntimeEventKind::WorkUpdated,
-        "tool_execution_start" => RuntimeEventKind::BeforeTool,
-        "tool_execution_end" if event.get("error").is_some_and(|value| !value.is_null()) => {
-            RuntimeEventKind::ToolFailed
-        }
-        "tool_execution_end" => RuntimeEventKind::ToolFinished,
-        "agent_end" => RuntimeEventKind::BeforeComplete,
-        "auto_compaction_start" => RuntimeEventKind::CompactionStarted,
-        "auto_compaction_end" => RuntimeEventKind::CompactionFinished,
-        _ => return Ok(()),
-    };
-    let session_id = session_id
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("unbound-session");
-    let target = RuntimeTarget::new(
-        workspace_id
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or("simple"),
-        session_id,
-        format!("pi-{source_port}-{process_id}"),
-    );
-    let encoded = serde_json::to_vec(event).unwrap_or_default();
-    let event_id = event
-        .get("requestId")
-        .or_else(|| event.get("id"))
-        .and_then(Value::as_str)
-        .map(|id| format!("{raw_kind}:{id}"))
-        .unwrap_or_else(|| format!("{raw_kind}:{:x}", Sha256::digest(encoded)));
-    let mut spine = spine
-        .lock()
-        .map_err(|_| "Runtime Spine lock is poisoned".to_owned())?;
-    match spine.begin_session(target.clone()) {
-        Ok(()) | Err(RuntimeSpineError::DuplicateSession) => {}
-        Err(error) => return Err(format!("begin runtime session: {error:?}")),
-    }
-    spine
-        .record(
-            &target,
-            RuntimeEventInput {
-                schema_version: 2,
-                source: "pi".to_owned(),
-                event_id,
-                kind,
-                task_id: task_id.map(str::to_owned),
-                work_id: None,
-                parent_work_id: None,
-                at: unix_millis(),
-                payload: serde_json::json!({
-                    "status": raw_kind,
-                    "toolName": event
-                        .get("toolName")
-                        .or_else(|| event.get("tool"))
-                        .and_then(Value::as_str),
-                    "exitCode": event.get("exitCode").and_then(Value::as_i64),
-                }),
-            },
-        )
-        .map_err(|error| format!("record runtime event: {error:?}"))?;
-    Ok(())
-}
-
-fn agent_work_handle(run: &runtime_registry::AgentRun) -> WorkHandle {
-    let status = match run.state {
-        runtime_registry::AgentRunState::Completed => WorkStatus::Completed,
-        runtime_registry::AgentRunState::Failed => WorkStatus::Failed,
-        runtime_registry::AgentRunState::Cancelled => WorkStatus::Cancelled,
-        runtime_registry::AgentRunState::Terminated => WorkStatus::Terminated,
-        _ => WorkStatus::Running,
-    };
-    WorkHandle {
-        id: run.id.clone(),
-        owner_task_id: run.task_id.clone(),
-        owner_run_id: run.id.clone(),
-        parent_work_id: run.parent_id.clone(),
-        kind: if run.parent_id.is_some() {
-            WorkKind::Subagent
-        } else {
-            WorkKind::Agent
-        },
-        status,
-        process_id: Some(run.process_id),
-        started_at: run.started_at,
-        bounded_output: Vec::new(),
-        output_artifact: None,
-        termination_result: run.termination_result.clone(),
-    }
-}
-
-fn tool_work_handle(run: &runtime_registry::AgentRun, payload: &Value) -> Option<WorkHandle> {
-    let event = payload.get("event").unwrap_or(payload);
-    let event_type = event.get("type").and_then(Value::as_str)?;
-    if !matches!(event_type, "tool_execution_start" | "tool_execution_end") {
-        return None;
-    }
-    let tool_name = event
-        .get("toolName")
-        .or_else(|| event.get("tool"))
-        .and_then(Value::as_str)?;
-    let kind = match tool_name {
-        "picode_shell" | "bash" | "shell" | "eval" => WorkKind::PersistentShell,
-        "picode_browser" | "browser" => WorkKind::Server,
-        _ => return None,
-    };
-    let call_id = event
-        .get("toolCallId")
-        .or_else(|| event.get("id"))
-        .and_then(Value::as_str)?;
-    let failed = event
-        .get("error")
-        .is_some_and(|value| !value.is_null() && value.as_str() != Some(""));
-    Some(WorkHandle {
-        id: format!("tool:{}:{call_id}", run.id),
-        owner_task_id: run.task_id.clone(),
-        owner_run_id: run.id.clone(),
-        parent_work_id: Some(run.id.clone()),
-        kind,
-        status: match event_type {
-            "tool_execution_start" => WorkStatus::Running,
-            _ if failed => WorkStatus::Failed,
-            _ => WorkStatus::Completed,
-        },
-        process_id: Some(run.process_id),
-        started_at: event
-            .get("timestamp")
-            .and_then(Value::as_u64)
-            .unwrap_or_else(unix_millis),
-        bounded_output: Vec::new(),
-        output_artifact: None,
-        termination_result: failed.then(|| "tool execution failed".to_owned()),
+    runtime_lifecycle::RuntimeLifecycle::new(runtime_lifecycle::RuntimeLifecycleDeps {
+        broker: broker.clone(),
+        manager,
+        task_control,
+        extension_manager: extension_service,
+        work_manager,
+        session_kernel,
+        runtime_spine,
+        context_engine,
+        harness_service,
+        hook_manager,
+        completion_coordinator,
     })
+    .install();
 }
-
-fn extract_subagent_candidate(payload: &Value) -> String {
-    let event = payload.get("event").unwrap_or(payload);
-    let mut last = None;
-    if let Some(messages) = event.get("messages").and_then(Value::as_array) {
-        for message in messages {
-            if message.get("role").and_then(Value::as_str) != Some("assistant") {
-                continue;
-            }
-            let content = message.get("content");
-            let text = match content {
-                Some(Value::String(text)) => text.clone(),
-                Some(Value::Array(blocks)) => blocks
-                    .iter()
-                    .filter(|block| block.get("type").and_then(Value::as_str) == Some("text"))
-                    .filter_map(|block| block.get("text").and_then(Value::as_str))
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-                _ => String::new(),
-            };
-            if !text.trim().is_empty() {
-                last = Some(text);
-            }
-        }
-    }
-    let mut result =
-        last.unwrap_or_else(|| "Subagent ended without a textual candidate result.".into());
-    if result.len() > 32 * 1024 {
-        result.truncate(32 * 1024);
-        result.push_str("\n… bounded by Picode");
-    }
-    result
-}
-
 fn notify_pi_account_reload(manager: &PiManager, broker: &BrokerWs) {
     for port in manager.ports() {
         if let Err(error) = broker
@@ -1785,6 +1359,7 @@ fn install_control_handler(
     chat_data: ChatDataServices,
     auth_sync: Arc<PiAuthSynchronizer>,
     task_control: TaskControlState,
+    task_experience: TaskExperienceState,
     harness_service: Arc<HarnessService>,
     capability_service: CapabilityServiceState,
     orchestration_service: OrchestrationServiceState,
@@ -1814,6 +1389,7 @@ fn install_control_handler(
             let context_compression = chat_data.compression.clone();
             let auth_sync = auth_sync.clone();
             let task_control = task_control.clone();
+            let task_experience = task_experience.clone();
             let harness_service = harness_service.clone();
             let capability_service = capability_service.clone();
             let orchestration_service = orchestration_service.clone();
@@ -1847,6 +1423,7 @@ fn install_control_handler(
                     context: &context_engine,
                     code: &code_intelligence,
                     hooks: &hook_manager,
+                    extensions: &extension_service,
                 };
                 if let Some(result) = harness_router.handle(&command, &args, local_client).await {
                     return result;
@@ -1890,6 +1467,7 @@ fn install_control_handler(
                     | "harness_run_action"
                     | "harness_validate_gate"
                     | "capability_snapshot"
+                    | "capability_effective_report"
                     | "capability_set_opt_in"
                     | "capability_set_tier"
                     | "firstmate_status"
@@ -1915,9 +1493,16 @@ fn install_control_handler(
                     | "git_rewind_apply"
                     | "git_handoff_create"
                     | "extension_install"
+                    | "extension_snapshot"
                     | "extension_migrate"
                     | "extension_set_enabled"
                     | "extension_set_trusted"
+                    | "extension_sync_skills"
+                    | "extension_skill_set_enabled"
+                    | "extension_skill_set_trusted"
+                    | "extension_component_set_enabled"
+                    | "extension_component_set_trusted"
+                    | "firstmate_set_trusted"
                     | "extension_start"
                     | "extension_cancel"
                     | "external_import_preview"
@@ -1927,6 +1512,9 @@ fn install_control_handler(
                     | "mcp_import_apply"
                     | "mcp_start"
                     | "mcp_activate"
+                    | "mcp_tool_request"
+                    | "mcp_set_enabled"
+                    | "mcp_set_trusted"
                     | "adapter_register"
                     | "adapter_set_enabled"
                     | "adapter_discover"
@@ -1939,10 +1527,8 @@ fn install_control_handler(
                     | "regression_record"
                     | "regression_compare"
                     | "acp_request"
-                    | "runtime_spine_begin"
-                    | "runtime_spine_record"
                     | "runtime_spine_events"
-                    | "runtime_spine_end"
+                    | "runtime_spine_state"
                     | "work_snapshot"
                     | "work_status"
                     | "work_wait"
@@ -2188,11 +1774,31 @@ fn install_control_handler(
                                     .lock()
                                     .map_err(|_| "Capability Service lock is poisoned".to_owned())?
                                     .prepare_task(&task_id, kind, workspace.as_deref())?;
+                                let mut guidance_request = match args.get("guidance") {
+                                    Some(value) if !value.is_null() => {
+                                        serde_json::from_value::<GuidanceRequest>(value.clone())
+                                            .map_err(|error| {
+                                                format!("Invalid guidance request: {error}")
+                                            })?
+                                    }
+                                    _ => GuidanceRequest {
+                                        task_kind: kind,
+                                        mode: GuidanceMode::Adaptive,
+                                        model: ModelGuidanceProfile {
+                                            evaluated_autonomy: 90,
+                                            tool_reliability: 90,
+                                        },
+                                        signals: Vec::new(),
+                                    },
+                                };
+                                guidance_request.task_kind = kind;
+                                let guidance = GuidancePolicy::decide(&guidance_request);
                                 broker.send_command_to_port(
                                     source_port,
                                     serde_json::json!({
                                         "type": "picode_task_context",
                                         "context": context,
+                                        "guidance": guidance,
                                     }),
                                 )?;
                             } else if let Some(source_port) = arg_u16("sourcePort") {
@@ -2446,14 +2052,14 @@ fn install_control_handler(
                     "task_create_simple" => {
                         let chat_id = arg_str("chatId").ok_or("chatId is required")?;
                         let goal = arg_str("goal").unwrap_or_default();
-                        let mut control = task_control
-                            .lock()
-                            .map_err(|_| "Task Control lock is poisoned".to_owned())?;
-                        serde_json::to_value(control.create_simple(
-                            &chat_id,
-                            &goal,
-                            &scratch_root,
-                        )?)
+                        serde_json::to_value(task_experience.create(&CreateTask {
+                            chat_id: &chat_id,
+                            goal: &goal,
+                            target: TaskTarget::Simple {
+                                scratch_root: &scratch_root,
+                            },
+                            now: unix_millis(),
+                        })?)
                         .map_err(|error| format!("Cannot encode Simple Task: {error}"))
                     }
                     "task_register_workspace" => {
@@ -2486,14 +2092,14 @@ fn install_control_handler(
                         let goal = arg_str("goal").unwrap_or_default();
                         let workspace_id =
                             arg_str("workspaceId").ok_or("workspaceId is required")?;
-                        let mut control = task_control
-                            .lock()
-                            .map_err(|_| "Task Control lock is poisoned".to_owned())?;
-                        serde_json::to_value(control.create_harness(
-                            &chat_id,
-                            &goal,
-                            &workspace_id,
-                        )?)
+                        serde_json::to_value(task_experience.create(&CreateTask {
+                            chat_id: &chat_id,
+                            goal: &goal,
+                            target: TaskTarget::Harness {
+                                workspace_id: &workspace_id,
+                            },
+                            now: unix_millis(),
+                        })?)
                         .map_err(|error| format!("Cannot encode Harness Task: {error}"))
                     }
                     "task_start" => {
@@ -2502,10 +2108,16 @@ fn install_control_handler(
                         let account_id = arg_str("accountId").ok_or("accountId is required")?;
                         let channel = arg_str("channel").ok_or("channel is required")?;
                         let model = arg_str("model").ok_or("model is required")?;
-                        task_control
-                            .lock()
-                            .map_err(|_| "Task Control lock is poisoned".to_owned())?
-                            .start_task(&task_id, &provider, &account_id, &channel, &model)?;
+                        task_experience.transition(
+                            &task_id,
+                            &TaskTransition::Start(AccountSelection {
+                                provider: &provider,
+                                account_id: &account_id,
+                                channel: &channel,
+                                model: &model,
+                            }),
+                            unix_millis(),
+                        )?;
                         Ok(Value::Null)
                     }
                     "task_continue" => {
@@ -2515,17 +2127,19 @@ fn install_control_handler(
                         let account_id = arg_str("accountId").ok_or("accountId is required")?;
                         let channel = arg_str("channel").ok_or("channel is required")?;
                         let model = arg_str("model").ok_or("model is required")?;
-                        task_control
-                            .lock()
-                            .map_err(|_| "Task Control lock is poisoned".to_owned())?
-                            .continue_task(
-                                &task_id,
-                                &continue_command,
-                                &provider,
-                                &account_id,
-                                &channel,
-                                &model,
-                            )?;
+                        task_experience.transition(
+                            &task_id,
+                            &TaskTransition::Continue {
+                                command: &continue_command,
+                                account: AccountSelection {
+                                    provider: &provider,
+                                    account_id: &account_id,
+                                    channel: &channel,
+                                    model: &model,
+                                },
+                            },
+                            unix_millis(),
+                        )?;
                         Ok(Value::Null)
                     }
                     "agent_cancel" => {
@@ -2642,6 +2256,34 @@ fn install_control_handler(
                             .snapshot(),
                     )
                     .map_err(|error| format!("Cannot encode Capability snapshot: {error}")),
+                    "capability_effective_report" => {
+                        let task_id = arg_str("taskId").ok_or("taskId is required")?;
+                        let sources = |key: &str| -> Result<Vec<EffectiveSource>, String> {
+                            serde_json::from_value(
+                                args.get(key)
+                                    .cloned()
+                                    .unwrap_or_else(|| serde_json::json!([])),
+                            )
+                            .map_err(|error| format!("Invalid {key}: {error}"))
+                        };
+                        let kind = task_control
+                            .lock()
+                            .map_err(|_| "Task Control lock is poisoned".to_owned())?
+                            .task_kind(&task_id)?;
+                        let report = capability_service
+                            .lock()
+                            .map_err(|_| "Capability Service lock is poisoned".to_owned())?
+                            .effective_report(
+                                &task_id,
+                                kind,
+                                &sources("rules")?,
+                                &sources("skills")?,
+                                &sources("overrides")?,
+                            );
+                        serde_json::to_value(report).map_err(|error| {
+                            format!("Cannot encode effective Capability report: {error}")
+                        })
+                    }
                     "capability_set_opt_in" => {
                         let task_id = arg_str("taskId").ok_or("taskId is required")?;
                         let enabled = arg_bool("enabled").ok_or("enabled is required")?;
@@ -2669,6 +2311,15 @@ fn install_control_handler(
                                 )
                             }
                         };
+                        if id == "firstmate-crew-orchestrator" {
+                            extension_service
+                                .set_firstmate_enabled(tier != CapabilityTier::Disabled)?;
+                        } else if matches!(id.as_str(), "rust-lsp" | "debug-adapter") {
+                            extension_service.set_catalog_component_enabled(
+                                &id,
+                                tier != CapabilityTier::Disabled,
+                            )?;
+                        }
                         capability_service
                             .lock()
                             .map_err(|_| "Capability Service lock is poisoned".to_owned())?
@@ -2676,58 +2327,44 @@ fn install_control_handler(
                         Ok(Value::Null)
                     }
                     "firstmate_status" => {
-                        let service = capability_service
-                            .lock()
-                            .map_err(|_| "Capability Service lock is poisoned".to_owned())?;
-                        let enabled = service
-                            .snapshot()
-                            .capabilities
-                            .iter()
-                            .find(|capability| capability.id == "firstmate-crew-orchestrator")
-                            .is_some_and(|capability| capability.tier != CapabilityTier::Disabled);
-                        let root = service.firstmate_root();
+                        let firstmate = extension_service.firstmate();
                         Ok(serde_json::json!({
-                            "enabled": enabled,
-                            "available": root.is_some(),
-                            "root": root,
+                            "enabled": firstmate.enabled,
+                            "trusted": firstmate.trusted,
+                            "available": firstmate.root.is_some(),
+                            "root": firstmate.root,
+                            "lastError": firstmate.last_error,
                             "requiresAgentsFile": true,
                         }))
                     }
                     "firstmate_set_root" => {
                         let path = arg_str("path").ok_or("path is required")?;
-                        let mut service = capability_service
-                            .lock()
-                            .map_err(|_| "Capability Service lock is poisoned".to_owned())?;
-                        let root = service.set_firstmate_root(Path::new(&path))?;
+                        let root = extension_service.set_firstmate_root(Path::new(&path))?;
                         Ok(serde_json::json!({
                             "available": true,
                             "root": root,
                         }))
                     }
+                    "firstmate_set_trusted" => {
+                        let trusted = arg_bool("trusted").ok_or("trusted is required")?;
+                        extension_service.set_firstmate_trusted(trusted)?;
+                        Ok(Value::Null)
+                    }
                     "firstmate_open" => {
-                        let root = {
-                            let service = capability_service
-                                .lock()
-                                .map_err(|_| "Capability Service lock is poisoned".to_owned())?;
-                            let enabled = service
-                                .snapshot()
-                                .capabilities
-                                .iter()
-                                .find(|capability| capability.id == "firstmate-crew-orchestrator")
-                                .is_some_and(|capability| {
-                                    capability.tier != CapabilityTier::Disabled
-                                });
-                            if !enabled {
-                                return Err(
-                                    "Firstmate is disabled; enable it in Professional Extensions first"
-                                        .into(),
-                                );
-                            }
-                            service.firstmate_root().ok_or_else(|| {
-                                "Firstmate directory not found; choose a folder containing AGENTS.md"
-                                    .to_owned()
-                            })?
-                        };
+                        let firstmate = extension_service.firstmate();
+                        if !firstmate.enabled {
+                            return Err(
+                                "Firstmate is disabled; enable it in Professional Extensions first"
+                                    .into(),
+                            );
+                        }
+                        if !firstmate.trusted {
+                            return Err("Firstmate must be trusted before it can run".into());
+                        }
+                        let root = firstmate.root.ok_or_else(|| {
+                            "Firstmate directory not found; choose a folder containing AGENTS.md"
+                                .to_owned()
+                        })?;
                         let port = open_workspace_core(
                             &root.to_string_lossy(),
                             None,
@@ -3204,6 +2841,8 @@ fn install_control_handler(
                             )?,
                         )
                     }
+                    "extension_snapshot" => serde_json::to_value(extension_service.snapshot())
+                        .map_err(|error| format!("Cannot encode Extension snapshot: {error}")),
                     "extension_migrate" => {
                         let extension_id =
                             arg_str("extensionId").ok_or("extensionId is required")?;
@@ -3245,6 +2884,54 @@ fn install_control_handler(
                                 |error| format!("Cannot encode Extension snapshot: {error}"),
                             )?,
                         )
+                    }
+                    "extension_sync_skills" => {
+                        let skills: Vec<ManagedSkill> = serde_json::from_value(
+                            args.get("skills")
+                                .cloned()
+                                .unwrap_or_else(|| serde_json::json!([])),
+                        )
+                        .map_err(|error| format!("Invalid skill inventory: {error}"))?;
+                        extension_service.sync_skills(skills)?;
+                        serde_json::to_value(extension_service.snapshot())
+                            .map_err(|error| format!("Cannot encode Extension snapshot: {error}"))
+                    }
+                    "extension_skill_set_enabled" => {
+                        let id = arg_str("id").ok_or("id is required")?;
+                        let enabled = arg_bool("enabled").ok_or("enabled is required")?;
+                        extension_service.set_skill_enabled(&id, enabled)?;
+                        Ok(Value::Null)
+                    }
+                    "extension_skill_set_trusted" => {
+                        let id = arg_str("id").ok_or("id is required")?;
+                        let trusted = arg_bool("trusted").ok_or("trusted is required")?;
+                        extension_service.set_skill_trusted(&id, trusted)?;
+                        Ok(Value::Null)
+                    }
+                    "extension_component_set_enabled" => {
+                        let id = arg_str("id").ok_or("id is required")?;
+                        let enabled = arg_bool("enabled").ok_or("enabled is required")?;
+                        extension_service.set_component_enabled(&id, enabled)?;
+                        if matches!(id.as_str(), "rust-lsp" | "debug-adapter") {
+                            capability_service
+                                .lock()
+                                .map_err(|_| "Capability Service lock is poisoned".to_owned())?
+                                .set_module_tier(
+                                    &id,
+                                    if enabled {
+                                        CapabilityTier::Discoverable
+                                    } else {
+                                        CapabilityTier::Disabled
+                                    },
+                                )?;
+                        }
+                        Ok(Value::Null)
+                    }
+                    "extension_component_set_trusted" => {
+                        let id = arg_str("id").ok_or("id is required")?;
+                        let trusted = arg_bool("trusted").ok_or("trusted is required")?;
+                        extension_service.set_component_trusted(&id, trusted)?;
+                        Ok(Value::Null)
                     }
                     "extension_start" => {
                         let extension_id =
@@ -3409,6 +3096,47 @@ fn install_control_handler(
                             &secrets,
                         )?)
                         .map_err(|error| format!("Cannot encode MCP run: {error}"))
+                    }
+                    "mcp_set_enabled" => {
+                        let server_id = arg_str("serverId").ok_or("serverId is required")?;
+                        let enabled = arg_bool("enabled").ok_or("enabled is required")?;
+                        extension_service.set_mcp_enabled(&server_id, enabled)?;
+                        Ok(Value::Null)
+                    }
+                    "mcp_tool_request" => {
+                        let server_id = arg_str("serverId").ok_or("serverId is required")?;
+                        let task_id = arg_str("taskId").ok_or("taskId is required")?;
+                        let agent_run_id = arg_str("agentRunId").ok_or("agentRunId is required")?;
+                        let method = arg_str("method").ok_or("method is required")?;
+                        if !matches!(method.as_str(), "tools/list" | "tools/call") {
+                            return Err("unsupported MCP tool method".into());
+                        }
+                        let cwd = {
+                            let control = task_control
+                                .lock()
+                                .map_err(|_| "Task Control lock is poisoned".to_owned())?;
+                            control.validate_agent_run(&agent_run_id, &task_id)?;
+                            control.task_working_dir(&task_id)?
+                        };
+                        let secrets = secret_store
+                            .lock()
+                            .map_err(|_| "Secret Store lock is poisoned".to_owned())?;
+                        extension_service.request_mcp_stdio(
+                            &server_id,
+                            &task_id,
+                            &agent_run_id,
+                            &cwd,
+                            &method,
+                            args.get("params").cloned().unwrap_or(Value::Null),
+                            Duration::from_secs(30),
+                            &secrets,
+                        )
+                    }
+                    "mcp_set_trusted" => {
+                        let server_id = arg_str("serverId").ok_or("serverId is required")?;
+                        let trusted = arg_bool("trusted").ok_or("trusted is required")?;
+                        extension_service.set_mcp_trusted(&server_id, trusted)?;
+                        Ok(Value::Null)
                     }
                     "mcp_activate" => {
                         let server_id = arg_str("serverId").ok_or("serverId is required")?;
@@ -3867,16 +3595,22 @@ fn main() {
                 HarnessService::new(app_data_dir.join("harness"), None)
                     .map_err(std::io::Error::other)?,
             );
+            let legacy_capability_state = fs::read(app_data_dir.join("capabilities/state.json"))
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
             let capability_service = Arc::new(Mutex::new(
                 CapabilityService::open(&app_data_dir.join("capabilities"))
                     .map_err(std::io::Error::other)?,
             ));
-            let code_intelligence = Arc::new(CodeIntelligence::new(capability_service.clone()));
             let orchestration_service = Arc::new(
                 OrchestrationService::open(&app_data_dir.join("orchestration"), 64 * 1024)
                     .map_err(std::io::Error::other)?,
             );
             let work_manager = Arc::new(WorkManager::new(orchestration_service.clone()));
+            let code_intelligence = Arc::new(CodeIntelligence::new(
+                capability_service.clone(),
+                work_manager.clone(),
+            ));
             let runtime_spine = Arc::new(Mutex::new(
                 RuntimeSpine::open(
                     &app_data_dir.join("harness-v2").join("runtime"),
@@ -3893,21 +3627,105 @@ fn main() {
                 .map_err(std::io::Error::other)?,
             ));
             let acp_adapter = Arc::new(AcpAdapter::new(session_kernel.clone()));
+            let task_experience = Arc::new(TaskExperienceService::new(
+                task_control.clone(),
+                session_kernel.clone(),
+            ));
             let context_engine = Arc::new(
                 ContextEngine::open(&app_data_dir.join("harness-v2").join("context"), 8 * 1024 * 1024)
                     .map_err(std::io::Error::other)?,
             );
-            let hook_manager = Arc::new(
-                HookManager::open(&app_data_dir.join("professional-hooks"), work_manager.clone())
-                    .map_err(std::io::Error::other)?,
-            );
+            let extension_state_existed = app_data_dir
+                .join("professional-extensions/state.json")
+                .is_file();
             let extension_service = Arc::new(
                 ExtensionManager::open(
                     &app_data_dir.join("professional-extensions"),
-                    orchestration_service.clone(),
+                    work_manager.clone(),
                 )
                 .map_err(std::io::Error::other)?,
             );
+            extension_service
+                .migrate_legacy_hook_state(&app_data_dir.join("professional-hooks"))
+                .map_err(std::io::Error::other)?;
+            if !extension_state_existed {
+                if let Some(root) = legacy_capability_state
+                    .as_ref()
+                    .and_then(|state| state.get("firstmateRoot"))
+                    .and_then(Value::as_str)
+                {
+                    if Path::new(root).is_dir() {
+                        extension_service
+                            .set_firstmate_root(Path::new(root))
+                            .map_err(std::io::Error::other)?;
+                    }
+                }
+                let was_enabled = legacy_capability_state
+                    .as_ref()
+                    .and_then(|state| state.get("moduleTiers"))
+                    .and_then(|tiers| tiers.get("firstmate-crew-orchestrator"))
+                    .and_then(Value::as_str)
+                    .is_some_and(|tier| tier != "disabled");
+                extension_service
+                    .set_firstmate_enabled(was_enabled)
+                    .map_err(std::io::Error::other)?;
+            }
+            let managed_capabilities = capability_service
+                .lock()
+                .map_err(|_| std::io::Error::other("Capability Service lock is poisoned"))?
+                .snapshot()
+                .capabilities
+                .into_iter()
+                .filter_map(|capability| {
+                    let kind = match capability.id.as_str() {
+                        "rust-lsp" => "lsp",
+                        "debug-adapter" => "dap",
+                        _ => return None,
+                    };
+                    Some(ManagedCatalogComponent {
+                        id: capability.id,
+                        kind: kind.into(),
+                        source: "builtin:picode".into(),
+                        version: capability.version,
+                        license: "MIT".into(),
+                        permissions: capability.permissions.into_iter().collect(),
+                        enabled: capability.tier != CapabilityTier::Disabled,
+                        trusted: false,
+                    })
+                })
+                .collect::<Vec<_>>();
+            for component in managed_capabilities {
+                extension_service
+                    .register_catalog_component(component)
+                    .map_err(std::io::Error::other)?;
+            }
+            for component in extension_service.snapshot().catalog_components {
+                capability_service
+                    .lock()
+                    .map_err(|_| std::io::Error::other("Capability Service lock is poisoned"))?
+                    .set_module_tier(
+                        &component.id,
+                        if component.enabled {
+                            CapabilityTier::Discoverable
+                        } else {
+                            CapabilityTier::Disabled
+                        },
+                    )
+                    .map_err(std::io::Error::other)?;
+            }
+            capability_service
+                .lock()
+                .map_err(|_| std::io::Error::other("Capability Service lock is poisoned"))?
+                .set_module_tier(
+                    "firstmate-crew-orchestrator",
+                    if extension_service.firstmate().enabled {
+                        CapabilityTier::Discoverable
+                    } else {
+                        CapabilityTier::Disabled
+                    },
+                )
+                .map_err(std::io::Error::other)?;
+            let hook_manager = Arc::new(HookManager::new(extension_service.clone()));
             let completion_coordinator = Arc::new(CompletionCoordinator::new(2));
             let cancel_manager = manager.clone();
             let cancel_control = task_control.clone();
@@ -3947,7 +3765,7 @@ fn main() {
                     };
                     cancel_extensions.cancel_agent_processes(&owner_run_id)?;
                     if let Some(work) = cancel_work.upgrade() {
-                        work.upsert_external(agent_work_handle(&run))?;
+                        work.upsert_external(runtime_lifecycle::agent_work_handle(&run))?;
                     }
                     Ok(())
                 }))
@@ -3970,6 +3788,7 @@ fn main() {
                 },
                 auth_sync,
                 task_control.clone(),
+                task_experience,
                 harness_service.clone(),
                 capability_service,
                 orchestration_service.clone(),

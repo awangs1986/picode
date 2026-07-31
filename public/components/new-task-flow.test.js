@@ -23,7 +23,7 @@ describe("picode-task-dialog", () => {
     dialog.transport = fakeTransport();
     document.body.appendChild(dialog);
     dialog.open({ chatId: "chat-a" });
-    dialog.querySelector('[data-kind="simple"]').click();
+    dialog.querySelector('[data-kind="conversation"]').click();
     dialog.querySelector("[data-goal]").value = "Discuss architecture";
     dialog
       .querySelector("form")
@@ -62,7 +62,7 @@ describe("picode-task-dialog", () => {
     dialog.transport = fakeTransport();
     document.body.appendChild(dialog);
     dialog.open({ chatId: "chat-b" });
-    dialog.querySelector('[data-kind="harness"]').click();
+    dialog.querySelector('[data-kind="project"]').click();
     dialog.querySelector("[data-goal]").value = "Implement feature";
     dialog
       .querySelector("form")

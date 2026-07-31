@@ -18,6 +18,7 @@ pub struct CompletionCoordinator {
 mod tests {
     use super::CompletionCoordinator;
     use crate::completion_engine::CompletionLevel;
+    use crate::extension_manager::ExtensionManager;
     use crate::harness::{ActionKind, ActionRisk, CompletionGate, HarnessAction, HarnessProfile};
     use crate::harness_service::HarnessService;
     use crate::hook_manager::HookManager;
@@ -98,7 +99,8 @@ mod tests {
         let orchestration =
             Arc::new(OrchestrationService::open(&root.join("orchestration"), 4096).unwrap());
         let work = Arc::new(WorkManager::new(orchestration));
-        let hooks = HookManager::open(&root.join("hooks"), work).unwrap();
+        let extensions = Arc::new(ExtensionManager::open(&root.join("extensions"), work).unwrap());
+        let hooks = HookManager::new(extensions);
         let harness = HarnessService::new(root.join("harness"), Some([7; 32])).unwrap();
         let decision = CompletionCoordinator::new(2)
             .evaluate("task-a", "run-a", &workspace, &harness, &hooks)

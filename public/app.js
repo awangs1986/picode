@@ -9,6 +9,10 @@ import { initTransport } from "./app/transport.js";
 import { createAppUpdater } from "./app/updater.js";
 import { setupVoiceInput } from "./app/voice-input.js";
 import { resolveWebSocketUrl, WebSocketClient } from "./app/websocket-client.js";
+import {
+  normalizeSettingsGroup,
+  panelsForSettingsGroup,
+} from "./components/settings-experience.js";
 import { formatNumber, t } from "./i18n/index.js";
 import {
   filterModelsByProvider,
@@ -3863,30 +3867,31 @@ async function handleSuperAgentEnabledChanged(enabled) {
 }
 
 function selectSettingsTab(tabKey = "general") {
-  const targetTabKey = tabKey === "auth" ? "configuration" : tabKey;
+  const targetTabKey = normalizeSettingsGroup(tabKey);
+  const activePanels = panelsForSettingsGroup(targetTabKey);
   settingsNavItems.forEach((item) => {
     item.classList.toggle("active", item.dataset.settingsTab === targetTabKey);
   });
   settingsTabs.forEach((tab) => {
-    tab.classList.toggle("active", tab.dataset.settingsPanel === targetTabKey);
+    tab.classList.toggle("active", activePanels.includes(tab.dataset.settingsPanel));
   });
-  if (targetTabKey === "configuration") {
+  if (activePanels.includes("configuration")) {
     loadAccounts();
     loadApiKeysPanel();
     loadInlineConfigEditor();
     loadInlineModelsEditor();
   }
-  if (targetTabKey === "extensions") {
+  if (activePanels.includes("extensions")) {
     loadBrowsePackages();
     document.querySelector("picode-professional-extensions")?.refresh?.();
   }
-  if (targetTabKey === "usage") {
+  if (activePanels.includes("usage")) {
     const dashboard = document.getElementById("settings-cost-dashboard");
     dashboard?.ensureLoaded?.().catch((error) => {
       console.error("[Cost] Failed to load dashboard:", error);
     });
   }
-  if (targetTabKey === "chat") {
+  if (activePanels.includes("chat")) {
     toggleSuperAgent = document.getElementById("toggle-super-agent");
     bindSuperAgentStartupToggle(toggleSuperAgent, handleSuperAgentEnabledChanged);
   }
@@ -4459,10 +4464,8 @@ function buildThemeGrid() {
 function normalizeSettingsTabKey(tabKey) {
   const rawTabKey = typeof tabKey === "string" ? tabKey : "general";
   const decodedTabKey = decodeURIComponent(rawTabKey || "general");
-  const normalizedTabKey = decodedTabKey === "auth" ? "configuration" : decodedTabKey;
-  return settingsNavItems.some((item) => item.dataset.settingsTab === normalizedTabKey)
-    ? normalizedTabKey
-    : "general";
+  const group = normalizeSettingsGroup(decodedTabKey);
+  return settingsNavItems.some((item) => item.dataset.settingsTab === group) ? group : "general";
 }
 
 function settingsHashForTab(tabKey) {

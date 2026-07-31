@@ -1598,7 +1598,21 @@ mod tests {
             cancelled.termination_result.as_deref(),
             Some("owned process tree exit confirmed")
         );
-        fs::remove_dir_all(root).unwrap();
+        drop(service);
+        let mut removed = false;
+        for _ in 0..20 {
+            match fs::remove_dir_all(&root) {
+                Ok(()) => {
+                    removed = true;
+                    break;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::DirectoryNotEmpty => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("remove cancellation fixture: {error}"),
+            }
+        }
+        assert!(removed, "cancelled process artifacts remained busy");
     }
 
     #[test]

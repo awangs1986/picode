@@ -113,13 +113,15 @@ describe("thinking effort cycle controls", () => {
     expect(composerThinkingTagRule).toContain("border-color: transparent");
   });
 
-  test("moves Super Agent startup setting out of General", () => {
+  test("keeps Super Agent startup out of General while settings expose four groups", () => {
     const html = readFileSync(join(process.cwd(), "public/index.html"), "utf8");
     const dom = new JSDOM(html);
     const { document } = dom.window;
 
-    expect(document.querySelector('[data-settings-tab="chat"]')?.textContent.trim()).toBe(
-      "Agent Inbox",
+    expect(document.querySelectorAll(".settings-nav-item")).toHaveLength(4);
+    expect(document.querySelector('[data-settings-tab="chat"]')).toBeNull();
+    expect(document.querySelector('[data-settings-tab="extensions"]')?.textContent).toContain(
+      "Development & extensions",
     );
     expect(
       document.querySelector('[data-settings-panel="general"] #setting-super-agent'),

@@ -342,6 +342,30 @@ _Avoid_: Shared checkout, automatic main-branch merge
 One live or historical execution of a main Agent or Subagent within a Task Run, identified separately from its operating-system process and carrying its own model, lifecycle, usage, and parent relationship.
 _Avoid_: Process, Chat Session, Task Run
 
+**Runtime Instance**:
+The concrete runtime identity that carries one Agent Run's ordered lifecycle events. Reconnection, process replacement, or explicit continuation through another account creates a new Runtime Instance linked to the preceding Agent Run while preserving the Task Run and Chat Session.
+_Avoid_: Chat Session, operating-system process, reused account session
+
+**Runtime Lifecycle**:
+The single authority that normalizes source-specific runtime events, persists their order, applies lifecycle transitions, and coordinates idempotent projections for one Runtime Instance. It does not own conversation content, task definitions, tool implementations, or extension code.
+_Avoid_: Global event bus, transcript store, main.rs observer
+
+**Lifecycle Event**:
+A bounded semantic fact that can change Runtime Instance state, such as Agent start, Tool start or finish, completion evaluation, compaction, cancellation, or disconnect. Token deltas, reasoning deltas, and raw terminal chunks are streaming data rather than Lifecycle Events.
+_Avoid_: Every RPC frame, full tool output, chat message body
+
+**Runtime Projection**:
+An idempotent application of a committed Lifecycle Event to a specialized module such as Task Control, Work Manager, Context Engine, or Completion Coordinator. Projection checkpoints make incomplete application replayable without treating the specialized module as a second lifecycle authority.
+_Avoid_: Duplicate event interpretation, untracked callback, extension side effect
+
+**Reconciling Runtime**:
+A Runtime Instance whose Lifecycle Event was durably accepted but whose required projections have not all completed. It cannot claim terminal completion until replay finishes or the unresolved failure is explicitly surfaced.
+_Avoid_: Completed with warning, silently dropped event, failed Task Run
+
+**Runtime Intent**:
+A validated request submitted to Runtime Lifecycle by a client or extension, such as cancel, continue, or report external work completion. Extensions observe Lifecycle Events but cannot directly forge authoritative transitions.
+_Avoid_: Writable event subscription, raw extension event, permission bypass
+
 **Subagent Model Policy**:
 The user's configuration of which models are eligible for qualified Subagent work and what happens when a selected model is unavailable. It provides candidates after delegation is justified; it does not cause delegation by itself.
 _Avoid_: Automatic downgrade, cheapest-model switch
@@ -419,3 +443,39 @@ _Avoid_: Automatic skill match, installed skill
 **Skill Workflow Override**:
 The task-scoped precedence given to an Explicit Skill Invocation over Picode's default work method and, for a Harness Task, over its Task Harness. It remains bounded only by the capabilities and enforcement of the underlying APIs and explicitly accepted user permissions.
 _Avoid_: Global policy replacement, silent profile mutation
+
+**Task Experience**:
+The single public task/session interface shared by Picode desktop and headless clients. It coordinates Task Control mutations with bounded canonical Session Events while leaving full conversation bodies in Pi.
+_Avoid_: Second agent runtime, duplicated transcript database, UI-only task API
+
+**Guidance Policy**:
+The small deterministic policy that chooses Lean, Structured, or Guided assistance from user choice, task signals, and evaluated model reliability. It never changes Assurance or authorization requirements.
+_Avoid_: Mandatory prompt harness, model capability guess, Gate bypass
+
+**Rewind Preview**:
+A fresh, exact-confirmation description of the effective session events or Git-backed workspace changes that a rewind would hide or restore. Application appends a compensating event and preserves the audit journal.
+_Avoid_: Destructive history truncation, implicit file rollback, Git history rewrite
+
+**Delegation Contract**:
+The bounded child-work envelope containing objective, scope, required output, acceptance checks, stop conditions, effective tools, permissions, isolation, and mandatory parent review.
+_Avoid_: Free-form child prompt, inherited unlimited authority, child self-acceptance
+
+**Effective Capability Report**:
+A read-only task diagnostic showing the actual Resident Core, catalog visibility, task bindings, loaded state, prompt visibility, and rule/Skill/override provenance without loading tools.
+_Avoid_: Settings wish list, capability activation, resident inventory only
+
+**Extension Manager**:
+The sole authoritative inventory and lifecycle source for Skills, Hooks, MCP, LSP, DAP, Firstmate, and native extension components. Discovery adapters may publish facts into it, while other catalogs and the GUI are read-only projections.
+_Avoid_: Per-component lifecycle database, GUI-merged state, process owner
+
+**Extension Four-State Lifecycle**:
+The ordered component projection Discovered, Enabled, Trusted, and Running. Enabled makes a component discoverable without starting it; Trusted records reviewed provenance without adding permissions; Running requires an owned Work Handle.
+_Avoid_: Enabled means resident, trust means unrestricted, configured means running
+
+**Extension Manifest v2**:
+The reviewed component record containing source and immutable pin/hash, version, license, platforms, component types, declared permissions, health check, and resource limits.
+_Avoid_: Executable path only, floating remote branch, trust flag as permission
+
+**Extension Process Adapter**:
+The Work Manager boundary through which Hook, MCP, LSP, DAP, and native extension work receives one component identity, owner, status, cancellation, timeout, crash result, and bounded output.
+_Avoid_: Adapter-owned process table, raw child process in the GUI, unowned background worker

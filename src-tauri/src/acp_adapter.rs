@@ -2,6 +2,7 @@
 
 use crate::session_kernel::{
     AppendOutcome, SessionDescriptor, SessionEvent, SessionKernel, SessionKind,
+    SessionRewindPreview,
 };
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -64,7 +65,7 @@ impl AcpAdapter {
                         "promptCapabilities": { "image": false, "embeddedContext": true },
                         "picode": {
                             "version": PICODE_ACP_EXTENSION_VERSION,
-                            "features": ["harness", "workHandles", "evidence", "resourceSnapshot", "backup"]
+                            "features": ["harness", "workHandles", "evidence", "resourceSnapshot", "backup", "previewedRewind"]
                         }
                     }
                 }),
@@ -220,18 +221,32 @@ impl AcpAdapter {
                 sessions.purge(session_id, confirmation)?;
                 (json!({ "purged": true }), Vec::new())
             }
-            "session/rewind" => {
+            "session/rewindPreview" => {
                 let session_id = required_string(&params, "sessionId")?;
                 let sequence = params
                     .get("sequence")
                     .and_then(Value::as_u64)
                     .ok_or_else(|| "ACP rewind sequence is required".to_owned())?;
+                (
+                    serde_json::to_value(sessions.preview_rewind(session_id, sequence)?)
+                        .map_err(|error| format!("Cannot encode rewind preview: {error}"))?,
+                    Vec::new(),
+                )
+            }
+            "session/rewind" => {
+                let preview: SessionRewindPreview = serde_json::from_value(
+                    params
+                        .get("preview")
+                        .cloned()
+                        .ok_or_else(|| "ACP rewind preview is required".to_owned())?,
+                )
+                .map_err(|error| format!("Invalid ACP rewind preview: {error}"))?;
                 let confirmation = required_string(&params, "confirmation")?;
-                if confirmation != session_id {
-                    return Err("ACP rewind requires the exact session id".to_owned());
-                }
-                sessions.rewind(session_id, sequence, now)?;
-                (json!({ "rewound": true, "sequence": sequence }), Vec::new())
+                sessions.apply_rewind(&preview, confirmation, now)?;
+                (
+                    json!({ "rewound": true, "sequence": preview.target_sequence }),
+                    Vec::new(),
+                )
             }
             "session/update" => {
                 let session_id = required_string(&params, "sessionId")?;
@@ -369,6 +384,66 @@ mod tests {
             )
             .unwrap();
         assert_eq!(loaded.result["updates"].as_array().unwrap().len(), 2);
+        drop(adapter);
+        drop(sessions);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn desktop_and_headless_clients_share_previewed_append_only_rewind() {
+        let root = std::env::temp_dir().join(format!("picode-acp-rewind-{}", uuid::Uuid::new_v4()));
+        let sessions = Arc::new(Mutex::new(SessionKernel::open(&root, 4096).unwrap()));
+        let adapter = AcpAdapter::new(sessions.clone());
+        adapter
+            .handle(
+                &json!({
+                    "id": 1,
+                    "method": "session/new",
+                    "params": { "sessionId": "session-a", "kind": "simple" }
+                }),
+                10,
+            )
+            .unwrap();
+        for (id, message) in [("one", "first"), ("two", "second")] {
+            adapter
+                .handle(
+                    &json!({
+                        "id": id,
+                        "method": "session/prompt",
+                        "params": { "sessionId": "session-a", "requestId": id, "message": message }
+                    }),
+                    11,
+                )
+                .unwrap();
+        }
+
+        let preview = adapter
+            .handle(
+                &json!({
+                    "id": 4,
+                    "method": "session/rewindPreview",
+                    "params": { "sessionId": "session-a", "sequence": 1 }
+                }),
+                20,
+            )
+            .unwrap()
+            .result;
+        assert_eq!(preview["eventsToHide"], 1);
+        let confirmation = preview["confirmation"].as_str().unwrap();
+        adapter
+            .handle(
+                &json!({
+                    "id": 5,
+                    "method": "session/rewind",
+                    "params": { "preview": preview, "confirmation": confirmation }
+                }),
+                21,
+            )
+            .unwrap();
+
+        let loaded = sessions.lock().unwrap().load("session-a").unwrap();
+        assert_eq!(loaded.events.len(), 1);
+        assert_eq!(loaded.journal_events.len(), 3);
         drop(adapter);
         drop(sessions);
         fs::remove_dir_all(root).unwrap();

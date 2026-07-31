@@ -56,6 +56,9 @@ It also does not move browser control, phone remote control, large agent teams, 
 19. Automatic Subagent model routing requires recorded Delegation Eligibility; price alone is never sufficient.
 20. A Runtime Monitor distinguishes running, waiting, completed, failed, cancelled, suspected-stall, and unresponsive states; low CPU or long duration alone never proves a stall.
 21. A suspected-stall assessment never automatically terminates an Agent Run.
+22. Guidance may add structure or request planning, but it never weakens authorization, Gate, workspace, or completion policy.
+23. Rewind is previewed and append-only: it records a compensating event and never silently deletes the audit journal.
+24. Hooks are advisory lifecycle integrations and never gain completion authority.
 
 ## 4. System boundary
 
@@ -238,9 +241,25 @@ The user may explicitly authorize multi-round testing or persistence until a sta
 
 Every main-Agent and Subagent execution is represented as an Agent Run linked to its Task Run and, for a Subagent, to its parent Agent Run. The record exposes lifecycle state, foreground or background mode, provider, account, model, current or last action, start and end time, last progress time, waiting reason, token and cost usage when reported, and termination result.
 
+Each Agent Run is carried by a distinct Runtime Instance. Pi, ACP, and future runtime protocols are translated by source adapters owned by Runtime Lifecycle; application entry points only submit raw events and identities. Runtime Lifecycle is the sole authority for semantic event ordering and state transitions, while Task Control, Work Manager, Context Engine, Session Kernel, and Completion Coordinator remain specialized projections or streaming stores.
+
+Lifecycle Events are committed before required projections. If any required projection fails, the Runtime Instance becomes `Reconciling` and cannot claim completion until idempotent replay finishes. Event identity plus per-projection checkpoints prevent duplicate side effects. High-frequency text, reasoning, terminal chunks, and tool progress do not enter the durable lifecycle log; streaming stores handle them directly and bounded progress observations may be coalesced by Work identity.
+
+`agent_end` ends one Agent Run turn and requests completion evaluation; it does not by itself complete the Task Run. A Simple Task uses the built-in policy to settle that Runtime Instance while leaving its conversational Task Run ready for another explicit turn. A Harness Task completes only after its active Completion Gates pass. The resulting Runtime transition is Completed, Running for a bounded Gate-requested continuation, Waiting for User, or Reconciling on evaluation failure.
+
+Provider replacement or runtime reconnection preserves the Chat Session and Task Run but creates a new Agent Run and Runtime Instance linked to the previous Agent Run. Extensions receive read-only Lifecycle Events and Runtime state (including `Reconciling`) and may submit validated Runtime Intents through the owning task controls; direct begin, record, and end mutations are not part of the client control surface. Extensions cannot forge terminal events, replace runtime identity, or raise authority.
+
 The Runtime Monitor presents active and recent Agent Runs as a hierarchy rather than as an undifferentiated process list. It also shows operating-system process identity, CPU, memory, and process uptime when available. When multiple Agent Runs share a process or a provider omits usage, Picode labels the value as shared, estimated, or unavailable instead of inventing per-Agent precision.
 
 Health assessment uses process liveness, model-request state, tool state, permission or user waits, heartbeats, and meaningful progress signals. Waiting for a model response, a long tool, user input, or permission is a named state rather than a stall. `Suspected Stall` means progress is overdue with no known explanation; `Unresponsive` requires a failed process or control-plane probe. Either state is diagnostic and visible, but only the user or the effective task workflow may cancel, retry, or replace the Agent Run.
+
+### 7.6 Adaptive Guidance, Task Experience, and rewind
+
+Task Experience is the single public task/session seam used by desktop and headless clients. Its external interface exposes one creation intent and one lifecycle-transition intent; callers do not coordinate Task Control and Session Kernel themselves. Creating, starting, and explicitly continuing a task updates Task Control and appends the corresponding bounded semantic event to the canonical Session Kernel stream. A failed creation compensates any newly created empty Session instead of leaving an orphan, while a pre-existing Session is never removed. Pi JSONL remains the owner of full conversation bodies; task events do not duplicate streamed text, reasoning, or tool logs.
+
+Guidance is independent from Assurance. `Lean` leaves a capable model with the ordinary Pi loop, `Adaptive` introduces only the structure justified by ambiguity, failures, omissions, or evaluated model reliability, and `Guided` is explicit. A user planning request is always honored. Harness completion Gates remain mandatory at every Guidance level.
+
+Session rewind requires a fresh preview and exact confirmation. Applying it appends a rewind marker, preserves the full audit journal, and changes only the effective event projection. Workspace rewind remains a separate explicit Git-backed preview/apply operation; it is never inferred from conversation rewind.
 
 ## 8. Verification and completion
 
@@ -368,6 +387,14 @@ A Skill Workflow Override may change process order, preferred tools, investigati
 The lowest-level tool and API layer, not the Harness template, enforces actual capability limits, permission prompts, secret handling, destructive-operation confirmations, and any host sandbox. An override cannot claim a capability or permission that layer did not grant. Account interruption still requires explicit `continue`, because it controls whether a new execution begins rather than how the development workflow is organized.
 
 When an invoked Skill conflicts with the current Task Harness, Picode creates a Task Override and follows the Skill within its declared scope. It does not require the reusable project Profile to be edited. The completion label must describe the effective workflow and may not pretend that skipped or replaced template gates ran. More specific or later user instructions take precedence over a Skill; irreconcilable conflicts between explicitly invoked Skills require user direction rather than silent priority guessing.
+
+### 11.6 Hooks, delegation contracts, and effective diagnostics
+
+Typed Hook Points are `BeforeTool`, `AfterTool`, `Stop`, and `SubagentStop`. Disabled hooks start no process; enabled hooks must also be trusted and run through Work Manager. Hook output may advise continuation or block a transition, but cannot create Gate evidence or declare completion.
+
+Every delegated unit carries a machine-readable Delegation Contract containing objective, allowed scope, required output, acceptance checks, stop conditions, effective tools, permissions, isolation, and parent-review requirement. The child cannot expand parent authority, and only the parent accepts the result.
+
+The Effective Capability Report is read-only and task-specific. It exposes Resident Core entries, task bindings, catalog visibility, loaded state, prompt visibility, and provenance for project rules, Skills, and task overrides. Inspecting the report loads no capability and starts no process.
 
 ## 12. Performance and compatibility constraints
 
