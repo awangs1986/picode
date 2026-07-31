@@ -1,6 +1,6 @@
 # Picode Harness V2：新 P0–P5
 
-状态：P0–P4 生产链路已接通并通过本地 Gate；P5 仍为规划
+状态：P0–P4 生产链路已接通并通过当前本机 Gate；2026-08-01 健壮性审计确认仍有升级残留和浅闭环，后续权威优先级见 [Picode 健壮性收口与 P1–P5 路线图](P1-P5-ROBUSTNESS-ROADMAP.md)。P5 仍为默认关闭的可选规划。
 日期：2026-07-31  
 依据：[Picode 与 grok-build Harness 对比](research/grok-build-harness-comparison-2026-07-31.md)
 
@@ -14,7 +14,7 @@ Picode 是面向软件和游戏开发者的轻量桌面开发 Agent。它使用 
 - **验证原则**：Gate 变绿不等于有效；必须有受控红探针证明同一 Gate 能拒绝错误候选。
 - **开发角色**：Picode 帮开发者完成本地设计、实现、测试和交付证据；CI 服务器提供权威复验，main 审核者/提交者仍在外部。
 
-旧的 [P0–P5 backlog](P0-P5-BACKLOG.md) 保留为 Picode 0.3 的历史实施记录。本文件是下一轮 Harness V2，不重写旧任务的完成状态。
+旧的 [P0–P5 backlog](P0-P5-BACKLOG.md) 保留为 Picode 0.3 的历史实施记录。本文件记录 Harness V2 的设计与既有实现，不重写旧任务的完成状态；新的收口顺序由 [2026-08-01 健壮性路线图](P1-P5-ROBUSTNESS-ROADMAP.md) 统一管理，避免把“接口存在”误当作“真实工作闭环完成”。
 
 ## 2. 架构主线：八个深模块
 

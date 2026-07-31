@@ -4,7 +4,9 @@ Status: product direction accepted; implementation not yet authorized by this do
 
 Source specification: [`docs/specs/task-execution.md`](docs/specs/task-execution.md)
 
-Issue-ready execution backlog: [`docs/P0-P5-BACKLOG.md`](docs/P0-P5-BACKLOG.md)
+Current robustness and improvement queue: [`docs/P1-P5-ROBUSTNESS-ROADMAP.md`](docs/P1-P5-ROBUSTNESS-ROADMAP.md)
+
+Historical Picode 0.3 execution backlog: [`docs/P0-P5-BACKLOG.md`](docs/P0-P5-BACKLOG.md)
 
 ## Delivery rule
 
