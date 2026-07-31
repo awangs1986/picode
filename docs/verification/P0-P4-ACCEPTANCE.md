@@ -11,6 +11,12 @@ Vitest suite, Rust tests, strict Clippy, Rust formatting, CSS/design checks,
 Tauri permission checks, extension bundling, and Biome. The machine-readable
 result is `docs/verification/p0-p4-gate.json`.
 
+The gate also runs `scripts/performance-gate.mjs` for bounded long-session,
+zero-resident extension, and streaming-first-event contracts. Machine/provider
+timings use the explicit baseline/current mode documented in
+`docs/verification/PERFORMANCE-GATE.md`; absent measurements are reported as
+`not_requested`, never treated as invented performance evidence.
+
 The gate deliberately uses direct executable-plus-argument invocations. It does
 not invoke a shell, does not start a model provider, and does not write project
 files. A failed check leaves the previous JSON artifact intact only until the
@@ -40,6 +46,14 @@ exit code, duration, signal, and bounded output tail.
   DAP adapter process lifecycle with bounded events, project-adapter registries,
   deduplicated diagnostics, advisory subagents, task-scoped cancellation, crash/hang cleanup, and content-addressed
   regression records with deterministic comparison.
+
+The Harness V2 closure additionally routes real Pi events into RuntimeSpine,
+uses owner-confirmed WorkManager wait/cancel, persists ACP delivery
+acknowledgements, runs real before-tool hooks and automatic BeforeComplete
+Gate/red probes, routes CodeIntelligence to the embedded real LSP adapter,
+checks delegation authority before actual spawn, and uses ExtensionManager as
+the production facade. These paths are exercised through the same broker
+controls used by the GUI/headless adapters rather than test-only state models.
 
 ## Safety and scope notes
 

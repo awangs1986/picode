@@ -696,6 +696,61 @@ function lspMethod(operation: string): string | null {
   }
 }
 
+async function executePicodeLspRequest(
+  rawParams: Record<string, unknown>,
+  cwd: string,
+  signal?: AbortSignal,
+) {
+  signal?.throwIfAborted?.();
+  const language = typeof rawParams.language === "string" ? rawParams.language : "";
+  const operation = typeof rawParams.operation === "string" ? rawParams.operation : "";
+  const requestedPath = typeof rawParams.path === "string" ? rawParams.path : "";
+  const server = languageServerCommand(language);
+  if (!server) throw new Error(`No Picode LSP adapter is configured for ${language || "unknown"}`);
+  const root = fs.realpathSync(cwd || process.cwd());
+  const file = fs.realpathSync(path.resolve(root, requestedPath));
+  const relative = path.relative(root, file);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error("LSP source file must stay inside the current workspace");
+  }
+  const method = lspMethod(operation);
+  if (!method) throw new Error(`Unsupported LSP operation: ${operation}`);
+  const source = fs.readFileSync(file, "utf8");
+  if (Buffer.byteLength(source) > 1024 * 1024) {
+    throw new Error("LSP source file exceeds the 1 MiB model-facing limit");
+  }
+  const uri = pathToFileUrl(file);
+  const position = {
+    line: Math.max(0, Number(rawParams.line || 1) - 1),
+    character: Math.max(0, Number(rawParams.character || 1) - 1),
+  };
+  const params =
+    operation === "documentSymbols"
+      ? { textDocument: { uri } }
+      : operation === "references"
+        ? { textDocument: { uri }, position, context: { includeDeclaration: true } }
+        : { textDocument: { uri }, position };
+  const result = await runScopedLspRequest({
+    command: server.command,
+    args: server.args,
+    cwd: root,
+    method,
+    params,
+    notifications: [
+      {
+        method: "textDocument/didOpen",
+        params: {
+          textDocument: { uri, languageId: language, version: 1, text: source },
+        },
+      },
+    ],
+    timeoutMs: 15_000,
+    maxOutputBytes: 2 * 1024 * 1024,
+    signal,
+  });
+  return { result, language, operation, path: relative.replace(/\\/g, "/") };
+}
+
 function findPublicDir(): string {
   const candidates: string[] = [];
   const seen = new Set<string>();
@@ -2628,61 +2683,21 @@ export default function (pi: ExtensionAPI) {
     promptSnippet: "Request scoped language-server navigation after discovering an LSP capability.",
     parameters: lspParameters,
     async execute(_toolCallId, rawParams, signal, _onUpdate, ctx) {
-      signal?.throwIfAborted?.();
-      const params = rawParams as unknown as Record<string, unknown>;
-      const language = typeof params.language === "string" ? params.language : "";
-      const operation = typeof params.operation === "string" ? params.operation : "";
-      const requestedPath = typeof params.path === "string" ? params.path : "";
-      const server = languageServerCommand(language);
-      if (!server)
-        throw new Error(`No Picode LSP adapter is configured for ${language || "unknown"}`);
-      const root = fs.realpathSync(ctx.cwd || process.cwd());
-      const file = fs.realpathSync(path.resolve(root, requestedPath));
-      const relative = path.relative(root, file);
-      if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
-        throw new Error("LSP source file must stay inside the current workspace");
-      }
-      const method = lspMethod(operation);
-      if (!method) throw new Error(`Unsupported LSP operation: ${operation}`);
-      const text = fs.readFileSync(file, "utf8");
-      if (Buffer.byteLength(text) > 1024 * 1024) {
-        throw new Error("LSP source file exceeds the 1 MiB model-facing limit");
-      }
-      const uri = pathToFileUrl(file);
-      const position = {
-        line: Math.max(0, Number(params.line || 1) - 1),
-        character: Math.max(0, Number(params.character || 1) - 1),
-      };
-      const requestParams =
-        operation === "documentSymbols"
-          ? { textDocument: { uri } }
-          : operation === "references"
-            ? { textDocument: { uri }, position, context: { includeDeclaration: true } }
-            : { textDocument: { uri }, position };
-      const result = await runScopedLspRequest({
-        command: server.command,
-        args: server.args,
-        cwd: root,
-        method,
-        params: requestParams,
-        notifications: [
-          {
-            method: "textDocument/didOpen",
-            params: {
-              textDocument: { uri, languageId: language, version: 1, text },
-            },
-          },
-        ],
-        timeoutMs: 15_000,
-        maxOutputBytes: 2 * 1024 * 1024,
+      const response = await executePicodeLspRequest(
+        rawParams as unknown as Record<string, unknown>,
+        ctx.cwd || process.cwd(),
         signal,
-      });
-      const encoded = JSON.stringify(result, null, 2);
+      );
+      const encoded = JSON.stringify(response.result, null, 2);
       const bounded =
         encoded.length > 64 * 1024 ? `${encoded.slice(0, 64 * 1024)}\n… truncated` : encoded;
       return {
         content: [{ type: "text", text: bounded }],
-        details: { language, operation, path: relative.replace(/\\/g, "/") },
+        details: {
+          language: response.language,
+          operation: response.operation,
+          path: response.path,
+        },
       };
     },
   });
@@ -2826,6 +2841,13 @@ export default function (pi: ExtensionAPI) {
         "subagent_spawn",
         {
           useConfiguredPolicy: true,
+          delegationOptions: {
+            advancedWorkflow: false,
+            currentDepth: 0,
+            maxDepth: 1,
+            parentTools: ["search", "read", "execute", "edit", "write"],
+            parentPermissions: ["workspace.read", "workspace.write", "process.execute"],
+          },
           request: {
             taskId,
             parentRunId,
@@ -2938,6 +2960,13 @@ export default function (pi: ExtensionAPI) {
             "subagent_spawn",
             {
               useConfiguredPolicy: true,
+              delegationOptions: {
+                advancedWorkflow: false,
+                currentDepth: 0,
+                maxDepth: 1,
+                parentTools: ["search", "read", "execute", "edit", "write"],
+                parentPermissions: ["workspace.read", "workspace.write", "process.execute"],
+              },
               thinkingLevel: delegation.effort ? effortMap[delegation.effort] : undefined,
               request: {
                 taskId,
@@ -3012,6 +3041,13 @@ export default function (pi: ExtensionAPI) {
         "subagent_spawn",
         {
           useConfiguredPolicy: true,
+          delegationOptions: {
+            advancedWorkflow: false,
+            currentDepth: 0,
+            maxDepth: 1,
+            parentTools: ["search", "read", "execute", "edit", "write"],
+            parentPermissions: ["workspace.read", "workspace.write", "process.execute"],
+          },
           advisory: {
             role: params.role,
             contextBytes: work.contextBytes,
@@ -3321,11 +3357,35 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("tool_call", async (event) => {
     const context = globalState.subagentContext;
-    if (!context || subagentToolAllowed(context, event.toolName)) return undefined;
-    return {
-      block: true,
-      reason: `Subagent tool ${event.toolName} is outside its declared delegation envelope`,
-    };
+    if (context && !subagentToolAllowed(context, event.toolName)) {
+      return {
+        block: true,
+        reason: `Subagent tool ${event.toolName} is outside its declared delegation envelope`,
+      };
+    }
+    const task = globalState.taskCapabilityContext;
+    if (!task) return undefined;
+    try {
+      const runId = await activeAgentRunForTask(task.taskId);
+      const outcomes = (await callBrokerControl(
+        "hook_invoke",
+        { event: "before_tool", taskId: task.taskId, runId },
+        { timeoutMs: 30_000 },
+      )) as Array<{ state?: string; hookId?: string; message?: string }>;
+      const failed = outcomes.find((outcome) => outcome.state === "failed");
+      if (failed) {
+        return {
+          block: true,
+          reason: `Hook ${failed.hookId || "before_tool"} rejected the tool: ${failed.message || "failed"}`,
+        };
+      }
+    } catch (cause) {
+      // Workflow hooks are intentionally fail-open and can never replace the
+      // lower authorization boundary. The runtime/completion view will still
+      // show that the hook did not produce verification evidence.
+      console.warn("[Picode hooks] before_tool invocation unavailable:", errMessage(cause));
+    }
+    return undefined;
   });
 
   pi.on("turn_start", async (_event, _ctx) => {
@@ -3586,6 +3646,31 @@ export default function (pi: ExtensionAPI) {
               .filter((tool) => subagentToolAllowed(context, tool)),
           );
           sendTo(ws, success("picode_subagent_context", { parentRunId: context.parentRunId }));
+          break;
+        }
+
+        case "picode_lsp_request": {
+          if (!ctx) {
+            sendTo(ws, error("picode_lsp_request", "No active workspace context"));
+            break;
+          }
+          try {
+            const response = await executePicodeLspRequest(
+              command as unknown as Record<string, unknown>,
+              ctx.cwd || process.cwd(),
+            );
+            const encoded = JSON.stringify(response.result);
+            if (Buffer.byteLength(encoded) > 64 * 1024) {
+              sendTo(
+                ws,
+                error("picode_lsp_request", "LSP result exceeds the 64 KiB control limit"),
+              );
+              break;
+            }
+            sendTo(ws, success("picode_lsp_request", response));
+          } catch (cause) {
+            sendTo(ws, error("picode_lsp_request", errMessage(cause)));
+          }
           break;
         }
 

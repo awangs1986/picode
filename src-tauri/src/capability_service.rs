@@ -1,7 +1,7 @@
 use crate::capability::{
     parse_tools_md, Activation, CapabilityCatalog, CapabilityManifest, CapabilityScope,
     CapabilitySearchResult, CapabilitySummary, CapabilityTier, IndexLimits, IndexMatch,
-    LazyLspManager, LocalCodeIndex, ResidentCore,
+    LocalCodeIndex, ResidentCore,
 };
 use crate::execution::TaskKind;
 use serde::{Deserialize, Serialize};
@@ -55,7 +55,6 @@ pub struct CapabilityService {
     state: PersistedCapabilityState,
     catalog: CapabilityCatalog,
     indexes: BTreeMap<String, LocalCodeIndex>,
-    lsp: LazyLspManager,
 }
 
 impl CapabilityService {
@@ -94,7 +93,6 @@ impl CapabilityService {
             state,
             catalog,
             indexes: BTreeMap::new(),
-            lsp: LazyLspManager::default(),
         };
         service.persist()?;
         Ok(service)
@@ -292,54 +290,6 @@ impl CapabilityService {
             .get(task_id)
             .ok_or_else(|| "task code index is not loaded".to_owned())?;
         Ok(index.search(query, limit.clamp(1, 100)))
-    }
-
-    pub fn start_lsp(
-        &mut self,
-        task_id: &str,
-        task_kind: TaskKind,
-        language: &str,
-        scope: &str,
-        at: u64,
-    ) -> Result<String, String> {
-        if task_kind != TaskKind::Harness {
-            return Err("LSP is available only to a workspace-bound Harness Task".to_owned());
-        }
-        self.lsp.start_for_scope(task_id, language, scope, at)
-    }
-
-    pub fn record_lsp_diagnostics(
-        &mut self,
-        session_id: &str,
-        path: &str,
-        version: &str,
-        diagnostics: Vec<String>,
-    ) -> Result<(), String> {
-        self.lsp
-            .record_diagnostics(session_id, path, version, diagnostics)
-    }
-
-    pub fn lsp_diagnostics(
-        &self,
-        session_id: &str,
-        path: &str,
-        version: &str,
-    ) -> Result<Vec<String>, String> {
-        Ok(self
-            .lsp
-            .diagnostics(session_id, path, version)?
-            .iter()
-            .take(100)
-            .cloned()
-            .collect())
-    }
-
-    pub fn shutdown_lsp(&mut self, session_id: &str) -> Result<(), String> {
-        self.lsp.stop(session_id)
-    }
-
-    pub fn running_lsp_count(&self) -> usize {
-        self.lsp.running_count()
     }
 
     #[cfg(test)]

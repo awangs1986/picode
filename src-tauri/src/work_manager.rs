@@ -4,7 +4,7 @@ use crate::orchestration_service::{ManagedJobStatus, ManagedJobView, Orchestrati
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
@@ -61,14 +61,25 @@ pub struct StartCommand {
 pub struct WorkManager {
     commands: Arc<OrchestrationService>,
     external: Mutex<BTreeMap<String, WorkHandle>>,
+    external_changed: Condvar,
+    external_canceller: Mutex<Option<ExternalCanceller>>,
 }
+
+type ExternalCanceller = Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
 
 impl WorkManager {
     pub fn new(commands: Arc<OrchestrationService>) -> Self {
         Self {
             commands,
             external: Mutex::new(BTreeMap::new()),
+            external_changed: Condvar::new(),
+            external_canceller: Mutex::new(None),
         }
+    }
+
+    pub fn set_external_canceller(&self, canceller: ExternalCanceller) -> Result<(), String> {
+        *self.external_canceller.lock().map_err(lock_error)? = Some(canceller);
+        Ok(())
     }
 
     pub fn start_command(&self, request: &StartCommand) -> Result<WorkHandle, String> {
@@ -100,24 +111,67 @@ impl WorkManager {
         if self.commands.job(work_id).is_ok() {
             return self.commands.wait_job(work_id, timeout).map(command_handle);
         }
-        self.status(work_id)
+        let deadline = std::time::Instant::now() + timeout;
+        let mut external = self.external.lock().map_err(lock_error)?;
+        loop {
+            let handle = external
+                .get(work_id)
+                .cloned()
+                .ok_or_else(|| "work handle missing".to_owned())?;
+            if handle.status != WorkStatus::Running {
+                return Ok(handle);
+            }
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                return Ok(handle);
+            }
+            let remaining = deadline.saturating_duration_since(now);
+            let (next, _) = self
+                .external_changed
+                .wait_timeout(external, remaining)
+                .map_err(lock_error)?;
+            external = next;
+        }
     }
 
     pub fn cancel(&self, work_id: &str) -> Result<WorkHandle, String> {
         if self.commands.job(work_id).is_ok() {
             return self.commands.cancel_job(work_id).map(command_handle);
         }
+        let current = self
+            .external
+            .lock()
+            .map_err(lock_error)?
+            .get(work_id)
+            .cloned()
+            .ok_or_else(|| "work handle missing".to_owned())?;
+        if current.status != WorkStatus::Running {
+            return Err("work handle is already terminal".to_owned());
+        }
+        let canceller = self
+            .external_canceller
+            .lock()
+            .map_err(lock_error)?
+            .clone()
+            .ok_or_else(|| "external work owner has no cancellation adapter".to_owned())?;
+        canceller(work_id)?;
+        let observed = self.wait(work_id, Duration::from_secs(5))?;
+        if observed.status != WorkStatus::Running {
+            return Ok(observed);
+        }
         let mut external = self.external.lock().map_err(lock_error)?;
         let handle = external
             .get_mut(work_id)
             .ok_or_else(|| "work handle missing".to_owned())?;
-        if handle.status != WorkStatus::Running {
-            return Err("work handle is already terminal".to_owned());
-        }
         handle.status = WorkStatus::TerminationUnknown;
-        handle.termination_result =
-            Some("termination_unknown: external owner must confirm exit".to_owned());
-        Ok(handle.clone())
+        handle.termination_result = Some(
+            "termination_unknown: cancellation was sent but terminal state was not observed"
+                .to_owned(),
+        );
+        let result = handle.clone();
+        drop(external);
+        self.external_changed.notify_all();
+        Ok(result)
     }
 
     pub fn upsert_external(&self, handle: WorkHandle) -> Result<(), String> {
@@ -132,6 +186,7 @@ impl WorkManager {
             .lock()
             .map_err(lock_error)?
             .insert(handle.id.clone(), handle);
+        self.external_changed.notify_all();
         Ok(())
     }
 
@@ -179,7 +234,7 @@ fn lock_error<T>(_: std::sync::PoisonError<T>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{StartCommand, WorkKind, WorkManager, WorkStatus};
+    use super::{StartCommand, WorkHandle, WorkKind, WorkManager, WorkStatus};
     use crate::orchestration_service::OrchestrationService;
     use std::fs;
     use std::sync::Arc;
@@ -222,6 +277,50 @@ mod tests {
         assert_eq!(finished.bounded_output.len(), 10);
         let artifact = fs::read_to_string(finished.output_artifact.as_ref().unwrap()).unwrap();
         assert!(artifact.contains("work-manager-output"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn external_wait_observes_owner_updates_and_cancel_uses_the_owner_adapter() {
+        let root =
+            std::env::temp_dir().join(format!("picode-work-external-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let service = Arc::new(OrchestrationService::open(&root, 1024).unwrap());
+        let manager = Arc::new(WorkManager::new(service));
+        manager
+            .upsert_external(WorkHandle {
+                id: "agent-a".into(),
+                owner_task_id: "task-a".into(),
+                owner_run_id: "agent-a".into(),
+                parent_work_id: None,
+                kind: WorkKind::Agent,
+                status: WorkStatus::Running,
+                process_id: Some(42),
+                started_at: 1,
+                bounded_output: Vec::new(),
+                output_artifact: None,
+                termination_result: None,
+            })
+            .unwrap();
+        let owner = manager.clone();
+        manager
+            .set_external_canceller(Arc::new(move |id| {
+                let mut terminal = owner.status(id)?;
+                terminal.status = WorkStatus::Cancelled;
+                terminal.termination_result = Some("owner confirmed cancellation".into());
+                owner.upsert_external(terminal)
+            }))
+            .unwrap();
+
+        let cancelled = manager.cancel("agent-a").unwrap();
+        assert_eq!(cancelled.status, WorkStatus::Cancelled);
+        assert_eq!(
+            manager
+                .wait("agent-a", Duration::from_millis(10))
+                .unwrap()
+                .status,
+            WorkStatus::Cancelled
+        );
         fs::remove_dir_all(root).unwrap();
     }
 }

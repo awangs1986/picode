@@ -6,7 +6,7 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::tungstenite::Message;
 
 const PROTOCOL_VERSION: u8 = 1;
@@ -40,6 +40,7 @@ struct BrokerInner {
     next_client_id: AtomicU64,
     control_handler: Mutex<Option<ControlHandler>>,
     upstream_event_observer: Mutex<Option<UpstreamEventObserver>>,
+    pending_host_requests: Mutex<HashMap<String, oneshot::Sender<Result<Value, String>>>>,
 }
 
 #[derive(Clone)]
@@ -137,6 +138,66 @@ impl BrokerWs {
                 .to_string(),
             )
             .map_err(|_| format!("Pi process on port {port} is unavailable"))
+    }
+
+    /// Sends one host-originated command and waits for the correlated Pi
+    /// extension response. This is the production adapter for native services
+    /// (for example Code Intelligence) that are implemented by the embedded Pi
+    /// runtime rather than duplicated in Rust.
+    pub async fn request_command_to_port(
+        &self,
+        port: u16,
+        payload: Value,
+        timeout: std::time::Duration,
+    ) -> Result<Value, String> {
+        self.ensure_upstream(port);
+        let upstream_tx = self
+            .inner
+            .upstreams
+            .lock()
+            .unwrap()
+            .get(&port)
+            .cloned()
+            .ok_or_else(|| format!("Pi process on port {port} is unavailable"))?;
+        let sequence = self.inner.next_client_id.fetch_add(1, Ordering::Relaxed);
+        let request_id = format!("host-{sequence}");
+        let (sender, receiver) = oneshot::channel();
+        self.inner
+            .pending_host_requests
+            .lock()
+            .unwrap()
+            .insert(request_id.clone(), sender);
+        let outbound = json!({
+            "type": "broker_command",
+            "protocolVersion": PROTOCOL_VERSION,
+            "requestId": request_id,
+            "sourcePort": port,
+            "payload": payload,
+        })
+        .to_string();
+        if upstream_tx.send(outbound).is_err() {
+            self.inner
+                .pending_host_requests
+                .lock()
+                .unwrap()
+                .remove(&request_id);
+            return Err(format!("Pi process on port {port} is unavailable"));
+        }
+        match tokio::time::timeout(timeout, receiver).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err("Pi extension response channel closed".to_owned()),
+            Err(_) => {
+                self.inner
+                    .pending_host_requests
+                    .lock()
+                    .unwrap()
+                    .remove(&request_id);
+                Err(format!(
+                    "Pi extension request timed out after {} ms",
+                    timeout.as_millis()
+                ))
+            }
+        }
     }
 
     /// Install the handler used to execute `broker_control` requests. Called
@@ -589,6 +650,7 @@ impl BrokerWs {
         let Ok(payload) = serde_json::from_str::<Value>(text) else {
             return None;
         };
+        self.complete_host_request(&payload);
         if let Some(session_id) = extract_session_id(&payload) {
             log::debug!(
                 "[broker-ws] learn route session_id={} -> port={}",
@@ -617,6 +679,35 @@ impl BrokerWs {
             })
             .to_string(),
         )
+    }
+
+    fn complete_host_request(&self, payload: &Value) -> bool {
+        if payload.get("type").and_then(Value::as_str) != Some("response") {
+            return false;
+        }
+        let Some(request_id) = payload.get("id").and_then(Value::as_str) else {
+            return false;
+        };
+        let Some(sender) = self
+            .inner
+            .pending_host_requests
+            .lock()
+            .unwrap()
+            .remove(request_id)
+        else {
+            return false;
+        };
+        let result = if payload.get("success").and_then(Value::as_bool) == Some(true) {
+            Ok(payload.get("data").cloned().unwrap_or(Value::Null))
+        } else {
+            Err(payload
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("Pi extension request failed")
+                .to_owned())
+        };
+        let _ = sender.send(result);
+        true
     }
 
     fn broadcast(&self, message: &str) {
@@ -839,5 +930,36 @@ mod tests {
             message.pointer("/payload/type").and_then(Value::as_str),
             Some("picot_reload_accounts")
         );
+    }
+
+    #[test]
+    fn correlated_host_extension_response_completes_exactly_one_waiter() {
+        let broker = BrokerWs {
+            port: 49000,
+            inner: Arc::new(BrokerInner::default()),
+        };
+        let (sender, receiver) = oneshot::channel();
+        broker
+            .inner
+            .pending_host_requests
+            .lock()
+            .unwrap()
+            .insert("host-7".into(), sender);
+
+        assert!(broker.complete_host_request(&json!({
+            "type": "response",
+            "id": "host-7",
+            "success": true,
+            "data": { "result": "definition" },
+        })));
+        assert_eq!(
+            receiver.blocking_recv().unwrap().unwrap(),
+            json!({ "result": "definition" })
+        );
+        assert!(!broker.complete_host_request(&json!({
+            "type": "response",
+            "id": "host-7",
+            "success": true,
+        })));
     }
 }

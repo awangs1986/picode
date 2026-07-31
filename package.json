@@ -35,6 +35,7 @@
     "check:design": "bun scripts/check-design-css.mjs",
     "check:design:fix": "bun scripts/check-design-css.mjs --fix",
     "check:permissions": "bun run scripts/check-tauri-permissions.js",
+    "gate:performance": "node scripts/performance-gate.mjs",
     "check:rust": "bash scripts/check-rust.sh"
   },
   "dependencies": {

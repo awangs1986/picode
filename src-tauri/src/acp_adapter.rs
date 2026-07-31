@@ -152,7 +152,9 @@ impl AcpAdapter {
                         payload: json!({ "text": message }),
                     },
                 )?;
-                let actions = if matches!(outcome, AppendOutcome::Appended(_)) {
+                let delivered_id = prompt_delivery_event_id(request_id);
+                let delivered = sessions.contains_event(session_id, &delivered_id)?;
+                let actions = if !delivered {
                     vec![AcpRuntimeAction::Prompt {
                         session_id: session_id.to_owned(),
                         request_id: request_id.to_owned(),
@@ -274,6 +276,37 @@ impl AcpAdapter {
             actions,
         })
     }
+
+    pub fn acknowledge_prompt_delivery(
+        &self,
+        session_id: &str,
+        request_id: &str,
+        now: u64,
+    ) -> Result<(), String> {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| "Session Kernel lock is poisoned".to_owned())?;
+        let event_id = prompt_delivery_event_id(request_id);
+        if sessions.contains_event(session_id, &event_id)? {
+            return Ok(());
+        }
+        sessions.append(
+            session_id,
+            SessionEvent {
+                sequence: 0,
+                event_id,
+                event_type: "prompt_delivered".to_owned(),
+                at: now,
+                payload: json!({ "requestId": request_id }),
+            },
+        )?;
+        Ok(())
+    }
+}
+
+fn prompt_delivery_event_id(request_id: &str) -> String {
+    format!("{request_id}:delivered")
 }
 
 fn required_string<'a>(value: &'a Value, key: &str) -> Result<&'a str, String> {
@@ -293,7 +326,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     #[test]
-    fn duplicate_acp_prompt_is_persisted_and_dispatched_exactly_once() {
+    fn unacknowledged_acp_prompt_is_retried_until_delivery_is_persisted() {
         let root = std::env::temp_dir().join(format!("picode-acp-{}", uuid::Uuid::new_v4()));
         let sessions = Arc::new(Mutex::new(SessionKernel::open(&root, 4096).unwrap()));
         let adapter = AcpAdapter::new(sessions.clone());
@@ -313,21 +346,29 @@ mod tests {
             "params": { "sessionId": "session-a", "requestId": "request-a", "message": "continue" }
         });
         let first = adapter.handle(&prompt, 11).unwrap();
-        let duplicate = adapter.handle(&prompt, 12).unwrap();
+        let retry = adapter.handle(&prompt, 12).unwrap();
 
         assert!(matches!(
             first.actions.as_slice(),
             [AcpRuntimeAction::Prompt { .. }]
         ));
-        assert!(duplicate.actions.is_empty());
-        assert_eq!(duplicate.result["duplicate"], true);
+        assert!(matches!(
+            retry.actions.as_slice(),
+            [AcpRuntimeAction::Prompt { .. }]
+        ));
+        assert_eq!(retry.result["duplicate"], true);
+        adapter
+            .acknowledge_prompt_delivery("session-a", "request-a", 13)
+            .unwrap();
+        let delivered_retry = adapter.handle(&prompt, 14).unwrap();
+        assert!(delivered_retry.actions.is_empty());
         let loaded = adapter
             .handle(
                 &json!({ "id": 3, "method": "session/load", "params": { "sessionId": "session-a", "cursor": 0 } }),
-                13,
+                15,
             )
             .unwrap();
-        assert_eq!(loaded.result["updates"].as_array().unwrap().len(), 1);
+        assert_eq!(loaded.result["updates"].as_array().unwrap().len(), 2);
         drop(adapter);
         drop(sessions);
         fs::remove_dir_all(root).unwrap();

@@ -5,6 +5,7 @@ use sha2::{Digest, Sha256};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -51,9 +52,20 @@ pub struct StoredArtifact {
     pub redacted: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeCompactionState {
+    pub session_id: String,
+    pub running: bool,
+    pub started_at: u64,
+    pub finished_at: Option<u64>,
+    pub succeeded: Option<bool>,
+}
+
 pub struct ContextEngine {
     artifact_root: PathBuf,
     artifact_limit: usize,
+    native_compactions: Mutex<std::collections::BTreeMap<String, NativeCompactionState>>,
 }
 
 impl ContextEngine {
@@ -67,7 +79,62 @@ impl ContextEngine {
         Ok(Self {
             artifact_root,
             artifact_limit,
+            native_compactions: Mutex::new(std::collections::BTreeMap::new()),
         })
+    }
+
+    /// Mirrors lifecycle from Pi's real context compactor. Picode does not
+    /// maintain a competing transcript or fabricate a second compaction; this
+    /// state lets completion/runtime policy observe the canonical operation.
+    pub fn observe_native_compaction(
+        &self,
+        session_id: &str,
+        started: bool,
+        succeeded: Option<bool>,
+        at: u64,
+    ) -> Result<NativeCompactionState, String> {
+        let session_id = session_id.trim();
+        if session_id.is_empty() {
+            return Err("Native compaction session is required".to_owned());
+        }
+        let mut states = self
+            .native_compactions
+            .lock()
+            .map_err(|_| "Context compaction lock is poisoned".to_owned())?;
+        if started {
+            states.insert(
+                session_id.to_owned(),
+                NativeCompactionState {
+                    session_id: session_id.to_owned(),
+                    running: true,
+                    started_at: at,
+                    finished_at: None,
+                    succeeded: None,
+                },
+            );
+        } else {
+            let state = states
+                .get_mut(session_id)
+                .ok_or_else(|| "Native compaction finished without a start event".to_owned())?;
+            state.running = false;
+            state.finished_at = Some(at);
+            state.succeeded = succeeded;
+        }
+        // This is operational state, not history. Bound it to recent sessions.
+        while states.len() > 128 {
+            let Some(oldest) = states
+                .iter()
+                .min_by_key(|(_, state)| state.finished_at.unwrap_or(u64::MAX))
+                .map(|(id, _)| id.clone())
+            else {
+                break;
+            };
+            states.remove(&oldest);
+        }
+        states
+            .get(session_id)
+            .cloned()
+            .ok_or_else(|| "Native compaction state was not retained".to_owned())
     }
 
     pub fn prepare_turn(&self, items: &[ContextItem], budget: u32) -> Result<ContextPlan, String> {
@@ -296,6 +363,24 @@ mod tests {
             .store_artifact(&"x".repeat(33), &[])
             .unwrap_err()
             .contains("limit"));
+        drop(engine);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn native_pi_compaction_is_observed_without_copying_the_transcript() {
+        let root = std::env::temp_dir().join(format!("picode-compaction-{}", uuid::Uuid::new_v4()));
+        let engine = ContextEngine::open(&root, 32).unwrap();
+        let started = engine
+            .observe_native_compaction("session-a", true, None, 10)
+            .unwrap();
+        assert!(started.running);
+        let finished = engine
+            .observe_native_compaction("session-a", false, Some(true), 20)
+            .unwrap();
+        assert!(!finished.running);
+        assert_eq!(finished.finished_at, Some(20));
+        assert_eq!(finished.succeeded, Some(true));
         drop(engine);
         std::fs::remove_dir_all(root).unwrap();
     }

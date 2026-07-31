@@ -234,6 +234,16 @@ impl SessionKernel {
             .collect())
     }
 
+    pub fn contains_event(&self, session_id: &str, event_id: &str) -> Result<bool, String> {
+        validate_id(session_id)?;
+        Ok(self
+            .sessions
+            .get(session_id)
+            .ok_or_else(|| "Unknown session".to_owned())?
+            .event_sequences
+            .contains_key(event_id))
+    }
+
     pub fn load(&self, session_id: &str) -> Result<SessionLoad, String> {
         validate_id(session_id)?;
         let record = self

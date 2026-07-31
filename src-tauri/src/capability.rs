@@ -5,7 +5,6 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
-use uuid::Uuid;
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -448,120 +447,6 @@ impl LocalCodeIndex {
     }
 }
 
-#[derive(Clone, Debug)]
-struct LspSession {
-    id: String,
-    task_id: String,
-    language: String,
-    scope: String,
-    last_active: u64,
-    running: bool,
-    diagnostics: BTreeMap<String, VersionedDiagnostics>,
-}
-
-#[derive(Clone, Debug)]
-struct VersionedDiagnostics {
-    version: String,
-    items: Vec<String>,
-}
-
-#[derive(Default)]
-pub struct LazyLspManager {
-    sessions: BTreeMap<String, LspSession>,
-}
-
-impl LazyLspManager {
-    pub fn start_for_scope(
-        &mut self,
-        task_id: &str,
-        language: &str,
-        scope: &str,
-        at: u64,
-    ) -> Result<String, String> {
-        if [task_id, language, scope]
-            .iter()
-            .any(|value| value.trim().is_empty())
-        {
-            return Err("LSP task, language, and scope are required".into());
-        }
-        let id = Uuid::new_v4().to_string();
-        self.sessions.insert(
-            id.clone(),
-            LspSession {
-                id: id.clone(),
-                task_id: task_id.into(),
-                language: language.into(),
-                scope: scope.into(),
-                last_active: at,
-                running: true,
-                diagnostics: BTreeMap::new(),
-            },
-        );
-        Ok(id)
-    }
-    pub fn running_count(&self) -> usize {
-        self.sessions
-            .values()
-            .filter(|session| session.running)
-            .count()
-    }
-    pub fn record_diagnostics(
-        &mut self,
-        session_id: &str,
-        path: &str,
-        version: &str,
-        items: Vec<String>,
-    ) -> Result<(), String> {
-        let session = self
-            .sessions
-            .get_mut(session_id)
-            .ok_or_else(|| "LSP session missing".to_owned())?;
-        if !session.running {
-            return Err("LSP session is stopped".into());
-        }
-        session.diagnostics.insert(
-            path.replace('\\', "/"),
-            VersionedDiagnostics {
-                version: version.into(),
-                items,
-            },
-        );
-        Ok(())
-    }
-    pub fn diagnostics(
-        &self,
-        session_id: &str,
-        path: &str,
-        version: &str,
-    ) -> Result<&[String], String> {
-        let diagnostics = self
-            .sessions
-            .get(session_id)
-            .and_then(|session| session.diagnostics.get(&path.replace('\\', "/")))
-            .ok_or_else(|| "LSP diagnostics missing".to_owned())?;
-        if diagnostics.version != version {
-            return Err("LSP diagnostics are stale for this file version".into());
-        }
-        Ok(&diagnostics.items)
-    }
-    pub fn stop_idle(&mut self, now: u64, idle_timeout: u64) {
-        for session in self.sessions.values_mut() {
-            if now.saturating_sub(session.last_active) >= idle_timeout {
-                session.running = false;
-            }
-        }
-    }
-
-    pub fn stop(&mut self, session_id: &str) -> Result<(), String> {
-        let session = self
-            .sessions
-            .get_mut(session_id)
-            .ok_or_else(|| "LSP session missing".to_owned())?;
-        session.running = false;
-        Ok(())
-    }
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct BoundedModelView {
     pub preview: String,
@@ -649,7 +534,7 @@ mod tests {
     }
 
     #[test]
-    fn code_index_lsp_and_model_views_stay_bounded_and_versioned() {
+    fn code_index_and_model_views_stay_bounded_and_versioned() {
         let mut index = LocalCodeIndex::new(IndexLimits {
             max_files: 2,
             max_bytes_per_file: 64,
@@ -664,20 +549,6 @@ mod tests {
         assert_eq!(index.search("alpha", 5).len(), 2);
         index.remove("src/lib.rs");
         assert_eq!(index.search("pub fn alpha", 5).len(), 0);
-
-        let mut lsp = LazyLspManager::default();
-        assert_eq!(lsp.running_count(), 0);
-        let session = lsp.start_for_scope("task-a", "rust", "src", 100).unwrap();
-        lsp.record_diagnostics(
-            &session,
-            "src/main.rs",
-            "v1",
-            vec!["missing semicolon".to_owned()],
-        )
-        .unwrap();
-        assert!(lsp.diagnostics(&session, "src/main.rs", "v2").is_err());
-        lsp.stop_idle(1_000, 500);
-        assert_eq!(lsp.running_count(), 0);
 
         let bounded = bounded_model_view(b"0123456789abcdefghij", 8);
         assert_eq!(bounded.preview, "01234567");

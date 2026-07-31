@@ -36,6 +36,8 @@ pub struct DelegationOptions {
     pub current_depth: u32,
     pub max_depth: u32,
     pub parent_tools: Vec<String>,
+    #[serde(default)]
+    pub parent_permissions: Vec<String>,
 }
 
 pub struct DelegationEngine;
@@ -56,6 +58,7 @@ impl DelegationEngine {
                 current_depth: 0,
                 max_depth: 1,
                 parent_tools: work.envelope.tools.iter().cloned().collect(),
+                parent_permissions: work.envelope.permissions.iter().cloned().collect(),
             },
         )
     }
@@ -80,6 +83,18 @@ impl DelegationEngine {
             .any(|tool| !parent_tools.contains(tool))
         {
             return Err("Subagent cannot expand the parent tool capability".to_owned());
+        }
+        let parent_permissions = options
+            .parent_permissions
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        if work
+            .envelope
+            .permissions
+            .iter()
+            .any(|permission| !parent_permissions.contains(permission))
+        {
+            return Err("Subagent cannot expand the parent permission capability".to_owned());
         }
         let routing = route_delegation(work, policy, evaluations)?;
         Ok(DelegationPlan {
@@ -175,6 +190,7 @@ mod tests {
             current_depth: 0,
             max_depth: 1,
             parent_tools: vec!["read".into()],
+            parent_permissions: vec!["workspace.read".into()],
         };
         assert!(
             DelegationEngine::plan_with_options(&work, &policy, &evaluations, &options)

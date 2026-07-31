@@ -1,10 +1,24 @@
 #![cfg_attr(not(test), allow(dead_code))]
 
+use crate::broker_ws::BrokerWs;
 use crate::capability::IndexMatch;
 use crate::capability_service::CapabilityService;
 use crate::execution::TaskKind;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CodeLspRequest {
+    pub language: String,
+    pub operation: String,
+    pub path: String,
+    pub line: Option<u32>,
+    pub character: Option<u32>,
+}
 
 #[derive(Clone)]
 pub struct CodeIntelligence {
@@ -35,55 +49,48 @@ impl CodeIntelligence {
             .search_code(task_id, query, limit)
     }
 
-    pub fn start_lsp(
+    /// Routes code navigation through the real scoped LSP implementation in
+    /// the embedded Pi extension. There is deliberately no second Rust-side
+    /// pseudo session or diagnostics cache.
+    pub async fn request_lsp(
         &self,
-        task_id: &str,
+        broker: &BrokerWs,
+        port: u16,
         task_kind: TaskKind,
-        language: &str,
-        scope: &str,
-        at: u64,
-    ) -> Result<String, String> {
-        self.service
-            .lock()
-            .map_err(lock_error)?
-            .start_lsp(task_id, task_kind, language, scope, at)
+        request: &CodeLspRequest,
+    ) -> Result<Value, String> {
+        validate_request(task_kind, request)?;
+        broker
+            .request_command_to_port(
+                port,
+                serde_json::json!({
+                    "type": "picode_lsp_request",
+                    "language": request.language,
+                    "operation": request.operation,
+                    "path": request.path,
+                    "line": request.line,
+                    "character": request.character,
+                }),
+                Duration::from_secs(20),
+            )
+            .await
     }
+}
 
-    pub fn record_diagnostics(
-        &self,
-        session_id: &str,
-        path: &str,
-        version: &str,
-        diagnostics: Vec<String>,
-    ) -> Result<(), String> {
-        self.service
-            .lock()
-            .map_err(lock_error)?
-            .record_lsp_diagnostics(session_id, path, version, diagnostics)
+fn validate_request(task_kind: TaskKind, request: &CodeLspRequest) -> Result<(), String> {
+    if task_kind != TaskKind::Harness {
+        return Err("LSP is available only to a workspace-bound Harness Task".to_owned());
     }
-
-    pub fn diagnose(
-        &self,
-        session_id: &str,
-        path: &str,
-        version: &str,
-    ) -> Result<Vec<String>, String> {
-        self.service
-            .lock()
-            .map_err(lock_error)?
-            .lsp_diagnostics(session_id, path, version)
+    if request.language.trim().is_empty()
+        || request.operation.trim().is_empty()
+        || request.path.trim().is_empty()
+    {
+        return Err("LSP language, operation, and workspace-relative path are required".to_owned());
     }
-
-    pub fn shutdown(&self, session_id: &str) -> Result<(), String> {
-        self.service
-            .lock()
-            .map_err(lock_error)?
-            .shutdown_lsp(session_id)
+    if request.path.contains('\0') {
+        return Err("LSP path contains NUL".to_owned());
     }
-
-    pub fn running_count(&self) -> Result<usize, String> {
-        Ok(self.service.lock().map_err(lock_error)?.running_lsp_count())
-    }
+    Ok(())
 }
 
 fn lock_error<T>(_: std::sync::PoisonError<T>) -> String {
@@ -92,39 +99,25 @@ fn lock_error<T>(_: std::sync::PoisonError<T>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::CodeIntelligence;
-    use crate::capability_service::CapabilityService;
+    use super::{validate_request, CodeLspRequest};
     use crate::execution::TaskKind;
-    use std::fs;
-    use std::sync::{Arc, Mutex};
 
     #[test]
-    fn lazy_lsp_rejects_simple_tasks_and_stale_diagnostics_then_shuts_down() {
-        let root = std::env::temp_dir().join(format!("picode-code-intel-{}", uuid::Uuid::new_v4()));
-        let service = Arc::new(Mutex::new(CapabilityService::open(&root).unwrap()));
-        let intelligence = CodeIntelligence::new(service);
-        assert!(intelligence
-            .start_lsp("simple", TaskKind::Simple, "rust", "src", 1)
-            .is_err());
+    fn real_lsp_adapter_is_harness_only_and_requires_a_scoped_request() {
+        let request = CodeLspRequest {
+            language: "rust".into(),
+            operation: "definition".into(),
+            path: "src/main.rs".into(),
+            line: Some(1),
+            character: Some(1),
+        };
+        assert!(validate_request(TaskKind::Simple, &request).is_err());
+        validate_request(TaskKind::Harness, &request).unwrap();
 
-        let session = intelligence
-            .start_lsp("harness", TaskKind::Harness, "rust", "src", 2)
-            .unwrap();
-        intelligence
-            .record_diagnostics(&session, "src/main.rs", "v1", vec!["error: broken".into()])
-            .unwrap();
-        assert!(intelligence
-            .diagnose(&session, "src/main.rs", "v2")
-            .is_err());
-        assert_eq!(
-            intelligence
-                .diagnose(&session, "src/main.rs", "v1")
-                .unwrap(),
-            vec!["error: broken"]
-        );
-        intelligence.shutdown(&session).unwrap();
-        assert_eq!(intelligence.running_count().unwrap(), 0);
-        drop(intelligence);
-        fs::remove_dir_all(root).unwrap();
+        let missing_path = CodeLspRequest {
+            path: "".into(),
+            ..request
+        };
+        assert!(validate_request(TaskKind::Harness, &missing_path).is_err());
     }
 }

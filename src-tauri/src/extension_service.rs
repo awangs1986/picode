@@ -728,7 +728,10 @@ impl ExtensionService {
             self.refresh()?;
             let run = self.run(run_id)?;
             if run.state.terminal() {
-                return Ok(run);
+                let remaining = timeout.saturating_sub(started.elapsed());
+                self.orchestration.wait_job(&run.job_id, remaining)?;
+                self.refresh()?;
+                return self.run(run_id);
             }
             if started.elapsed() >= timeout {
                 return Err("wait for extension run timed out".into());
@@ -772,17 +775,32 @@ impl ExtensionService {
                     continue;
                 };
                 let output_tail = bounded_tail(&job.live_tail, limit.max_output_bytes);
-                let next_state = map_job_state(job.status);
+                // ResourceStopped is the extension owner's terminal reason.
+                // The underlying job is then cancelled as the mechanism used
+                // to stop it; that lower-level Cancelled state must not erase
+                // the more specific resource-policy outcome on the next poll.
+                let preserve_resource_stop = run.state == ExtensionRunState::ResourceStopped
+                    && job.status == ManagedJobStatus::Cancelled;
+                let next_state = if preserve_resource_stop {
+                    ExtensionRunState::ResourceStopped
+                } else {
+                    map_job_state(job.status)
+                };
+                let next_termination = if preserve_resource_stop {
+                    run.termination_result.clone()
+                } else {
+                    job.termination_result.clone()
+                };
                 if run.output_tail != output_tail
                     || run.full_output_hash != job.full_output_hash
-                    || run.termination_result != job.termination_result
+                    || run.termination_result != next_termination
                     || run.state != next_state
                 {
                     changed = true;
                 }
                 run.output_tail = output_tail;
                 run.full_output_hash.clone_from(&job.full_output_hash);
-                run.termination_result.clone_from(&job.termination_result);
+                run.termination_result = next_termination;
                 run.state = next_state;
                 if run.state == ExtensionRunState::Running {
                     if let Ok(sample) = self

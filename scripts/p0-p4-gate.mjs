@@ -78,6 +78,12 @@ const checks = [
     args: ["fmt", "--manifest-path", "src-tauri/Cargo.toml", "--", "--check"],
   },
   {
+    name: "performance-contract",
+    executable: node,
+    displayExecutable: "node",
+    args: ["scripts/performance-gate.mjs"],
+  },
+  {
     name: "design-css",
     executable: node,
     displayExecutable: "node",

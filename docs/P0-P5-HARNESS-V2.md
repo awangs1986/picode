@@ -1,6 +1,6 @@
 # Picode Harness V2：新 P0–P5
 
-状态：设计稿，尚未声明实现完成  
+状态：P0–P4 生产链路已接通并通过本地 Gate；P5 仍为规划
 日期：2026-07-31  
 依据：[Picode 与 grok-build Harness 对比](research/grok-build-harness-comparison-2026-07-31.md)
 
@@ -32,6 +32,16 @@ Picode 是面向软件和游戏开发者的轻量桌面开发 Agent。它使用 
 | `ExtensionManager` | discover/configure/invoke/inspect | 分层、启用、信任、进程、manifest、来源、SHA、MCP/LSP/DAP/插件 |
 
 真实 seam：
+
+## 2.1 P0–P4 生产收口（2026-07-31）
+
+1. Pi/broker 的真实 session、turn、tool、compaction 与 completion 事件进入 `RuntimeSpine`；事件日志、重放与去重集合均有界。
+2. `WorkManager` 统一 command、Agent/Subagent 及长时 shell/browser tool 的 status/wait/cancel；外部工作取消必须由真实进程所有者确认，否则返回 `termination_unknown`。
+3. ACP prompt 采用持久 request ID 和显式 delivered acknowledgement；未确认的同 ID 请求可重放。Headless 支持逐行输入和逐事件输出，不等待 stdin EOF。
+4. Pi 原生 compaction 是唯一聊天压缩执行者，`ContextEngine` 观察其真实生命周期并管理有界/脱敏 artifact。真实 `before_tool` hook 和自动 `BeforeComplete` Gate 已接入；Stop 重试有限。
+5. `CodeIntelligence` 不再维护模拟 LSP 会话；GUI 控制和模型工具共同调用 Pi 扩展中的真实、按需、作用域受限 LSP 进程。
+6. `DelegationEngine` 在实际 Subagent spawn 前验证深度、父工具和父权限，结果回到主 Agent 时仍只是 candidate。`ExtensionManager` 是 `ExtensionService` 的生产门面；Harness V2 控制由独立 router 承担。
+7. `scripts/performance-gate.mjs` 可重复验证长会话有界、可选扩展零驻留和 headless 流式契约，也可比较同机采集的启动、空闲内存、首次 token 与长会话帧时间；未提供测量时不会伪造指标。
 
 - `SessionTransport`：GUI broker、ACP stdio/WebSocket、headless 是不同 Adapter。
 - `ProcessAdapter`：Windows Job Object 与 Linux/macOS process group 是不同 Adapter。

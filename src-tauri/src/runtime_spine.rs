@@ -8,6 +8,8 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+const MAX_RUNTIME_LOG_BYTES: u64 = 16 * 1024 * 1024;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeEventKind {
@@ -182,6 +184,7 @@ impl RuntimeSpine {
                 state: RuntimeSessionState::Running,
             },
         );
+        self.compact_if_needed()?;
         Ok(())
     }
 
@@ -226,7 +229,12 @@ impl RuntimeSpine {
         session.event_ids.insert(event.input.event_id.clone());
         session.events.push_back(event.clone());
         while session.events.len() > retained_events {
-            session.events.pop_front();
+            if let Some(removed) = session.events.pop_front() {
+                session.event_ids.remove(&removed.input.event_id);
+            }
+        }
+        if event.sequence.is_multiple_of(256) {
+            self.compact_if_needed()?;
         }
         Ok((RecordOutcome::Recorded, Some(event)))
     }
@@ -258,6 +266,7 @@ impl RuntimeSpine {
             target: target.clone(),
         })?;
         self.session_mut(target)?.state = RuntimeSessionState::Ended;
+        self.compact_if_needed()?;
         Ok(())
     }
 
@@ -286,7 +295,9 @@ impl RuntimeSpine {
                         session.next_sequence.max(event.sequence.saturating_add(1));
                     session.events.push_back(event);
                     while session.events.len() > retained_events {
-                        session.events.pop_front();
+                        if let Some(removed) = session.events.pop_front() {
+                            session.event_ids.remove(&removed.input.event_id);
+                        }
                     }
                 }
             }
@@ -313,6 +324,62 @@ impl RuntimeSpine {
             .map_err(|error| RuntimeSpineError::Persistence(error.to_string()))
     }
 
+    fn compact_if_needed(&self) -> Result<(), RuntimeSpineError> {
+        let Some(path) = &self.log_path else {
+            return Ok(());
+        };
+        let bytes = fs::metadata(path)
+            .map_err(|error| RuntimeSpineError::Persistence(error.to_string()))?
+            .len();
+        if bytes <= MAX_RUNTIME_LOG_BYTES {
+            return Ok(());
+        }
+        self.compact_log()
+    }
+
+    fn compact_log(&self) -> Result<(), RuntimeSpineError> {
+        let Some(path) = &self.log_path else {
+            return Ok(());
+        };
+        let temporary = path.with_extension("jsonl.tmp");
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&temporary)
+            .map_err(|error| RuntimeSpineError::Persistence(error.to_string()))?;
+        let mut sessions = self.sessions.values().collect::<Vec<_>>();
+        sessions.sort_by(|left, right| left.target.instance_id.cmp(&right.target.instance_id));
+        for session in sessions {
+            write_log_record(
+                &mut file,
+                &SpineLogRecord::Begin {
+                    target: session.target.clone(),
+                },
+            )?;
+            for event in &session.events {
+                write_log_record(
+                    &mut file,
+                    &SpineLogRecord::Event {
+                        event: event.clone(),
+                    },
+                )?;
+            }
+            if session.state == RuntimeSessionState::Ended {
+                write_log_record(
+                    &mut file,
+                    &SpineLogRecord::End {
+                        target: session.target.clone(),
+                    },
+                )?;
+            }
+        }
+        file.sync_data()
+            .map_err(|error| RuntimeSpineError::Persistence(error.to_string()))?;
+        fs::rename(&temporary, path)
+            .map_err(|error| RuntimeSpineError::Persistence(error.to_string()))
+    }
+
     fn session(&self, target: &RuntimeTarget) -> Result<&SessionEvents, RuntimeSpineError> {
         self.sessions
             .get(&target.instance_id)
@@ -329,6 +396,17 @@ impl RuntimeSpine {
             .filter(|session| session.target == *target)
             .ok_or(RuntimeSpineError::UnknownSession)
     }
+}
+
+fn write_log_record(
+    file: &mut std::fs::File,
+    record: &SpineLogRecord,
+) -> Result<(), RuntimeSpineError> {
+    let encoded = serde_json::to_vec(record)
+        .map_err(|error| RuntimeSpineError::Persistence(error.to_string()))?;
+    file.write_all(&encoded)
+        .and_then(|_| file.write_all(b"\n"))
+        .map_err(|error| RuntimeSpineError::Persistence(error.to_string()))
 }
 
 /// Runtime events are an observability index, not another transcript. Only
@@ -489,6 +567,27 @@ mod tests {
                 "persisted private value: {forbidden}"
             );
         }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn retained_events_and_deduplication_ids_are_bounded_and_log_can_checkpoint() {
+        let root =
+            std::env::temp_dir().join(format!("picode-runtime-bounded-{}", uuid::Uuid::new_v4()));
+        let mut spine = RuntimeSpine::open(&root, 4096, 8).unwrap();
+        spine.begin_session(target()).unwrap();
+        for index in 0..100 {
+            spine
+                .record(&target(), event(&format!("event-{index}"), "value"))
+                .unwrap();
+        }
+        let session = spine.sessions.get("instance-a").unwrap();
+        assert_eq!(session.events.len(), 8);
+        assert_eq!(session.event_ids.len(), 8);
+        spine.compact_log().unwrap();
+        drop(spine);
+        let reopened = RuntimeSpine::open(&root, 4096, 8).unwrap();
+        assert_eq!(reopened.events_after(&target(), 0).unwrap().len(), 8);
         std::fs::remove_dir_all(root).unwrap();
     }
 }
