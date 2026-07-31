@@ -13,13 +13,34 @@ function formatPermission(value) {
   return String(value || "").replace(/([a-z])([A-Z])/g, "$1 $2");
 }
 
-function skillBundleLabel(source) {
-  const normalized = String(source || "")
+function canonicalSkillBundleSource(source) {
+  const raw = String(source || "").trim();
+  const lower = raw.toLowerCase();
+  if (!raw || ["unknown", "runtime", "top-level"].includes(lower)) return "";
+
+  if (lower.startsWith("npm:")) {
+    const packageSpec = raw.slice(4);
+    const versionSeparator = packageSpec.lastIndexOf("@");
+    const packageName = versionSeparator > 0 ? packageSpec.slice(0, versionSeparator) : packageSpec;
+    return packageName ? `npm:${packageName.toLowerCase()}` : "";
+  }
+
+  if (!/^(?:git:|git\+|https?:\/\/|github\.com\/)/i.test(raw)) return "";
+  return raw
+    .replace(/^git\+/, "")
     .replace(/^git:/, "")
-    .replace(/^npm:/, "")
     .replace(/^https?:\/\//, "")
-    .replace(/^github\.com\//, "")
-    .replace(/\.git$/, "");
+    .replace(/#.*$/, "")
+    .replace(/\.git(?=@[^/]+$|$)/, "")
+    .replace(/@[^/]+$/, "")
+    .replace(/\/$/, "")
+    .toLowerCase();
+}
+
+function skillBundleLabel(source) {
+  const normalized = canonicalSkillBundleSource(source)
+    .replace(/^npm:/, "")
+    .replace(/^github\.com\//, "");
   return normalized || t("professional.individualSkill", {}, "Individual skill");
 }
 
@@ -27,20 +48,42 @@ export function groupInstalledSkills(skills) {
   const groups = new Map();
   for (const [index, skill] of (skills || []).entries()) {
     const source = String(skill?.source || "");
-    const bundled = source && !["unknown", "runtime"].includes(source);
-    const key = bundled ? `bundle:${source}` : `skill:${index}:${skill?.name || "unknown"}`;
+    const bundleSource = canonicalSkillBundleSource(source);
+    const bundled = Boolean(bundleSource);
+    const key = bundled ? `bundle:${bundleSource}` : `skill:${index}:${skill?.name || "unknown"}`;
     if (!groups.has(key)) {
       groups.set(key, {
         key,
         bundled,
         label: bundled ? skillBundleLabel(source) : skill?.name || "skill",
-        source,
+        source: bundleSource || source,
         skills: [],
       });
     }
     groups.get(key).skills.push(skill);
   }
   return [...groups.values()].sort((left, right) => left.label.localeCompare(right.label));
+}
+
+export function groupExtensionComponents(components) {
+  const groups = new Map();
+  for (const [index, component] of (components || []).entries()) {
+    const bundleSource =
+      component?.kind === "skill" ? canonicalSkillBundleSource(component.source) : "";
+    const bundled = Boolean(bundleSource);
+    const key = bundled ? `skill-bundle:${bundleSource}` : `component:${index}:${component?.id}`;
+    if (!groups.has(key)) {
+      groups.set(key, {
+        key,
+        bundled,
+        source: bundleSource,
+        label: bundled ? skillBundleLabel(component.source) : component?.id || "component",
+        components: [],
+      });
+    }
+    groups.get(key).components.push(component);
+  }
+  return [...groups.values()];
 }
 
 export class PicodeProfessionalExtensions extends HTMLElement {
@@ -121,6 +164,7 @@ export class PicodeProfessionalExtensions extends HTMLElement {
     const firstmate = snapshot.firstmate || {};
     const skillGroups = groupInstalledSkills(skills);
     const components = snapshot.components || [];
+    const componentGroups = groupExtensionComponents(components);
     const residents = Number(snapshot.residentProcessCount || 0);
     this.innerHTML = `
       <div class="picode-professional-head">
@@ -131,9 +175,9 @@ export class PicodeProfessionalExtensions extends HTMLElement {
       ${this._error ? `<p class="picode-runtime-error">${escapeHtml(this._error)}</p>` : ""}
       <div class="picode-professional-grid">
         <section class="picode-professional-card picode-professional-card--wide">
-          <header><div><span class="picode-eyebrow">RUNTIME</span><h3>${escapeHtml(t("professional.componentStatus", {}, "Extension component status"))}</h3></div><small>${components.length}</small></header>
+          <header><div><span class="picode-eyebrow">RUNTIME</span><h3>${escapeHtml(t("professional.componentStatus", {}, "Extension component status"))}</h3></div><small>${componentGroups.length}</small></header>
           <p class="settings-help">${escapeHtml(t("professional.componentStatusHelp", {}, "Authoritative state from Extension Manager, including source, version, permissions, task bindings, running processes, and the latest error."))}</p>
-          ${components.length ? `<div class="picode-imported-list">${components.map((item) => this._componentRow(item)).join("")}</div>` : `<p class="picode-runtime-empty">${escapeHtml(t("professional.noComponents", {}, "No extension components discovered."))}</p>`}
+          ${components.length ? `<div class="picode-imported-list">${componentGroups.map((group) => this._componentGroup(group)).join("")}</div>` : `<p class="picode-runtime-empty">${escapeHtml(t("professional.noComponents", {}, "No extension components discovered."))}</p>`}
         </section>
         <section class="picode-professional-card picode-professional-card--wide">
           <header><div><span class="picode-eyebrow">SKILLS</span><h3>${escapeHtml(t("professional.skills", {}, "Installed skills"))}</h3></div><small>${this._snapshot === null ? "—" : skills.length}</small></header>
@@ -230,10 +274,20 @@ export class PicodeProfessionalExtensions extends HTMLElement {
     const controls = managed
       ? `<label><small>${escapeHtml(t("professional.enabled", {}, "Enabled"))}</small><input type="checkbox" data-component-enable="${escapeHtml(item.id)}" ${item.state !== "discovered" ? "checked" : ""}></label><label><small>${escapeHtml(t("professional.trusted", {}, "Trusted"))}</small><input type="checkbox" data-component-trust="${escapeHtml(item.id)}" ${["trusted", "running"].includes(item.state) ? "checked" : ""} ${item.state === "discovered" ? "disabled" : ""}></label>`
       : "";
-    return `<div class="picode-extension-install" data-component="${escapeHtml(item.id)}">
+    return `<div class="picode-extension-install" data-component="${escapeHtml(item.id)}" data-component-kind="${escapeHtml(item.kind)}">
       <span><strong>${escapeHtml(item.id)}</strong><small>${escapeHtml(item.kind)} · ${escapeHtml(item.state)} · ${escapeHtml(detail)}</small>${item.lastError ? `<small class="picode-runtime-error">${escapeHtml(item.lastError)}</small>` : ""}</span>
       ${controls}
     </div>`;
+  }
+
+  _componentGroup(group) {
+    if (!group.bundled) return this._componentRow(group.components[0]);
+    const states = [...new Set(group.components.map((component) => component.state))];
+    const state = states.length === 1 ? states[0] : "mixed";
+    return `<details class="picode-skill-bundle picode-component-skill-bundle" data-component-skill-bundle="${escapeHtml(group.source)}">
+      <summary><span><strong>${escapeHtml(group.label)}</strong><small>${group.components.length} ${escapeHtml(t("professional.skillCount", {}, "skills"))} · ${escapeHtml(state)}</small></span><small>${escapeHtml(t("professional.expandSkillBundle", {}, "Expand"))}</small></summary>
+      <div class="picode-skill-bundle-items">${group.components.map((component) => this._componentRow(component)).join("")}</div>
+    </details>`;
   }
 
   _renderEffectiveReport() {

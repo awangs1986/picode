@@ -57,6 +57,30 @@ describe("picode-professional-extensions", () => {
             lastError: "server stopped",
             modelDiscoverable: true,
           },
+          {
+            id: "tdd",
+            kind: "skill",
+            state: "trusted",
+            source: "git:github.com/mattpocock/skills",
+            version: "runtime",
+            license: "provided-by-package",
+            permissions: [],
+            taskBindings: [],
+            runningProcesses: [],
+            modelDiscoverable: true,
+          },
+          {
+            id: "grill-with-docs",
+            kind: "skill",
+            state: "trusted",
+            source: "https://github.com/mattpocock/skills.git@v1",
+            version: "runtime",
+            license: "provided-by-package",
+            permissions: [],
+            taskBindings: [],
+            runningProcesses: [],
+            modelDiscoverable: true,
+          },
         ],
       })),
       capabilitySnapshot: vi.fn(async () => ({
@@ -134,11 +158,18 @@ describe("picode-professional-extensions", () => {
     expect(transport.setProfessionalExtensionEnabled).not.toHaveBeenCalled();
     expect(panel.querySelector('[data-extension-trust="review"]').disabled).toBe(true);
     expect(panel.textContent).toContain("0 resident processes");
-    expect(panel.querySelectorAll(".picode-skill-bundle")).toHaveLength(1);
-    expect(panel.querySelector(".picode-skill-bundle > summary")?.textContent).toContain(
-      "mattpocock/skills",
-    );
-    expect(panel.querySelectorAll(".picode-skill-bundle .picode-skill-row")).toHaveLength(2);
+    expect(
+      panel.querySelectorAll(".picode-skill-bundle:not(.picode-component-skill-bundle)"),
+    ).toHaveLength(1);
+    expect(
+      panel.querySelector(".picode-skill-bundle:not(.picode-component-skill-bundle) > summary")
+        ?.textContent,
+    ).toContain("mattpocock/skills");
+    expect(
+      panel.querySelectorAll(
+        ".picode-skill-bundle:not(.picode-component-skill-bundle) .picode-skill-row",
+      ),
+    ).toHaveLength(2);
     expect(panel.querySelector('[data-capability="firstmate-crew-orchestrator"]')).not.toBeNull();
     expect(panel.querySelector("[data-firstmate-pick-root]")).not.toBeNull();
     expect(panel.querySelector('[data-component="rust-lsp"]')?.textContent).toContain(
@@ -148,6 +179,15 @@ describe("picode-professional-extensions", () => {
       "server stopped",
     );
     expect(panel.querySelector('[data-component-trust="rust-lsp"]')).not.toBeNull();
+    const componentSkillBundle = panel.querySelector(
+      '[data-component-skill-bundle="github.com/mattpocock/skills"]',
+    );
+    expect(componentSkillBundle).not.toBeNull();
+    expect(componentSkillBundle.open).toBe(false);
+    expect(componentSkillBundle.querySelector("summary")?.textContent).toContain(
+      "mattpocock/skills",
+    );
+    expect(componentSkillBundle.querySelectorAll('[data-component-kind="skill"]')).toHaveLength(2);
 
     panel.querySelector("[data-effective-task]").value = "task-a";
     panel.querySelector("[data-effective-report]").click();
