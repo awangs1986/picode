@@ -327,6 +327,10 @@ export class WsTransport {
     return this._control("extension_set_enabled", { extensionId, enabled });
   }
 
+  setProfessionalExtensionTrusted(extensionId, trusted) {
+    return this._control("extension_set_trusted", { extensionId, trusted });
+  }
+
   startProfessionalExtension(extensionId, taskId, agentRunId, timeoutMs) {
     return this._control(
       "extension_start",

@@ -1,4 +1,5 @@
 use crate::extension_host::Permission;
+use crate::extension_manager::ExtensionLifecycle;
 use crate::orchestration_service::{ManagedJobStatus, OrchestrationService};
 use crate::resource_sampler::ProcessSampler;
 use crate::safe_files::SafeFileStore;
@@ -43,6 +44,20 @@ impl ResourceLimits {
 pub struct ExtensionManifest {
     pub id: String,
     pub schema_version: u32,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub source_ref: Option<String>,
+    #[serde(default)]
+    pub license: String,
+    #[serde(default)]
+    pub components: Vec<String>,
+    #[serde(default)]
+    pub platforms: Vec<String>,
     pub executable: PathBuf,
     pub arguments: Vec<String>,
     pub permissions: BTreeSet<Permission>,
@@ -63,6 +78,13 @@ impl ExtensionManifest {
         Self {
             id: id.into(),
             schema_version,
+            name: id.into(),
+            version: format!("schema-{schema_version}"),
+            source: "local".into(),
+            source_ref: None,
+            license: "unknown".into(),
+            components: vec!["native-helper".into()],
+            platforms: vec![std::env::consts::OS.into()],
             executable,
             arguments,
             permissions,
@@ -75,6 +97,13 @@ impl ExtensionManifest {
         validate_identifier(&self.id, "extension")?;
         if self.schema_version == 0 {
             return Err("extension schema version must be positive".into());
+        }
+        if self.source.starts_with("http")
+            && self.source_ref.as_deref().is_none_or(|value| {
+                value.len() != 40 || !value.bytes().all(|byte| byte.is_ascii_hexdigit())
+            })
+        {
+            return Err("remote extension requires a pinned full commit SHA".into());
         }
         if self.executable.as_os_str().is_empty()
             || self.arguments.iter().any(|arg| arg.contains('\0'))
@@ -422,6 +451,8 @@ pub struct RegressionComparison {
 struct PersistedState {
     schema_version: u32,
     installations: BTreeMap<String, ExtensionManifest>,
+    #[serde(default)]
+    trusted_extensions: BTreeSet<String>,
     runs: BTreeMap<String, ExtensionRunView>,
     imports: BTreeMap<String, ImportedCapability>,
     import_activations: Vec<ImportActivation>,
@@ -449,6 +480,16 @@ pub struct ExtensionSnapshot {
     pub advisories: Vec<AdvisoryRecord>,
     pub regression_runs: Vec<RegressionRun>,
     pub resident_process_count: usize,
+    pub lifecycle: Vec<ExtensionLifecycleView>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtensionLifecycleView {
+    pub id: String,
+    pub state: ExtensionLifecycle,
+    pub model_discoverable: bool,
+    pub running_count: usize,
 }
 
 pub struct ExtensionService {
@@ -593,6 +634,31 @@ impl ExtensionService {
         self.persist()
     }
 
+    pub fn set_trusted(&self, extension_id: &str, trusted: bool) -> Result<(), String> {
+        let mut state = self.lock_state()?;
+        let manifest = state
+            .installations
+            .get(extension_id)
+            .ok_or_else(|| "extension is not installed".to_owned())?;
+        if !manifest.enabled {
+            return Err("enable the extension before changing trust".into());
+        }
+        if state
+            .runs
+            .values()
+            .any(|run| run.extension_id == extension_id && !run.state.terminal())
+        {
+            return Err("stop the extension before changing trust".into());
+        }
+        if trusted {
+            state.trusted_extensions.insert(extension_id.to_owned());
+        } else {
+            state.trusted_extensions.remove(extension_id);
+        }
+        drop(state);
+        self.persist()
+    }
+
     pub fn start_extension(
         &self,
         extension_id: &str,
@@ -609,6 +675,9 @@ impl ExtensionService {
             .ok_or_else(|| "extension is not installed".to_owned())?;
         if !manifest.enabled {
             return Err("extension is disabled; enable it before explicit startup".into());
+        }
+        if !self.lock_state()?.trusted_extensions.contains(extension_id) {
+            return Err("extension is not trusted; review its source and permissions first".into());
         }
         if !manifest.permissions.contains(&Permission::ProcessExecute) {
             return Err("extension lacks processExecute permission".into());
@@ -763,6 +832,7 @@ impl ExtensionService {
                     advisories: Vec::new(),
                     regression_runs: Vec::new(),
                     resident_process_count: 0,
+                    lifecycle: Vec::new(),
                 }
             }
         };
@@ -778,6 +848,33 @@ impl ExtensionService {
                 .values()
                 .filter(|run| run.state == "running")
                 .count();
+        let lifecycle = state
+            .installations
+            .values()
+            .map(|manifest| {
+                let running_count = runs
+                    .iter()
+                    .filter(|run| {
+                        run.extension_id == manifest.id && run.state == ExtensionRunState::Running
+                    })
+                    .count();
+                let trusted = state.trusted_extensions.contains(&manifest.id);
+                ExtensionLifecycleView {
+                    id: manifest.id.clone(),
+                    state: if running_count > 0 {
+                        ExtensionLifecycle::Running
+                    } else if manifest.enabled && trusted {
+                        ExtensionLifecycle::Trusted
+                    } else if manifest.enabled {
+                        ExtensionLifecycle::Enabled
+                    } else {
+                        ExtensionLifecycle::Discovered
+                    },
+                    model_discoverable: manifest.enabled,
+                    running_count,
+                }
+            })
+            .collect();
         ExtensionSnapshot {
             installations: state.installations.values().cloned().collect(),
             runs,
@@ -791,6 +888,7 @@ impl ExtensionService {
             advisories: state.advisories.clone(),
             regression_runs: state.regression_runs.clone(),
             resident_process_count,
+            lifecycle,
         }
     }
 
@@ -1719,6 +1817,7 @@ fn map_job_state(status: ManagedJobStatus) -> ExtensionRunState {
         ManagedJobStatus::Cancelled => ExtensionRunState::Cancelled,
         ManagedJobStatus::TimedOut => ExtensionRunState::TimedOut,
         ManagedJobStatus::Terminated => ExtensionRunState::Terminated,
+        ManagedJobStatus::TerminationUnknown => ExtensionRunState::Failed,
     }
 }
 
@@ -2011,6 +2110,17 @@ mod tests {
             .unwrap_err();
         assert!(error.contains("disabled"));
         service.set_enabled("review", true).unwrap();
+        assert!(service
+            .start_extension(
+                "review",
+                "task-a",
+                "run-a",
+                &root,
+                std::time::Duration::from_secs(5),
+            )
+            .unwrap_err()
+            .contains("trusted"));
+        service.set_trusted("review", true).unwrap();
         let run = service
             .start_extension(
                 "review",
@@ -2092,6 +2202,7 @@ mod tests {
                 ))
                 .unwrap();
             service.set_enabled(id, true).unwrap();
+            service.set_trusted(id, true).unwrap();
             let run = service
                 .start_extension(id, "task-a", "run-a", &root, timeout)
                 .unwrap();
@@ -2133,6 +2244,7 @@ mod tests {
             ))
             .unwrap();
         service.set_enabled("memory-bound", true).unwrap();
+        service.set_trusted("memory-bound", true).unwrap();
         let run = service
             .start_extension(
                 "memory-bound",

@@ -457,6 +457,8 @@
     <message id="harness.run">Run</message>
     <message id="harness.actionFailed">The Harness Action did not pass.</message>
     <message id="professional.title">Professional extensions</message>
+    <message id="professional.enabled">Enabled</message>
+    <message id="professional.trusted">Trusted</message>
     <message id="professional.help">Heavy tools stay stopped until you explicitly enable and start them.</message>
     <message id="professional.residents">resident processes</message>
     <message id="professional.installed">Isolated host</message>
@@ -518,6 +520,14 @@
     <message id="professional.capability.debug-adapter.summary">Scoped DAP launch and attach diagnostics for active Harness runs</message>
     <message id="professional.capability.firstmate-crew-orchestrator.name">Firstmate crew orchestrator</message>
     <message id="professional.capability.firstmate-crew-orchestrator.summary">Optional external Firstmate crew orchestration in isolated worktrees</message>
+    <message id="professional.capability.pi-subagents-orchestration.name">Pi Subagents orchestration</message>
+    <message id="professional.capability.pi-subagents-orchestration.summary">Managed chains, parallel groups, resume, acceptance, and isolated worktrees</message>
+    <message id="professional.capability.scheduler-monitor.name">Scheduler and monitors</message>
+    <message id="professional.capability.scheduler-monitor.summary">On-demand monitors and explicitly scheduled development work</message>
+    <message id="professional.capability.lifecycle-hooks.name">Lifecycle hooks</message>
+    <message id="professional.capability.lifecycle-hooks.summary">Trusted command hooks for selected Agent lifecycle events</message>
+    <message id="professional.capability.mcp-server-host.name">MCP server host</message>
+    <message id="professional.capability.mcp-server-host.summary">Manually imported and task-scoped MCP servers with secret references</message>
     <message id="professional.capability.remote-control.name">Mobile remote control</message>
     <message id="professional.capability.remote-control.summary">Optional phone control for local chats and Agent Runs</message>
     <message id="professional.capability.computer-use.name">Computer use</message>
@@ -546,6 +556,7 @@
     <message id="professional.firstmateChooseRoot">Choose root</message>
     <message id="professional.firstmateRootSaved">Firstmate root saved.</message>
     <message id="professional.firstmateOpen">Open Firstmate chat</message>
+    <message id="professional.firstmateLabel">Firstmate</message>
     <message id="professional.firstmateConfigure">Choose a Firstmate root in Professional Extensions</message>
   </messages>
 </languagePack>

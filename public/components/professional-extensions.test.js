@@ -69,6 +69,7 @@ describe("picode-professional-extensions", () => {
       })),
       applyExternalCapabilityImport: vi.fn(async () => []),
       setProfessionalExtensionEnabled: vi.fn(async () => ({})),
+      setProfessionalExtensionTrusted: vi.fn(async () => ({})),
     };
     const Panel = customElements.get("picode-professional-extensions");
     const panel = new Panel();
@@ -81,6 +82,7 @@ describe("picode-professional-extensions", () => {
     expect(transport.listSkills).toHaveBeenCalled();
     expect(transport.previewExternalCapabilityImport).not.toHaveBeenCalled();
     expect(transport.setProfessionalExtensionEnabled).not.toHaveBeenCalled();
+    expect(panel.querySelector('[data-extension-trust="review"]').disabled).toBe(true);
     expect(panel.textContent).toContain("0 resident processes");
     expect(panel.querySelectorAll(".picode-skill-bundle")).toHaveLength(1);
     expect(panel.querySelector(".picode-skill-bundle > summary")?.textContent).toContain(

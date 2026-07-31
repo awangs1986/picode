@@ -1,11 +1,13 @@
 import { describe, expect, test } from "vitest";
 import {
+  buildConversationIdentityPrompt,
   buildImportedWorkflowPrompt,
   buildPiSubagentsPrompt,
   buildTaskCapabilityPrompt,
   type PiSubagentRuntimeRun,
   recordPiSubagentComplete,
   recordPiSubagentStarted,
+  resolveConversationId,
   searchTaskCapabilities,
   selectPiSubagentTools,
   type TaskCapabilityContext,
@@ -21,6 +23,19 @@ const context: TaskCapabilityContext = {
 };
 
 describe("embedded Picode capability bridge", () => {
+  test("current conversation identity is exact, read-only, and never confused with its file path", () => {
+    expect(
+      resolveConversationId(
+        [{ type: "session", id: "conversation-123" }],
+        "C:/Users/test/.pi/agent/sessions/other-name.jsonl",
+      ),
+    ).toBe("conversation-123");
+    const prompt = buildConversationIdentityPrompt("conversation-123");
+    expect(prompt).toContain('Current conversation ID: "conversation-123"');
+    expect(prompt).toContain("return this exact value");
+    expect(prompt).toContain("read-only runtime metadata");
+  });
+
   test("search is deterministic, bounded, and unavailable before explicit enablement", () => {
     expect(searchTaskCapabilities({ ...context, catalogEnabled: false }, "rust", 5)).toEqual([]);
     expect(searchTaskCapabilities(context, "rust symbols", 2)).toEqual([

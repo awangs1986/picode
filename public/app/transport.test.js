@@ -364,6 +364,7 @@ describe("WsTransport", () => {
     await transport.previewMcpImport('{"mcpServers":{}}');
     await transport.applyMcpImport("preview-m", { memory: {} }, { task: "task-a" });
     await transport.startProfessionalExtension("review", "task-a", "run-a", 5000);
+    await transport.setProfessionalExtensionTrusted("review", true);
     await transport.launchDap(
       "task-a",
       "run-a",
@@ -389,6 +390,11 @@ describe("WsTransport", () => {
       "extension_start",
       { extensionId: "review", taskId: "task-a", agentRunId: "run-a", timeoutMs: 5000 },
       { timeoutMs: 0 },
+    );
+    expect(ws.sendControl).toHaveBeenCalledWith(
+      "extension_set_trusted",
+      { extensionId: "review", trusted: true },
+      {},
     );
     expect(ws.sendControl).toHaveBeenCalledWith(
       "dap_launch",

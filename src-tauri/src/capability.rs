@@ -551,6 +551,15 @@ impl LazyLspManager {
             }
         }
     }
+
+    pub fn stop(&mut self, session_id: &str) -> Result<(), String> {
+        let session = self
+            .sessions
+            .get_mut(session_id)
+            .ok_or_else(|| "LSP session missing".to_owned())?;
+        session.running = false;
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

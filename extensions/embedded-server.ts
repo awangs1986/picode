@@ -2195,6 +2195,24 @@ function getOrCreateGlobalState(): EmbeddedServerGlobal {
   return state;
 }
 
+export function resolveConversationId(
+  entries: Array<{ type?: string; id?: unknown }> | null | undefined,
+  sessionFile?: string | null,
+): string | null {
+  const sessionEntry = entries?.find(
+    (entry) => entry?.type === "session" && typeof entry?.id === "string" && entry.id.trim(),
+  );
+  if (typeof sessionEntry?.id === "string") return sessionEntry.id.trim();
+  const file = String(sessionFile || "").trim();
+  if (!file) return null;
+  return path.basename(file, path.extname(file)) || file;
+}
+
+export function buildConversationIdentityPrompt(conversationId: string | null): string {
+  if (!conversationId) return "";
+  return `\n\n<picode_conversation_identity>\nCurrent conversation ID: ${JSON.stringify(conversationId)}\nWhen the user asks for the current conversation or chat ID, return this exact value. Treat it as read-only runtime metadata; do not infer or substitute a title, file path, task ID, or workspace ID.\n</picode_conversation_identity>`;
+}
+
 export default function (pi: ExtensionAPI) {
   const globalState = getOrCreateGlobalState();
 
@@ -2247,6 +2265,44 @@ export default function (pi: ExtensionAPI) {
       `picode-port-${PORT}`
     );
   }
+
+  function currentConversationIdFromCtx(ctx: ExtensionContext | null): string | null {
+    if (!ctx) return null;
+    let entries: Array<{ type?: string; id?: unknown }> = [];
+    let sessionFile = "";
+    try {
+      entries = ctx.sessionManager.getEntries();
+    } catch {}
+    try {
+      sessionFile = ctx.sessionManager.getSessionFile() || "";
+    } catch {}
+    return resolveConversationId(entries, sessionFile);
+  }
+
+  const sessionInfoParameters = {
+    type: "object",
+    properties: {},
+    additionalProperties: false,
+  } as unknown as Parameters<ExtensionAPI["registerTool"]>[0]["parameters"];
+
+  pi.registerTool({
+    name: "picode_session_info",
+    label: "Picode session info",
+    description:
+      "Return the exact ID and local session file for the current Picode conversation. Use this when the user asks for the current conversation or chat ID.",
+    promptSnippet: "Read the exact current Picode conversation ID.",
+    parameters: sessionInfoParameters,
+    async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+      const conversationId = currentConversationIdFromCtx(ctx);
+      if (!conversationId) throw new Error("The current conversation does not have an ID yet");
+      const sessionFile = ctx.sessionManager.getSessionFile() || null;
+      const result = { conversationId, sessionFile };
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        details: result,
+      };
+    },
+  });
 
   const bashParameters = {
     type: "object",
@@ -3244,7 +3300,9 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("before_agent_start", async (event) => {
+    const activeCtx = globalState.getLatestCtx?.() ?? latestCtx;
     const suffix =
+      buildConversationIdentityPrompt(currentConversationIdFromCtx(activeCtx)) +
       buildTaskCapabilityPrompt(globalState.taskCapabilityContext) +
       buildPiSubagentsPrompt(
         currentPi()

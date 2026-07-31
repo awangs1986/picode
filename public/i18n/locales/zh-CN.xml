@@ -457,6 +457,8 @@
     <message id="harness.run">运行</message>
     <message id="harness.actionFailed">Harness 动作未通过。</message>
     <message id="professional.title">专业扩展</message>
+    <message id="professional.enabled">已启用</message>
+    <message id="professional.trusted">已信任</message>
     <message id="professional.help">重型工具只有在你明确启用并启动后才会运行。</message>
     <message id="professional.residents">个驻留进程</message>
     <message id="professional.installed">隔离宿主</message>
@@ -518,6 +520,14 @@
     <message id="professional.capability.debug-adapter.summary">为正在运行的 Harness 任务提供限定范围的 DAP 启动、附加和诊断</message>
     <message id="professional.capability.firstmate-crew-orchestrator.name">Firstmate 多 Agent 编排</message>
     <message id="professional.capability.firstmate-crew-orchestrator.summary">在隔离 Git 工作树中使用可选的外部 Firstmate 团队编排能力</message>
+    <message id="professional.capability.pi-subagents-orchestration.name">Pi 子代理编排</message>
+    <message id="professional.capability.pi-subagents-orchestration.summary">按需提供链式、并行、恢复、验收和隔离工作树编排</message>
+    <message id="professional.capability.scheduler-monitor.name">调度器与监控任务</message>
+    <message id="professional.capability.scheduler-monitor.summary">按需运行监控任务，以及用户明确设置的开发调度任务</message>
+    <message id="professional.capability.lifecycle-hooks.name">生命周期 Hook</message>
+    <message id="professional.capability.lifecycle-hooks.summary">针对指定 Agent 生命周期事件运行经过信任的命令 Hook</message>
+    <message id="professional.capability.mcp-server-host.name">MCP 服务宿主</message>
+    <message id="professional.capability.mcp-server-host.summary">手动导入、按任务限定，并通过密钥引用提供凭证的 MCP 服务</message>
     <message id="professional.capability.remote-control.name">手机远程控制</message>
     <message id="professional.capability.remote-control.summary">允许用户选择性地通过手机控制本地聊天和 Agent 任务</message>
     <message id="professional.capability.computer-use.name">计算机操作</message>
@@ -546,6 +556,7 @@
     <message id="professional.firstmateChooseRoot">选择根目录</message>
     <message id="professional.firstmateRootSaved">Firstmate 根目录已保存。</message>
     <message id="professional.firstmateOpen">打开 Firstmate 聊天</message>
+    <message id="professional.firstmateLabel">Firstmate</message>
     <message id="professional.firstmateConfigure">请在专业扩展中选择 Firstmate 根目录</message>
   </messages>
 </languagePack>

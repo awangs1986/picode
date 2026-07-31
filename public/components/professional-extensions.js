@@ -194,10 +194,14 @@ export class PicodeProfessionalExtensions extends HTMLElement {
 
   _extensionRow(item) {
     const permissions = (item.permissions || []).map(formatPermission).join(" · ");
-    return `<label class="picode-extension-install" data-extension="${escapeHtml(item.id)}">
-      <span><strong>${escapeHtml(item.id)}</strong><small>schema ${escapeHtml(item.schemaVersion)} · ${escapeHtml(permissions || "no permissions")}</small></span>
-      <input type="checkbox" data-extension-enable="${escapeHtml(item.id)}" ${item.enabled ? "checked" : ""}>
-    </label>`;
+    const lifecycle = (this._snapshot?.lifecycle || []).find((entry) => entry.id === item.id);
+    const trusted = lifecycle?.state === "trusted" || lifecycle?.state === "running";
+    const state = lifecycle?.state || (item.enabled ? "enabled" : "discovered");
+    return `<div class="picode-extension-install" data-extension="${escapeHtml(item.id)}">
+      <span><strong>${escapeHtml(item.name || item.id)}</strong><small>${escapeHtml(state)} · schema ${escapeHtml(item.schemaVersion)} · ${escapeHtml(permissions || "no permissions")}</small></span>
+      <label><small>${escapeHtml(t("professional.enabled", {}, "Enabled"))}</small><input type="checkbox" data-extension-enable="${escapeHtml(item.id)}" ${item.enabled ? "checked" : ""}></label>
+      <label><small>${escapeHtml(t("professional.trusted", {}, "Trusted"))}</small><input type="checkbox" data-extension-trust="${escapeHtml(item.id)}" ${trusted ? "checked" : ""} ${item.enabled ? "" : "disabled"}></label>
+    </div>`;
   }
 
   _skillGroup(group) {
@@ -343,6 +347,20 @@ export class PicodeProfessionalExtensions extends HTMLElement {
         try {
           await this.transport.setProfessionalExtensionEnabled(
             input.dataset.extensionEnable,
+            input.checked,
+          );
+          await this.refresh();
+        } catch (error) {
+          this._error = error?.message || String(error);
+          this._render();
+        }
+      });
+    });
+    this.querySelectorAll("[data-extension-trust]").forEach((input) => {
+      input.addEventListener("change", async () => {
+        try {
+          await this.transport.setProfessionalExtensionTrusted(
+            input.dataset.extensionTrust,
             input.checked,
           );
           await this.refresh();

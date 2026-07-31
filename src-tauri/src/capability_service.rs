@@ -1,7 +1,7 @@
 use crate::capability::{
     parse_tools_md, Activation, CapabilityCatalog, CapabilityManifest, CapabilityScope,
     CapabilitySearchResult, CapabilitySummary, CapabilityTier, IndexLimits, IndexMatch,
-    LocalCodeIndex, ResidentCore,
+    LazyLspManager, LocalCodeIndex, ResidentCore,
 };
 use crate::execution::TaskKind;
 use serde::{Deserialize, Serialize};
@@ -55,6 +55,7 @@ pub struct CapabilityService {
     state: PersistedCapabilityState,
     catalog: CapabilityCatalog,
     indexes: BTreeMap<String, LocalCodeIndex>,
+    lsp: LazyLspManager,
 }
 
 impl CapabilityService {
@@ -93,6 +94,7 @@ impl CapabilityService {
             state,
             catalog,
             indexes: BTreeMap::new(),
+            lsp: LazyLspManager::default(),
         };
         service.persist()?;
         Ok(service)
@@ -292,6 +294,54 @@ impl CapabilityService {
         Ok(index.search(query, limit.clamp(1, 100)))
     }
 
+    pub fn start_lsp(
+        &mut self,
+        task_id: &str,
+        task_kind: TaskKind,
+        language: &str,
+        scope: &str,
+        at: u64,
+    ) -> Result<String, String> {
+        if task_kind != TaskKind::Harness {
+            return Err("LSP is available only to a workspace-bound Harness Task".to_owned());
+        }
+        self.lsp.start_for_scope(task_id, language, scope, at)
+    }
+
+    pub fn record_lsp_diagnostics(
+        &mut self,
+        session_id: &str,
+        path: &str,
+        version: &str,
+        diagnostics: Vec<String>,
+    ) -> Result<(), String> {
+        self.lsp
+            .record_diagnostics(session_id, path, version, diagnostics)
+    }
+
+    pub fn lsp_diagnostics(
+        &self,
+        session_id: &str,
+        path: &str,
+        version: &str,
+    ) -> Result<Vec<String>, String> {
+        Ok(self
+            .lsp
+            .diagnostics(session_id, path, version)?
+            .iter()
+            .take(100)
+            .cloned()
+            .collect())
+    }
+
+    pub fn shutdown_lsp(&mut self, session_id: &str) -> Result<(), String> {
+        self.lsp.stop(session_id)
+    }
+
+    pub fn running_lsp_count(&self) -> usize {
+        self.lsp.running_count()
+    }
+
     #[cfg(test)]
     pub fn resident_process_count(&self) -> usize {
         self.catalog.resident_process_count()
@@ -412,6 +462,60 @@ fn builtin_manifests() -> Vec<CapabilityManifest> {
                 "process.exec".into(),
                 "git.worktree".into(),
             ]),
+            resident_cost_bytes: 0,
+        },
+        CapabilityManifest {
+            schema_version: 1,
+            id: "pi-subagents-orchestration".into(),
+            version: "0.37.2".into(),
+            summary: "Managed chains, parallel groups, resume, acceptance, and isolated worktrees"
+                .into(),
+            keywords: vec![
+                "subagent".into(),
+                "chain".into(),
+                "parallel".into(),
+                "fleet".into(),
+            ],
+            scope: CapabilityScope::Task,
+            activation: Activation::OnDemand,
+            tier: CapabilityTier::Discoverable,
+            permissions: BTreeSet::from(["task.control".into(), "process.exec".into()]),
+            resident_cost_bytes: 0,
+        },
+        CapabilityManifest {
+            schema_version: 1,
+            id: "scheduler-monitor".into(),
+            version: "1.0.0".into(),
+            summary: "On-demand monitors and explicitly scheduled development work".into(),
+            keywords: vec!["monitor".into(), "schedule".into(), "background".into()],
+            scope: CapabilityScope::Task,
+            activation: Activation::OnDemand,
+            tier: CapabilityTier::Discoverable,
+            permissions: BTreeSet::from(["task.control".into(), "process.exec".into()]),
+            resident_cost_bytes: 0,
+        },
+        CapabilityManifest {
+            schema_version: 1,
+            id: "lifecycle-hooks".into(),
+            version: "1.0.0".into(),
+            summary: "Trusted command hooks for selected Agent lifecycle events".into(),
+            keywords: vec!["hook".into(), "lifecycle".into(), "stop".into()],
+            scope: CapabilityScope::Global,
+            activation: Activation::Explicit,
+            tier: CapabilityTier::Disabled,
+            permissions: BTreeSet::from(["process.exec".into()]),
+            resident_cost_bytes: 0,
+        },
+        CapabilityManifest {
+            schema_version: 1,
+            id: "mcp-server-host".into(),
+            version: "1.0.0".into(),
+            summary: "Manually imported and task-scoped MCP servers with secret references".into(),
+            keywords: vec!["mcp".into(), "tools".into(), "server".into()],
+            scope: CapabilityScope::Task,
+            activation: Activation::Explicit,
+            tier: CapabilityTier::Disabled,
+            permissions: BTreeSet::from(["process.exec".into(), "network".into()]),
             resident_cost_bytes: 0,
         },
         // P5 modules are deliberately visible in Settings but disabled by

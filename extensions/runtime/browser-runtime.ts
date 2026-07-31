@@ -504,11 +504,19 @@ async function createTab(host: BrowserHost, sessionId: string, name: string, url
     id: string;
     webSocketDebuggerUrl: string;
     url?: string;
-  }>(`${host.baseUrl}/json/new?${encodeURIComponent(url || "about:blank")}`, 10_000, {
+  }>(`${host.baseUrl}/json/new?${encodeURIComponent("about:blank")}`, 10_000, {
     method: "PUT",
   });
   const client = await CdpClient.connect(target.webSocketDebuggerUrl, 10_000);
   await Promise.all([client.send("Page.enable"), client.send("Runtime.enable")]);
+  let lastUrl = "about:blank";
+  try {
+    if (url) lastUrl = await navigateAndWait(client, url, 10_000);
+  } catch (error) {
+    client.close();
+    await fetch(`${host.baseUrl}/json/close/${target.id}`).catch(() => undefined);
+    throw error;
+  }
   host.refs += 1;
   return {
     sessionId,
@@ -517,8 +525,39 @@ async function createTab(host: BrowserHost, sessionId: string, name: string, url
     client,
     host,
     context: vm.createContext({}),
-    lastUrl: url || "about:blank",
+    lastUrl,
   } satisfies BrowserTab;
+}
+
+async function navigateAndWait(client: CdpClient, url: string, timeoutMs: number) {
+  const loaded = client.once("Page.loadEventFired", timeoutMs).catch(() => undefined);
+  await client.send("Page.navigate", { url });
+  const ready = waitForDocumentReady(client, url, timeoutMs);
+  await Promise.race([loaded, ready]);
+  return await ready;
+}
+
+async function waitForDocumentReady(client: CdpClient, requestedUrl: string, timeoutMs: number) {
+  const deadline = Date.now() + timeoutMs;
+  const requireNavigation = requestedUrl !== "about:blank";
+  while (Date.now() < deadline) {
+    const state = await client
+      .send<{ result?: { value?: { ready?: string; url?: string } } }>("Runtime.evaluate", {
+        expression: "({ ready: document.readyState, url: location.href })",
+        returnByValue: true,
+      })
+      .catch(() => undefined);
+    const value = state?.result?.value;
+    if (
+      value?.ready === "complete" &&
+      typeof value.url === "string" &&
+      (!requireNavigation || value.url !== "about:blank")
+    ) {
+      return value.url;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`Timed out waiting for browser navigation to complete: ${requestedUrl}`);
 }
 
 function expressionForFunction(fn: unknown, args: unknown[]) {
@@ -825,10 +864,7 @@ export class BrowserAutomationRuntime {
   }
 
   private async goto(tab: BrowserTab, url: string, timeoutMs: number) {
-    const loaded = tab.client.once("Page.loadEventFired", timeoutMs).catch(() => undefined);
-    await tab.client.send("Page.navigate", { url });
-    await loaded;
-    const currentUrl = String(await evaluate(tab, "location.href"));
+    const currentUrl = await navigateAndWait(tab.client, url, timeoutMs);
     tab.lastUrl = currentUrl;
     return currentUrl;
   }

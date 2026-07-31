@@ -350,7 +350,7 @@ impl DiscoverySource {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActionCandidate {
     pub id: String,
@@ -508,7 +508,7 @@ impl StructuredTestResult {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GateValidityResult {
     pub gate_id: String,

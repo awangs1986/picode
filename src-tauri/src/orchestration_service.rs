@@ -25,6 +25,7 @@ pub enum ManagedJobStatus {
     Cancelled,
     TimedOut,
     Terminated,
+    TerminationUnknown,
 }
 
 impl ManagedJobStatus {
@@ -54,8 +55,99 @@ pub struct ManagedJobView {
 struct RuntimeJob {
     view: ManagedJobView,
     child: Option<Arc<Mutex<Child>>>,
+    process_owner: Option<Arc<ProcessOwner>>,
     hasher: Sha256,
     durable: bool,
+}
+
+/// Owns the complete process tree of a managed job. On Windows a Job Object
+/// is the actual ownership boundary; dropping the final handle is configured
+/// to kill any descendants that are still alive.
+struct ProcessOwner {
+    #[cfg(windows)]
+    job: windows_sys::Win32::Foundation::HANDLE,
+}
+
+#[cfg(windows)]
+unsafe impl Send for ProcessOwner {}
+#[cfg(windows)]
+unsafe impl Sync for ProcessOwner {}
+
+impl ProcessOwner {
+    fn attach(child: &Child) -> Result<Self, String> {
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::Foundation::CloseHandle;
+            use windows_sys::Win32::System::JobObjects::{
+                AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+                SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+                JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            };
+
+            // SAFETY: every handle is checked, assigned once, and owned by
+            // ProcessOwner until Drop closes it.
+            unsafe {
+                let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+                if job.is_null() {
+                    return Err(format!(
+                        "create Windows Job Object: {}",
+                        std::io::Error::last_os_error()
+                    ));
+                }
+                let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+                limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+                let configured = SetInformationJobObject(
+                    job,
+                    JobObjectExtendedLimitInformation,
+                    std::ptr::addr_of!(limits).cast(),
+                    std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                );
+                if configured == 0 {
+                    let error = std::io::Error::last_os_error();
+                    CloseHandle(job);
+                    return Err(format!("configure Windows Job Object: {error}"));
+                }
+                let process = child.as_raw_handle().cast();
+                if AssignProcessToJobObject(job, process) == 0 {
+                    let error = std::io::Error::last_os_error();
+                    CloseHandle(job);
+                    return Err(format!("assign process to Windows Job Object: {error}"));
+                }
+                Ok(Self { job })
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = child;
+            Ok(Self {})
+        }
+    }
+
+    fn terminate(&self) -> Result<(), String> {
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::System::JobObjects::TerminateJobObject;
+            // SAFETY: the Job Object handle remains owned by this value.
+            if unsafe { TerminateJobObject(self.job, 1) } == 0 {
+                return Err(format!(
+                    "terminate Windows Job Object: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ProcessOwner {
+    fn drop(&mut self) {
+        // SAFETY: this is the sole close for the owned handle.
+        unsafe {
+            windows_sys::Win32::Foundation::CloseHandle(self.job);
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -173,6 +265,54 @@ pub struct GitSnapshot {
     pub dirty: bool,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitRewindPreview {
+    pub repository_root: PathBuf,
+    pub current_head: String,
+    pub target_commit: String,
+    pub dirty: bool,
+    pub has_untracked: bool,
+    pub changed_paths: String,
+    pub state_fingerprint: String,
+    pub confirmation: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HandoffRequest {
+    pub task_id: String,
+    pub workspace: PathBuf,
+    pub summary: String,
+    #[serde(default)]
+    pub tests: Vec<String>,
+    #[serde(default)]
+    pub red_probes: Vec<String>,
+    #[serde(default)]
+    pub evidence_refs: Vec<String>,
+    #[serde(default)]
+    pub unresolved: Vec<String>,
+    pub recovery: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HandoffPackageV2 {
+    pub schema_version: u32,
+    pub task_id: String,
+    pub authority: String,
+    pub created_at: u64,
+    pub git: GitSnapshot,
+    pub diff_stat: String,
+    pub summary: String,
+    pub tests: Vec<String>,
+    pub red_probes: Vec<String>,
+    pub evidence_refs: Vec<String>,
+    pub unresolved: Vec<String>,
+    pub recovery: String,
+    pub package_path: PathBuf,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum GitWorktreeStatus {
@@ -247,6 +387,7 @@ impl OrchestrationService {
                     RuntimeJob {
                         view,
                         child: None,
+                        process_owner: None,
                         hasher,
                         durable: true,
                     },
@@ -346,6 +487,14 @@ impl OrchestrationService {
         let mut child = command
             .spawn()
             .map_err(|error| format!("start background job: {error}"))?;
+        let process_owner = match ProcessOwner::attach(&child) {
+            Ok(owner) => Arc::new(owner),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error);
+            }
+        };
         let process_id = child.id();
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
@@ -370,6 +519,7 @@ impl OrchestrationService {
             RuntimeJob {
                 view: view.clone(),
                 child: Some(child.clone()),
+                process_owner: Some(process_owner.clone()),
                 hasher: Sha256::new(),
                 durable: false,
             },
@@ -401,6 +551,7 @@ impl OrchestrationService {
         }
         spawn_job_monitor(
             child,
+            process_owner,
             self.jobs.clone(),
             self.graphs.clone(),
             self.routing_decisions.clone(),
@@ -416,7 +567,7 @@ impl OrchestrationService {
     }
 
     pub fn cancel_job(&self, id: &str) -> Result<ManagedJobView, String> {
-        let child = {
+        let (child, process_owner) = {
             let jobs = self.jobs.lock().map_err(lock_error)?;
             let job = jobs
                 .get(id)
@@ -424,18 +575,31 @@ impl OrchestrationService {
             if job.view.status.terminal() {
                 return Err("background job is already terminal".into());
             }
-            job.child
-                .clone()
-                .ok_or_else(|| "background job process is unavailable".to_owned())?
+            (
+                job.child
+                    .clone()
+                    .ok_or_else(|| "background job process is unavailable".to_owned())?,
+                job.process_owner
+                    .clone()
+                    .ok_or_else(|| "background job process owner is unavailable".to_owned())?,
+            )
         };
-        terminate_process_tree(&child)?;
+        let termination = terminate_process_tree(&child, &process_owner);
         let view = {
             let mut jobs = self.jobs.lock().map_err(lock_error)?;
             let job = jobs
                 .get_mut(id)
                 .ok_or_else(|| "background job missing".to_owned())?;
-            job.view.status = ManagedJobStatus::Cancelled;
-            job.view.termination_result = Some("cancelled by user".into());
+            match termination {
+                Ok(()) => {
+                    job.view.status = ManagedJobStatus::Cancelled;
+                    job.view.termination_result = Some("owned process tree exit confirmed".into());
+                }
+                Err(error) => {
+                    job.view.status = ManagedJobStatus::TerminationUnknown;
+                    job.view.termination_result = Some(error);
+                }
+            }
             job.durable = false;
             job.view.clone()
         };
@@ -750,6 +914,131 @@ impl OrchestrationService {
         })
     }
 
+    pub fn preview_rewind(
+        &self,
+        workspace: &Path,
+        target_ref: &str,
+    ) -> Result<GitRewindPreview, String> {
+        if target_ref.trim().is_empty() || target_ref.starts_with('-') {
+            return Err("Git rewind target is required".to_owned());
+        }
+        let snapshot = self.git_snapshot(workspace)?;
+        let verify = format!("{}^{{commit}}", target_ref.trim());
+        let target_commit = run_git(
+            &snapshot.repository_root,
+            &["rev-parse", "--verify", &verify],
+        )?
+        .trim()
+        .to_owned();
+        let changed_paths = run_git(
+            &snapshot.repository_root,
+            &["diff", "--name-status", &target_commit, &snapshot.head],
+        )?;
+        let has_untracked = snapshot
+            .status_porcelain_v2
+            .lines()
+            .any(|line| line.starts_with("? "));
+        let state_fingerprint = git_state_fingerprint(&snapshot);
+        Ok(GitRewindPreview {
+            repository_root: snapshot.repository_root,
+            current_head: snapshot.head,
+            target_commit: target_commit.clone(),
+            dirty: snapshot.dirty,
+            has_untracked,
+            changed_paths: changed_paths.chars().take(128 * 1024).collect(),
+            state_fingerprint,
+            confirmation: format!("REWIND {}", &target_commit[..12.min(target_commit.len())]),
+        })
+    }
+
+    /// Restores tracked tree/index content from the selected commit without
+    /// moving HEAD or deleting untracked files. The reversal stays visible as
+    /// an ordinary reviewable Git change.
+    pub fn apply_rewind(
+        &self,
+        preview: &GitRewindPreview,
+        confirmation: &str,
+    ) -> Result<GitSnapshot, String> {
+        if confirmation != preview.confirmation {
+            return Err("Git rewind confirmation does not match the preview".to_owned());
+        }
+        let current = self.preview_rewind(&preview.repository_root, &preview.target_commit)?;
+        if current.state_fingerprint != preview.state_fingerprint
+            || current.current_head != preview.current_head
+            || current.dirty
+            || current.has_untracked
+        {
+            return Err(
+                "Git workspace changed since preview or is dirty; user changes are protected"
+                    .to_owned(),
+            );
+        }
+        run_git(
+            &current.repository_root,
+            &[
+                "restore",
+                "--source",
+                &current.target_commit,
+                "--staged",
+                "--worktree",
+                "--",
+                ".",
+            ],
+        )?;
+        self.git_snapshot(&current.repository_root)
+    }
+
+    pub fn create_handoff(&self, request: HandoffRequest) -> Result<HandoffPackageV2, String> {
+        if request.task_id.is_empty()
+            || request.task_id.len() > 128
+            || !request
+                .task_id
+                .bytes()
+                .all(|value| value.is_ascii_alphanumeric() || matches!(value, b'-' | b'_'))
+        {
+            return Err("Handoff task id contains unsafe characters".to_owned());
+        }
+        validate_handoff_text(&request.summary, "summary", 64 * 1024)?;
+        validate_handoff_text(&request.recovery, "recovery", 64 * 1024)?;
+        for (label, values) in [
+            ("tests", &request.tests),
+            ("red probes", &request.red_probes),
+            ("evidence", &request.evidence_refs),
+            ("unresolved", &request.unresolved),
+        ] {
+            if values.len() > 256 {
+                return Err(format!("Handoff {label} exceeds 256 entries"));
+            }
+            for value in values {
+                validate_handoff_text(value, label, 8 * 1024)?;
+            }
+        }
+        let git = self.git_snapshot(&request.workspace)?;
+        let diff_stat = run_git(&git.repository_root, &["diff", "--stat", "HEAD"])?;
+        let package_path = self.root.join(format!(
+            "handoff-{}-{}.json",
+            request.task_id,
+            unix_millis()
+        ));
+        let package = HandoffPackageV2 {
+            schema_version: 2,
+            task_id: request.task_id,
+            authority: "local_developer".to_owned(),
+            created_at: unix_millis(),
+            git,
+            diff_stat: diff_stat.chars().take(128 * 1024).collect(),
+            summary: request.summary,
+            tests: request.tests,
+            red_probes: request.red_probes,
+            evidence_refs: request.evidence_refs,
+            unresolved: request.unresolved,
+            recovery: request.recovery,
+            package_path,
+        };
+        atomic_json(&package.package_path, &package)?;
+        Ok(package)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn create_safe_worktree(
         &self,
@@ -844,6 +1133,39 @@ impl OrchestrationService {
         Ok(review.chars().take(64 * 1024).collect())
     }
 
+    pub fn delegation_workspace(
+        &self,
+        task_id: &str,
+        requires_write: bool,
+        worktree_id: Option<&str>,
+        shared_workspace: &Path,
+    ) -> Result<PathBuf, String> {
+        if let Some(worktree_id) = worktree_id {
+            let worktree = self
+                .worktrees
+                .lock()
+                .map_err(lock_error)?
+                .get(worktree_id)
+                .cloned()
+                .ok_or_else(|| "Safe Worktree is not managed".to_owned())?;
+            if worktree.task_id != task_id || worktree.status != GitWorktreeStatus::Active {
+                return Err("Safe Worktree does not belong to the active task".to_owned());
+            }
+            return worktree
+                .path
+                .canonicalize()
+                .map_err(|error| format!("resolve Safe Worktree: {error}"));
+        }
+        if requires_write {
+            return Err(
+                "Write-capable Subagent requires an explicitly authorized Safe Worktree".into(),
+            );
+        }
+        shared_workspace
+            .canonicalize()
+            .map_err(|error| format!("resolve shared delegation workspace: {error}"))
+    }
+
     fn persist(&self) -> Result<(), String> {
         persist_shared(
             &self.root,
@@ -901,6 +1223,7 @@ fn spawn_output_reader<R: Read + Send + 'static>(
 #[allow(clippy::too_many_arguments)]
 fn spawn_job_monitor(
     child: Arc<Mutex<Child>>,
+    process_owner: Arc<ProcessOwner>,
     jobs: Arc<Mutex<BTreeMap<String, RuntimeJob>>>,
     graphs: Arc<Mutex<BTreeMap<String, TaskGraph>>>,
     decisions: Arc<Mutex<Vec<RoutingDecisionRecord>>>,
@@ -934,20 +1257,33 @@ fn spawn_job_monitor(
                                 Some(format!("process exited with {status}"));
                         }
                         job.child = None;
+                        job.process_owner = None;
                         job.durable = false;
                     }
                 }
                 break;
             }
             if started.elapsed() >= timeout {
-                let _ = terminate_process_tree(&child);
+                let termination = terminate_process_tree(&child, &process_owner);
                 if let Ok(mut jobs) = jobs.lock() {
                     if let Some(job) = jobs.get_mut(&job_id) {
                         if job.view.status == ManagedJobStatus::Running {
-                            job.view.status = ManagedJobStatus::TimedOut;
-                            job.view.termination_result = Some("background job timed out".into());
+                            match termination {
+                                Ok(()) => {
+                                    job.view.status = ManagedJobStatus::TimedOut;
+                                    job.view.termination_result = Some(
+                                        "background job timed out; owned process tree exit confirmed"
+                                            .into(),
+                                    );
+                                }
+                                Err(error) => {
+                                    job.view.status = ManagedJobStatus::TerminationUnknown;
+                                    job.view.termination_result = Some(error);
+                                }
+                            }
                         }
                         job.child = None;
+                        job.process_owner = None;
                         job.durable = false;
                     }
                 }
@@ -977,36 +1313,48 @@ fn spawn_job_monitor(
     });
 }
 
-fn terminate_process_tree(child: &Arc<Mutex<Child>>) -> Result<(), String> {
+fn terminate_process_tree(
+    child: &Arc<Mutex<Child>>,
+    process_owner: &Arc<ProcessOwner>,
+) -> Result<(), String> {
     let mut child = child.lock().map_err(lock_error)?;
     let process_id = child.id();
     #[cfg(target_os = "windows")]
-    {
-        let status = Command::new("taskkill")
-            .args(["/PID", &process_id.to_string(), "/T", "/F"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-        if status.as_ref().is_ok_and(|status| status.success()) {
-            return Ok(());
-        }
-    }
+    let tree_signal_succeeded = process_owner.terminate().is_ok();
     #[cfg(not(target_os = "windows"))]
-    {
+    let tree_signal_succeeded = {
         let status = Command::new("kill")
             .args(["-TERM", &format!("-{process_id}")])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
-        if status.as_ref().is_ok_and(|status| status.success()) {
-            return Ok(());
+        status.as_ref().is_ok_and(|status| status.success())
+    };
+    if !tree_signal_succeeded {
+        child
+            .kill()
+            .map_err(|error| format!("terminate background process: {error}"))?;
+    }
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return Ok(()),
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Ok(None) => {
+                return Err(format!(
+                    "termination_unknown: process {process_id} did not confirm exit"
+                ));
+            }
+            Err(error) => {
+                return Err(format!(
+                    "termination_unknown: cannot inspect process {process_id}: {error}"
+                ));
+            }
         }
     }
-    child
-        .kill()
-        .map_err(|error| format!("terminate background process: {error}"))
 }
 
 fn configure_process_group(command: &mut Command) {
@@ -1098,6 +1446,23 @@ fn run_git(cwd: &Path, args: &[&str]) -> Result<String, String> {
         return Err("Git output exceeds configured limit".into());
     }
     String::from_utf8(output.stdout).map_err(|_| "Git output is not UTF-8".to_owned())
+}
+
+fn git_state_fingerprint(snapshot: &GitSnapshot) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(snapshot.repository_root.to_string_lossy().as_bytes());
+    hasher.update([0]);
+    hasher.update(snapshot.head.as_bytes());
+    hasher.update([0]);
+    hasher.update(snapshot.status_porcelain_v2.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+fn validate_handoff_text(value: &str, label: &str, limit: usize) -> Result<(), String> {
+    if value.trim().is_empty() || value.len() > limit {
+        return Err(format!("Handoff {label} must contain 1 to {limit} bytes"));
+    }
+    Ok(())
 }
 
 fn valid_task_branch(branch: &str) -> bool {
@@ -1206,6 +1571,37 @@ mod tests {
     }
 
     #[test]
+    fn cancel_only_reports_success_after_the_owned_process_has_exited() {
+        let root = std::env::temp_dir().join(format!("picode-cancel-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let service = OrchestrationService::open(&root, 1024).unwrap();
+        let executable = std::env::current_exe().unwrap();
+        let job = service
+            .start_job(
+                "task-a",
+                "run-a",
+                &executable,
+                &[
+                    "--ignored".into(),
+                    "--exact".into(),
+                    "orchestration_service::tests::long_running_job_child_fixture".into(),
+                    "--nocapture".into(),
+                ],
+                &root,
+                Duration::from_secs(60),
+            )
+            .unwrap();
+
+        let cancelled = service.cancel_job(&job.id).unwrap();
+        assert_eq!(cancelled.status, ManagedJobStatus::Cancelled);
+        assert_eq!(
+            cancelled.termination_result.as_deref(),
+            Some("owned process tree exit confirmed")
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn background_jobs_are_owned_bounded_persisted_and_reconciled() {
         let root = std::env::temp_dir().join(format!("picode-jobs-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
@@ -1272,6 +1668,25 @@ mod tests {
     }
 
     #[test]
+    fn write_delegation_cannot_share_the_parent_workspace_without_a_managed_worktree() {
+        let root =
+            std::env::temp_dir().join(format!("picode-write-isolation-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let service = OrchestrationService::open(&root.join("state"), 1024).unwrap();
+        let error = service
+            .delegation_workspace("task-a", true, None, &root)
+            .unwrap_err();
+        assert!(error.contains("Safe Worktree"));
+        assert_eq!(
+            service
+                .delegation_workspace("task-a", false, None, &root)
+                .unwrap(),
+            root.canonicalize().unwrap()
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn user_model_policy_is_durable_and_routes_qualified_bounded_work() {
         let root = std::env::temp_dir().join(format!("picode-policy-{}", uuid::Uuid::new_v4()));
         let service = OrchestrationService::open(&root, 1024).unwrap();
@@ -1305,6 +1720,90 @@ mod tests {
             "deepseek/search"
         );
         fs::remove_dir_all(root).unwrap();
+    }
+
+    fn git_fixture() -> (PathBuf, String, String) {
+        let root =
+            std::env::temp_dir().join(format!("picode-git-delivery-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        run_git(&root, &["init"]).unwrap();
+        run_git(&root, &["config", "user.email", "picode@example.invalid"]).unwrap();
+        run_git(&root, &["config", "user.name", "Picode Test"]).unwrap();
+        fs::write(root.join("game.txt"), "one\n").unwrap();
+        run_git(&root, &["add", "game.txt"]).unwrap();
+        run_git(&root, &["commit", "-m", "one"]).unwrap();
+        let first = run_git(&root, &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_owned();
+        fs::write(root.join("game.txt"), "two\n").unwrap();
+        run_git(&root, &["add", "game.txt"]).unwrap();
+        run_git(&root, &["commit", "-m", "two"]).unwrap();
+        let second = run_git(&root, &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_owned();
+        (root, first, second)
+    }
+
+    #[test]
+    fn git_rewind_is_previewed_clean_tree_only_and_does_not_rewrite_history() {
+        let (workspace, first, second) = git_fixture();
+        let state = workspace.join(".git").join("picode-test-state");
+        let service = OrchestrationService::open(&state, 1024).unwrap();
+        fs::write(workspace.join("user-untracked.txt"), "keep\n").unwrap();
+        let dirty = service.preview_rewind(&workspace, &first).unwrap();
+        assert!(dirty.has_untracked);
+        assert!(service
+            .apply_rewind(&dirty, &dirty.confirmation)
+            .unwrap_err()
+            .contains("changed since preview"));
+        fs::remove_file(workspace.join("user-untracked.txt")).unwrap();
+
+        let preview = service.preview_rewind(&workspace, &first).unwrap();
+        assert!(!preview.dirty);
+        assert!(service.apply_rewind(&preview, "REWIND wrong").is_err());
+        let result = service
+            .apply_rewind(&preview, &preview.confirmation)
+            .unwrap();
+        assert_eq!(
+            run_git(&workspace, &["rev-parse", "HEAD"]).unwrap().trim(),
+            second
+        );
+        assert_eq!(
+            fs::read_to_string(workspace.join("game.txt"))
+                .unwrap()
+                .replace("\r\n", "\n"),
+            "one\n"
+        );
+        assert!(result.dirty);
+        fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn handoff_package_references_git_and_evidence_without_copying_project_files() {
+        let (workspace, _first, _second) = git_fixture();
+        let state = workspace.join(".git").join("picode-test-state");
+        let service = OrchestrationService::open(&state, 1024).unwrap();
+        let handoff = service
+            .create_handoff(HandoffRequest {
+                task_id: "task-a".into(),
+                workspace: workspace.clone(),
+                summary: "Implemented player controller".into(),
+                tests: vec!["unit: pass".into()],
+                red_probes: vec!["broken fixture: rejected".into()],
+                evidence_refs: vec!["sha256:evidence".into()],
+                unresolved: vec!["CI pending".into()],
+                recovery: "Open the repository and inspect HEAD".into(),
+            })
+            .unwrap();
+        assert_eq!(handoff.git.head.len(), 40);
+        assert_eq!(handoff.authority, "local_developer");
+        assert!(handoff.package_path.is_file());
+        let serialized = fs::read_to_string(&handoff.package_path).unwrap();
+        assert!(!serialized.contains("one\\n"));
+        assert!(serialized.contains("CI pending"));
+        fs::remove_dir_all(workspace).unwrap();
     }
 
     #[test]
