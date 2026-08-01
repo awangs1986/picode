@@ -1,6 +1,12 @@
 import { t } from "../i18n/index.js";
 import { getSuperAgentProject, isSuperAgentProjectPath } from "../super-agent/session.js";
 import { isSuperAgentEnabled } from "../super-agent/settings.js";
+import { SessionContextMenu } from "./context-menu.js";
+import {
+  buildSessionTranscript,
+  copyTextToClipboard,
+  loadSessionEntries,
+} from "./session-actions.js";
 
 /**
  * Session Sidebar - Lists sessions grouped by project, handles switching
@@ -15,6 +21,11 @@ export class SessionSidebar {
     this.onNewChat = onNewChat;
     this.onOpenProject = options.onOpenProject || null;
     this.deleteSessions = options.deleteSessions || null;
+    this.prepareSessionRemoval = options.prepareSessionRemoval || null;
+    this.onForkSession = options.onForkSession || null;
+    this.renameSession = options.renameSession || null;
+    this.writeClipboard = options.copyText || copyTextToClipboard;
+    this.onActionError = options.onActionError || null;
     this.superAgentPath = options.superAgentPath || "";
     this.activeSessionFile = null;
     this.projects = [];
@@ -27,7 +38,9 @@ export class SessionSidebar {
     this.unread = new Set(JSON.parse(localStorage.getItem("pi-studio-unread") || "[]"));
     this.streamingFiles = new Set();
     this.projectVisibleSessionCounts = new Map();
-    this.contextMenu = null;
+    this.contextMenu = new SessionContextMenu({
+      onError: (error) => this.reportContextActionError(error),
+    });
     // `loadSeq` counts issued loads; `loadCommitted` is the highest seq that has
     // actually rendered. We discard a response only when a *newer* one has
     // already committed (out-of-order arrival), never just because a newer load
@@ -71,9 +84,9 @@ export class SessionSidebar {
     return this.streamingFiles.has(filePath);
   }
 
-  markUnread(filePath) {
+  markUnread(filePath, { force = false } = {}) {
     if (!filePath) return;
-    if (filePath === this.activeSessionFile) return;
+    if (!force && filePath === this.activeSessionFile) return;
     if (this.unread.has(filePath)) return;
     this.unread.add(filePath);
     this.saveUnread();
@@ -111,8 +124,8 @@ export class SessionSidebar {
   }
 
   applyStatusToItem(filePath) {
-    const items = this.container.querySelectorAll(
-      `.session-item[data-file-path="${CSS.escape(filePath)}"]`,
+    const items = Array.from(this.container.querySelectorAll(".session-item")).filter(
+      (item) => item.dataset.filePath === filePath,
     );
     items.forEach((el) => {
       el.classList.toggle("unread", this.unread.has(filePath));
@@ -222,6 +235,30 @@ export class SessionSidebar {
   }
 
   async deleteArchivedPaths(paths) {
+    await this.deleteSessionPaths(paths);
+  }
+
+  canRemoveSession(filePath) {
+    if (!filePath || this.isStreaming(filePath)) return false;
+    if (filePath === this.activeSessionFile && !this.prepareSessionRemoval) return false;
+    return true;
+  }
+
+  async removeSession(session, project) {
+    const filePath = session?.filePath;
+    if (!this.canRemoveSession(filePath)) return;
+    const title =
+      session.name || session.firstMessage || t("sidebar.untitledChat", {}, "Untitled chat");
+    const ok = await this.confirmSessionRemoval(1, title);
+    if (!ok) return;
+
+    if (filePath === this.activeSessionFile) {
+      await this.prepareSessionRemoval(session, project);
+    }
+    await this.deleteSessionPaths([filePath]);
+  }
+
+  async deleteSessionPaths(paths) {
     if (!paths.length) return;
 
     try {
@@ -240,6 +277,28 @@ export class SessionSidebar {
     }
 
     await this.loadSessions();
+  }
+
+  async confirmSessionRemoval(count, title = "") {
+    const firstMessage = title
+      ? t("sidebar.removeChatFirstConfirm", { title }, `Remove the chat “${title}”?`)
+      : t("sidebar.removeChatsFirstConfirm", { count }, `Remove ${count} chats?`);
+    const first = await this.showFallbackConfirmDialog(firstMessage, {
+      confirmLabel: t("sidebar.continueRemove", {}, "Continue"),
+      dialogLabel: t("sidebar.removeDialog", {}, "Remove chat"),
+    });
+    if (!first) return false;
+
+    const finalMessage = t(
+      "sidebar.removeFinalConfirm",
+      {},
+      "This permanently deletes the selected Picode chat data. Imported source records outside Picode are not changed. This cannot be undone.",
+    );
+    return this.showFallbackConfirmDialog(finalMessage, {
+      confirmLabel: t("sidebar.removePermanently", {}, "Remove permanently"),
+      dangerous: true,
+      dialogLabel: t("sidebar.removeDialog", {}, "Remove chat"),
+    });
   }
 
   async confirmArchivedDeletion(count, title = "") {
@@ -262,12 +321,19 @@ export class SessionSidebar {
     });
   }
 
-  showFallbackConfirmDialog(message, { confirmLabel = "Delete", dangerous = false } = {}) {
+  showFallbackConfirmDialog(
+    message,
+    {
+      confirmLabel = "Delete",
+      dangerous = false,
+      dialogLabel = t("sidebar.deleteDialog", {}, "Delete archived chat"),
+    } = {},
+  ) {
     return new Promise((resolve) => {
       const overlay = document.createElement("div");
       overlay.className = "sidebar-confirm-overlay";
       overlay.innerHTML = `
-        <div class="sidebar-confirm-dialog" role="dialog" aria-modal="true" aria-label="${this.escapeHtml(t("sidebar.deleteDialog", {}, "Delete archived chat"))}">
+        <div class="sidebar-confirm-dialog" role="dialog" aria-modal="true" aria-label="${this.escapeHtml(dialogLabel)}">
           <div class="sidebar-confirm-message">${this.escapeHtml(message)}</div>
           <div class="sidebar-confirm-actions">
             <button type="button" class="sidebar-confirm-no">${this.escapeHtml(t("common.cancel", {}, "Cancel"))}</button>
@@ -525,66 +591,67 @@ export class SessionSidebar {
   // Context Menu
   // ═══════════════════════════════════════
 
-  showContextMenu(e, session, _project, _itemEl) {
-    e.preventDefault();
-    this.closeContextMenu();
-
-    const menu = document.createElement("div");
-    menu.className = "session-context-menu";
-
-    const isArchived = this.isArchived(session.filePath);
-    const items = [
-      {
-        icon: isArchived ? "📤" : "🗄️",
-        label: isArchived
-          ? t("sidebar.unarchiveChat", {}, "Unarchive")
-          : t("sidebar.archiveChat", {}, "Archive"),
-        action: () => this.toggleArchived(session.filePath),
+  showContextMenu(e, session, project, itemEl) {
+    const isUnread = this.isUnread(session.filePath);
+    this.contextMenu.show(e, {
+      pinned: this.isFavourite(session.filePath),
+      archived: this.isArchived(session.filePath),
+      unread: isUnread,
+      running: this.isStreaming(session.filePath),
+      canRemove: this.canRemoveSession(session.filePath),
+      onTogglePin: () => this.toggleFavourite(session.filePath),
+      onRename: async () => {
+        if (this.activeSessionFile !== session.filePath) {
+          await this.onSessionSelect(session, project);
+        }
+        const target = itemEl.isConnected
+          ? itemEl
+          : Array.from(this.container.querySelectorAll(".session-item")).find(
+              (candidate) => candidate.dataset.filePath === session.filePath,
+            );
+        if (target) this.startRename(target, session);
       },
-    ];
-    if (isArchived && this.canDeleteArchivedSession(session.filePath)) {
-      items.push({
-        icon: "🗑️",
-        label: t("sidebar.deletePermanently", {}, "Delete permanently"),
-        dangerous: true,
-        action: () => void this.deleteArchivedSession(session),
-      });
-    }
+      onToggleUnread: () =>
+        isUnread
+          ? this.markRead(session.filePath)
+          : this.markUnread(session.filePath, { force: true }),
+      onCopyId: () => this.copySessionId(session),
+      onCopyTranscript: () => this.copySessionTranscript(session, project),
+      onFork: () => this.forkSession(session, project),
+      onToggleArchive: () => this.toggleArchived(session.filePath),
+      onRemove: () => this.removeSession(session, project),
+    });
+  }
 
-    for (const item of items) {
-      const row = document.createElement("div");
-      row.className = "context-menu-item";
-      if (item.dangerous) row.classList.add("context-menu-item--danger");
-      row.innerHTML = `<span class="context-menu-icon">${item.icon}</span>${item.label}`;
-      row.addEventListener("click", (ev) => {
-        ev.stopPropagation();
-        this.closeContextMenu();
-        item.action();
-      });
-      menu.appendChild(row);
-    }
+  async copySessionId(session) {
+    await this.writeClipboard(session?.id || session?.filePath || "");
+  }
 
-    // Position
-    document.body.appendChild(menu);
-    const rect = menu.getBoundingClientRect();
-    let x = e.clientX;
-    let y = e.clientY;
-    if (x + rect.width > window.innerWidth) x = window.innerWidth - rect.width - 8;
-    if (y + rect.height > window.innerHeight) y = window.innerHeight - rect.height - 8;
-    menu.style.left = `${x}px`;
-    menu.style.top = `${y}px`;
+  async copySessionTranscript(session, project) {
+    const entries = await loadSessionEntries(session, project);
+    await this.writeClipboard(
+      buildSessionTranscript(entries, {
+        userLabel: t("sidebar.transcriptUser", {}, "User"),
+        assistantLabel: t("sidebar.transcriptAssistant", {}, "Assistant"),
+      }),
+    );
+  }
 
-    this.contextMenu = menu;
+  async forkSession(session, project) {
+    if (!this.onForkSession) throw new Error("Fork requires the desktop broker");
+    await this.onForkSession({ session, project });
   }
 
   closeContextMenu() {
-    if (this.contextMenu) {
-      this.contextMenu.remove();
-      this.contextMenu = null;
-    }
+    this.contextMenu.close();
   }
 
-  startRename(itemEl) {
+  reportContextActionError(error) {
+    console.error("[Sidebar] context action failed:", error);
+    this.onActionError?.(error);
+  }
+
+  startRename(itemEl, session = null) {
     const titleEl = itemEl.querySelector(".session-title");
     if (!titleEl) return;
     const currentName = titleEl.textContent;
@@ -600,19 +667,28 @@ export class SessionSidebar {
       const newName = input.value.trim();
       if (newName && newName !== currentName) {
         try {
-          await fetch("/api/rpc", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ type: "set_session_name", name: newName }),
-          });
-        } catch {
-          /* silent */
+          if (this.renameSession) {
+            await this.renameSession({ session, name: newName });
+          } else {
+            const response = await fetch("/api/rpc", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ type: "set_session_name", name: newName }),
+            });
+            const data = await response.json();
+            if (!data?.success) throw new Error(data?.error || "Rename failed");
+          }
+          if (session) session.name = newName;
+        } catch (error) {
+          this.reportContextActionError(error);
+          input.value = currentName;
         }
       }
+      const committedName = input.value.trim() || currentName;
       const newTitle = document.createElement("div");
       newTitle.className = "session-title";
-      newTitle.title = newName || currentName;
-      newTitle.textContent = newName || currentName;
+      newTitle.title = committedName;
+      newTitle.textContent = committedName;
       input.replaceWith(newTitle);
     };
 
@@ -713,6 +789,9 @@ export class SessionSidebar {
     `;
 
     item.addEventListener("click", () => this.onSessionSelect(session, project));
+    item.addEventListener("contextmenu", (event) =>
+      this.showContextMenu(event, session, project, item),
+    );
     const archiveBtn = item.querySelector(".session-archive-btn");
     if (archiveBtn) {
       archiveBtn.addEventListener("click", (e) => {

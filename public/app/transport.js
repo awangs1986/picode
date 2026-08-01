@@ -92,6 +92,12 @@ export class WsTransport {
     return this._control("fork", { entryId, port: port ?? null });
   }
 
+  // Clone the complete active session at its current leaf. This is the
+  // taskbar-level "Fork" action; message-level forks continue to use fork().
+  cloneSession(port) {
+    return this._control("clone_session", { port: port ?? null });
+  }
+
   stopInstance(port) {
     return this._control("stop_instance", { port: port ?? null });
   }

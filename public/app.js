@@ -258,6 +258,35 @@ const sidebar = new SessionSidebar(
   {
     onOpenProject: () => handleOpenFolder(),
     deleteSessions: (filePaths) => transport.deleteChats(filePaths),
+    prepareSessionRemoval: async () => {
+      await newSession();
+    },
+    renameSession: async ({ name }) => {
+      const result = await rpcCommand(
+        { type: "set_session_name", name },
+        t("sidebar.renaming", {}, "Renaming chat…"),
+        true,
+      );
+      if (!result?.success) throw new Error(result?.error || "Rename failed");
+    },
+    onForkSession: async ({ session, project }) => {
+      if (sidebar.isStreaming(session.filePath)) {
+        throw new Error(
+          t("sidebar.forkRunningDisabled", {}, "Stop the running task before forking"),
+        );
+      }
+      await handleSessionSelect(session, project);
+      if (state.isStreaming) {
+        throw new Error(
+          t("sidebar.forkRunningDisabled", {}, "Stop the running task before forking"),
+        );
+      }
+      await transport.cloneSession(getActivePort());
+      setTimeout(() => sidebar.loadSessions({ quiet: true }).catch(() => {}), 250);
+    },
+    onActionError: (error) => {
+      messageRenderer.renderError(error?.message || String(error));
+    },
   },
 );
 

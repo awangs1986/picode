@@ -3625,7 +3625,7 @@ mod tests {
             .unwrap();
         service.set_mcp_enabled("crash", true).unwrap();
         service.set_mcp_trusted("crash", true).unwrap();
-        service
+        let run = service
             .start_mcp(
                 "crash",
                 "task-a",
@@ -3635,8 +3635,14 @@ mod tests {
                 &SecretStore::new(root.join("secrets")).unwrap(),
             )
             .unwrap();
-        wait_for_no_residents(&service);
+        let job_id = run.job_id.as_deref().expect("MCP work handle");
+        service
+            .work
+            .wait(job_id, std::time::Duration::from_secs(5))
+            .unwrap();
+        service.refresh().unwrap();
         assert_eq!(service.snapshot().mcp_runs[0].state, "failed");
+        assert_eq!(service.snapshot().resident_process_count, 0);
         std::fs::remove_dir_all(root).unwrap();
     }
 

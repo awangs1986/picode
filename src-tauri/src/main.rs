@@ -179,6 +179,17 @@ fn fork_session_core(
     result
 }
 
+/// Clone the complete current session at its active leaf. Pi exposes this as
+/// `clone`, which differs from the message-level `fork`: no user entry is
+/// discarded, so the taskbar action preserves the whole conversation.
+fn clone_session_core(port: u16, manager: &PiManager, broker: &BrokerWs) -> Result<(), String> {
+    let result = manager.send_rpc(port, serde_json::json!({ "type": "clone" }));
+    if result.is_ok() {
+        broker.set_active_port(port);
+    }
+    result
+}
+
 /// Open a workspace directory by spawning a separate pi process.
 /// When `open_window` is true (default) a new OS window is opened for the new pi.
 /// When false, the pi process is spawned headlessly and the caller is expected to
@@ -3430,6 +3441,11 @@ fn install_control_handler(
                         let entry_id = arg_str("entryId").ok_or("entryId is required")?;
                         let port = resolve_control_port(arg_u16("port"), &broker)?;
                         fork_session_core(port, &entry_id, &manager, &broker)?;
+                        Ok(Value::Null)
+                    }
+                    "clone_session" => {
+                        let port = resolve_control_port(arg_u16("port"), &broker)?;
+                        clone_session_core(port, &manager, &broker)?;
                         Ok(Value::Null)
                     }
                     "stop_instance" => {

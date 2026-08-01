@@ -53,6 +53,15 @@ describe("WsTransport", () => {
     expect(ws.sendControl).toHaveBeenCalledWith("fork", { entryId: "entry-123", port: 47822 }, {});
   });
 
+  test("cloneSession sends the whole-chat clone control command", async () => {
+    const ws = fakeWsClient();
+    const transport = new WsTransport(ws, {});
+
+    await transport.cloneSession(47822);
+
+    expect(ws.sendControl).toHaveBeenCalledWith("clone_session", { port: 47822 }, {});
+  });
+
   test("native ops map to their control commands", async () => {
     const ws = fakeWsClient();
     const transport = createTransport({ wsClient: ws, env: { location: { port: "47821" } } });

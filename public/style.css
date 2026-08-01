@@ -810,7 +810,7 @@ samp {
 }
 
 .session-delete-btn:hover,
-.context-menu-item--danger:hover {
+.context-menu-item--danger:hover:not(:disabled) {
   color: #ef4444;
   background: rgba(239, 68, 68, 0.1);
 }
@@ -828,7 +828,7 @@ samp {
 .session-context-menu {
   position: fixed;
   z-index: 10000;
-  min-width: 160px;
+  min-width: calc(var(--sidebar-width) - var(--space-12));
   padding: var(--space-1);
   background: var(--bg-frosted);
   backdrop-filter: blur(20px);
@@ -840,25 +840,100 @@ samp {
 }
 
 .context-menu-item {
+  width: 100%;
   display: flex;
   align-items: center;
   gap: var(--space-2);
   padding: var(--space-2) var(--space-3);
+  border: 0;
   border-radius: var(--radius-sm);
+  background: transparent;
   font-size: var(--font-size-sm);
+  font-family: inherit;
+  line-height: 1.35;
+  text-align: left;
   color: var(--text-primary);
   cursor: pointer;
   transition: background var(--duration) var(--ease);
 }
 
-.context-menu-item:hover {
+.context-menu-item:hover:not(:disabled),
+.context-menu-item:focus-visible {
   background: rgba(255, 255, 255, 0.06);
+  outline: none;
+}
+
+.context-menu-item:disabled {
+  color: var(--text-dim);
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .context-menu-icon {
-  width: 16px;
-  text-align: center;
+  display: inline-flex;
+  width: 18px;
+  height: 18px;
+  align-items: center;
+  justify-content: center;
   flex-shrink: 0;
+}
+
+.context-menu-icon svg {
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.context-menu-label {
+  min-width: 0;
+  flex: 1;
+}
+
+.context-menu-separator {
+  height: 1px;
+  margin: var(--space-1) var(--space-2);
+  background: var(--border-subtle);
+}
+
+.context-menu-submenu-host {
+  position: relative;
+}
+
+.context-menu-arrow {
+  margin-left: auto;
+  color: var(--text-dim);
+  font-size: var(--font-size-title);
+  line-height: 1;
+}
+
+.session-context-submenu {
+  position: absolute;
+  top: -5px;
+  left: calc(100% + 5px);
+  display: none;
+  min-width: calc(var(--sidebar-width) - var(--space-12) - var(--space-2));
+  padding: var(--space-1);
+  background: var(--bg-frosted);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid var(--border-hover);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+}
+
+.context-menu-submenu-host:hover > .session-context-submenu,
+.context-menu-submenu-host:focus-within > .session-context-submenu,
+.context-menu-submenu-host.open > .session-context-submenu {
+  display: block;
+}
+
+.session-context-menu.submenu-left .session-context-submenu {
+  right: calc(100% + 5px);
+  left: auto;
 }
 
 /* Favourite star in session items */
