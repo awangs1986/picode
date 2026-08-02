@@ -599,5 +599,10 @@
     <message id="professional.componentStatusHelp">来自扩展管理器的唯一真实状态，包括来源、版本、权限、任务绑定、运行进程和最近错误。</message>
     <message id="professional.noComponents">尚未发现扩展组件。</message>
     <message id="professional.managedByExtensionManager">由上方扩展管理器统一管理</message>
+    <message id="professional.herdrManaged">可选 Herdr 终端宿主 · 首次运行 picode-tui 时提供安装选择</message>
+    <message id="professional.herdrReset">在 TUI 中再次询问</message>
+    <message id="professional.herdrRemove">移除 Herdr</message>
+    <message id="professional.herdrResetDone">下次以交互方式启动 TUI 时将再次询问是否安装 Herdr。</message>
+    <message id="professional.herdrRemoved">Herdr 已移除。</message>
   </messages>
 </languagePack>

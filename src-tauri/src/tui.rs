@@ -3,7 +3,7 @@ use futures_util::{SinkExt, StreamExt};
 use picode::core_locator::{read_locator, CORE_LOCATOR_FILE};
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
@@ -102,6 +102,7 @@ enum TuiCommand {
     Fork,
     Archive(bool),
     Rename(String),
+    Herdr,
     Control {
         command: String,
         args: Value,
@@ -140,6 +141,7 @@ fn parse_command(line: &str) -> Result<TuiCommand, String> {
         "/archive" => Ok(TuiCommand::Archive(true)),
         "/unarchive" => Ok(TuiCommand::Archive(false)),
         "/rename" => Ok(TuiCommand::Rename(required_rest(rest, "/rename TITLE")?)),
+        "/herdr" => Ok(TuiCommand::Herdr),
         "/quit" | "/exit" => Ok(TuiCommand::Quit),
         "/new" => parse_new_command(rest),
         "/control" => parse_control_command(rest),
@@ -239,6 +241,7 @@ fn resolve_broker_port(options: &TuiOptions) -> Result<u16, String> {
 
 struct BrokerClient {
     client_id: String,
+    broker_port: u16,
     writer: Arc<AsyncMutex<SocketWriter>>,
     pending: Arc<Mutex<HashMap<String, oneshot::Sender<Result<Value, String>>>>>,
 }
@@ -262,6 +265,7 @@ impl BrokerClient {
         Ok((
             Self {
                 client_id: format!("tui-{}-{}", std::process::id(), Uuid::new_v4().simple()),
+                broker_port: port,
                 writer: Arc::new(AsyncMutex::new(writer)),
                 pending,
             },
@@ -440,7 +444,7 @@ fn render_event(value: &Value) -> Option<String> {
 
 fn print_help() {
     println!(
-        "Commands:\n  /refresh  /accounts  /models  /tasks  /extensions  /work  /runtime  /packages\n  /sessions  /new [simple TITLE | harness WORKSPACE_ID TITLE]  /use CHAT_ID  /load\n  /prompt MESSAGE (or type MESSAGE directly)  /cancel  /fork  /rename TITLE  /archive  /unarchive\n  /control COMMAND JSON_OBJECT  /quit\n\nThe command palette calls the same Picode controls as the GUI. Raw `pi` sessions started outside Picode are unmanaged."
+        "Commands:\n  /refresh  /accounts  /models  /tasks  /extensions  /work  /runtime  /packages\n  /sessions  /new [simple TITLE | harness WORKSPACE_ID TITLE]  /use CHAT_ID  /load\n  /prompt MESSAGE (or type MESSAGE directly)  /cancel  /fork  /rename TITLE  /archive  /unarchive\n  /herdr (open this managed workflow in the optional Herdr host)\n  /control COMMAND JSON_OBJECT  /quit\n\nThe command palette calls the same Picode controls as the GUI. Raw `pi` sessions started outside Picode are unmanaged."
     );
 }
 
@@ -739,6 +743,18 @@ async fn execute_command(
                 )
                 .await?
         }
+        TuiCommand::Herdr => {
+            if let Some(current) = lease.take() {
+                let _ = client
+                    .control(
+                        "conversation_release",
+                        json!({ "chatId": current.chat_id, "generation": current.generation }),
+                    )
+                    .await;
+            }
+            launch_herdr(client, chat_id.as_deref()).await?;
+            return Ok(true);
+        }
         TuiCommand::Control { command, args } => client.control(&command, args).await?,
         TuiCommand::Quit => return Ok(false),
     };
@@ -764,6 +780,135 @@ fn spawn_stdin_reader() -> mpsc::UnboundedReceiver<String> {
         }
     });
     rx
+}
+
+fn chinese_locale() -> bool {
+    ["LC_ALL", "LC_MESSAGES", "LANG"]
+        .into_iter()
+        .filter_map(|name| std::env::var(name).ok())
+        .any(|value| value.to_ascii_lowercase().starts_with("zh"))
+}
+
+fn prompt_line(message: &str) -> Result<String, String> {
+    print!("{message}");
+    io::stdout()
+        .flush()
+        .map_err(|error| format!("write terminal prompt: {error}"))?;
+    let mut input = String::new();
+    io::stdin()
+        .read_line(&mut input)
+        .map_err(|error| format!("read terminal prompt: {error}"))?;
+    Ok(input.trim().to_ascii_lowercase())
+}
+
+async fn launch_herdr(client: &BrokerClient, chat_id: Option<&str>) -> Result<(), String> {
+    let tui_executable = std::env::current_exe()
+        .map_err(|error| format!("locate picode-tui executable: {error}"))?;
+    let launch = client
+        .control(
+            "herdr_launch_chat",
+            json!({
+                "tuiExecutable": tui_executable,
+                "brokerPort": client.broker_port,
+                "chatId": chat_id,
+            }),
+        )
+        .await?;
+    let executable = launch
+        .get("attachExecutable")
+        .and_then(Value::as_str)
+        .ok_or("Herdr launch did not return an attach executable")?;
+    let status = std::process::Command::new(executable)
+        .status()
+        .map_err(|error| format!("attach Herdr terminal UI: {error}"))?;
+    if !status.success() {
+        return Err(format!("Herdr terminal UI exited with {status}"));
+    }
+    Ok(())
+}
+
+/// Returns true when the first-run flow transferred this terminal into Herdr
+/// and the bootstrap TUI should exit after detach.
+async fn offer_herdr_first_run(
+    client: &BrokerClient,
+    chat_id: Option<&str>,
+) -> Result<bool, String> {
+    if !io::stdin().is_terminal() || std::env::var_os("HERDR_ENV").is_some() {
+        return Ok(false);
+    }
+    let status = client.control("herdr_status", json!({})).await?;
+    if status.get("decision").and_then(Value::as_str) != Some("undecided")
+        || status.get("installed").and_then(Value::as_bool) == Some(true)
+        || status.get("supported").and_then(Value::as_bool) != Some(true)
+    {
+        return Ok(false);
+    }
+    let chinese = chinese_locale();
+    loop {
+        let answer = prompt_line(if chinese {
+            "首次运行：是否安装并信任可选的 Herdr 多会话终端宿主？[y] 安装 / [n] 不再询问 / [d] 详情："
+        } else {
+            "First run: install and trust the optional Herdr multi-session terminal host? [y] install / [n] don't ask again / [d] details: "
+        })?;
+        match answer.as_str() {
+            "y" | "yes" | "是" => {
+                client
+                    .control("herdr_decide", json!({ "decision": "approved" }))
+                    .await?;
+                match client.control("herdr_install", json!({})).await {
+                    Ok(_) => {
+                        println!(
+                            "{}",
+                            if chinese {
+                                "Herdr 已通过固定 SHA-256 校验和健康检查，正在打开托管 Picode 会话。"
+                            } else {
+                                "Herdr passed its pinned SHA-256 and health checks; opening the managed Picode session."
+                            }
+                        );
+                        launch_herdr(client, chat_id).await?;
+                        return Ok(true);
+                    }
+                    Err(error) => {
+                        eprintln!(
+                            "{}: {error}",
+                            if chinese {
+                                "Herdr 安装失败，继续使用单会话 Picode TUI"
+                            } else {
+                                "Herdr installation failed; continuing with the single-session Picode TUI"
+                            }
+                        );
+                        return Ok(false);
+                    }
+                }
+            }
+            "n" | "no" | "否" => {
+                client
+                    .control("herdr_decide", json!({ "decision": "declined" }))
+                    .await?;
+                return Ok(false);
+            }
+            "d" | "details" | "详情" => {
+                let release = status.get("release").cloned().unwrap_or(Value::Null);
+                println!(
+                    "{}\n{}",
+                    if chinese {
+                        "Herdr 是外部 Apache-2.0 Rust 终端多路复用器。Picode 固定版本/Commit/资产 SHA；仅同意后下载。Windows 为 preview，Linux/macOS 为 stable。权限：启动进程、网络（Herdr 更新与插件能力）。停用时零进程、零端口、零网络。"
+                    } else {
+                        "Herdr is an external Apache-2.0 Rust terminal multiplexer. Picode pins its version, commit, asset, and SHA and downloads only after approval. Windows is preview; Linux/macOS are stable. Permissions: process execution and network (Herdr updates/plugins). Disabled means zero process, port, and network activity."
+                    },
+                    render_value(&release)
+                );
+            }
+            _ => eprintln!(
+                "{}",
+                if chinese {
+                    "请输入 y、n 或 d。"
+                } else {
+                    "Enter y, n, or d."
+                }
+            ),
+        }
+    }
 }
 
 #[tokio::main]
@@ -798,6 +943,11 @@ async fn main() -> ExitCode {
         }
     };
     let mut chat_id = options.chat_id;
+    match offer_herdr_first_run(&client, chat_id.as_deref()).await {
+        Ok(true) => return ExitCode::SUCCESS,
+        Ok(false) => {}
+        Err(error) => eprintln!("Herdr first-run check: {error}"),
+    }
     let mut lease: Option<TuiLease> = None;
     println!("Picode managed TUI · Core {broker_port}");
     println!("{}", render_snapshot(&snapshot));

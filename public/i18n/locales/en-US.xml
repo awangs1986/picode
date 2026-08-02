@@ -599,5 +599,10 @@
     <message id="professional.componentStatusHelp">Authoritative state from Extension Manager, including source, version, permissions, task bindings, running processes, and the latest error.</message>
     <message id="professional.noComponents">No extension components discovered.</message>
     <message id="professional.managedByExtensionManager">Managed above by Extension Manager</message>
+    <message id="professional.herdrManaged">Optional Herdr host · first-run installation is offered by picode-tui</message>
+    <message id="professional.herdrReset">Ask again in TUI</message>
+    <message id="professional.herdrRemove">Remove Herdr</message>
+    <message id="professional.herdrResetDone">Herdr will be offered on the next interactive TUI start.</message>
+    <message id="professional.herdrRemoved">Herdr was removed.</message>
   </messages>
 </languagePack>

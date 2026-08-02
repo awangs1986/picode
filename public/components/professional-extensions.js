@@ -89,6 +89,7 @@ export function groupExtensionComponents(components) {
 export class PicodeProfessionalExtensions extends HTMLElement {
   connectedCallback() {
     this._snapshot ||= null;
+    this._herdrStatus ||= null;
     this._capabilitySnapshot ||= null;
     this._effectiveReport ||= null;
     this._effectiveTask ||= "";
@@ -129,6 +130,16 @@ export class PicodeProfessionalExtensions extends HTMLElement {
           })
       : null;
     if (extensionSnapshot) this._snapshot = extensionSnapshot;
+
+    const herdrStatus = this.transport.herdrStatus
+      ? await Promise.resolve()
+          .then(() => this.transport.herdrStatus())
+          .catch((error) => {
+            errors.push(error);
+            return null;
+          })
+      : null;
+    if (herdrStatus) this._herdrStatus = herdrStatus;
 
     const capabilitySnapshot = this.transport.capabilitySnapshot
       ? await Promise.resolve()
@@ -271,9 +282,18 @@ export class PicodeProfessionalExtensions extends HTMLElement {
       ...(this._snapshot?.catalogComponents || []),
       ...(this._snapshot?.hooks || []),
     ].some((component) => component.id === item.id);
-    const controls = managed
-      ? `<label><small>${escapeHtml(t("professional.enabled", {}, "Enabled"))}</small><input type="checkbox" data-component-enable="${escapeHtml(item.id)}" ${item.state !== "discovered" ? "checked" : ""}></label><label><small>${escapeHtml(t("professional.trusted", {}, "Trusted"))}</small><input type="checkbox" data-component-trust="${escapeHtml(item.id)}" ${["trusted", "running"].includes(item.state) ? "checked" : ""} ${item.state === "discovered" ? "disabled" : ""}></label>`
-      : "";
+    const herdrManaged = item.id === "herdr-terminal-host";
+    const controls = herdrManaged
+      ? `<small>${escapeHtml(
+          t(
+            "professional.herdrManaged",
+            {},
+            "Optional Herdr host · first-run installation is offered by picode-tui",
+          ),
+        )}</small><button type="button" class="ui-button ui-button--secondary ui-button--sm" data-herdr-reset>${escapeHtml(t("professional.herdrReset", {}, "Ask again in TUI"))}</button>${this._herdrStatus?.installed ? `<button type="button" class="ui-button ui-button--secondary ui-button--sm" data-herdr-remove>${escapeHtml(t("professional.herdrRemove", {}, "Remove Herdr"))}</button>` : ""}`
+      : managed
+        ? `<label><small>${escapeHtml(t("professional.enabled", {}, "Enabled"))}</small><input type="checkbox" data-component-enable="${escapeHtml(item.id)}" ${item.state !== "discovered" ? "checked" : ""}></label><label><small>${escapeHtml(t("professional.trusted", {}, "Trusted"))}</small><input type="checkbox" data-component-trust="${escapeHtml(item.id)}" ${["trusted", "running"].includes(item.state) ? "checked" : ""} ${item.state === "discovered" ? "disabled" : ""}></label>`
+        : "";
     return `<div class="picode-extension-install" data-component="${escapeHtml(item.id)}" data-component-kind="${escapeHtml(item.kind)}">
       <span><strong>${escapeHtml(item.id)}</strong><small>${escapeHtml(item.kind)} · ${escapeHtml(item.state)} · ${escapeHtml(detail)}</small>${item.lastError ? `<small class="picode-runtime-error">${escapeHtml(item.lastError)}</small>` : ""}</span>
       ${controls}
@@ -538,6 +558,30 @@ export class PicodeProfessionalExtensions extends HTMLElement {
           this._render();
         }
       });
+    });
+    this.querySelector("[data-herdr-reset]")?.addEventListener("click", async () => {
+      try {
+        await this.transport.resetHerdrDecision();
+        this._status = t(
+          "professional.herdrResetDone",
+          {},
+          "Herdr will be offered on the next interactive TUI start.",
+        );
+        await this.refresh();
+      } catch (error) {
+        this._error = error?.message || String(error);
+        this._render();
+      }
+    });
+    this.querySelector("[data-herdr-remove]")?.addEventListener("click", async () => {
+      try {
+        await this.transport.removeHerdr();
+        this._status = t("professional.herdrRemoved", {}, "Herdr was removed.");
+        await this.refresh();
+      } catch (error) {
+        this._error = error?.message || String(error);
+        this._render();
+      }
     });
     this.querySelector("[data-install-extension]")?.addEventListener("click", () =>
       this._installExtension(),

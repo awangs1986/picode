@@ -65,6 +65,24 @@ describe("WsTransport", () => {
     );
   });
 
+  test("Herdr remains an explicit managed installer decision", async () => {
+    const ws = fakeWsClient();
+    const transport = new WsTransport(ws, {});
+
+    await transport.herdrStatus();
+    await transport.resetHerdrDecision();
+    await transport.removeHerdr();
+
+    expect(ws.sendControl).toHaveBeenNthCalledWith(1, "herdr_status", {}, {});
+    expect(ws.sendControl).toHaveBeenNthCalledWith(2, "herdr_reset_decision", {}, {});
+    expect(ws.sendControl).toHaveBeenNthCalledWith(
+      3,
+      "herdr_remove",
+      {},
+      expect.objectContaining({ timeoutMs: expect.any(Number) }),
+    );
+  });
+
   test("create project (openWorkspace) sends an open_workspace control command", async () => {
     const ws = fakeWsClient();
     const transport = createTransport({ wsClient: ws, env: { location: { port: "47821" } } });

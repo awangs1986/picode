@@ -267,6 +267,18 @@ export class WsTransport {
     return this._control("extension_snapshot", {});
   }
 
+  herdrStatus() {
+    return this._control("herdr_status", {});
+  }
+
+  resetHerdrDecision() {
+    return this._control("herdr_reset_decision", {});
+  }
+
+  removeHerdr() {
+    return this._control("herdr_remove", {}, { timeoutMs: SPAWN_TIMEOUT_MS });
+  }
+
   syncExtensionSkills(skills) {
     return this._control("extension_sync_skills", {
       skills: (skills || []).map((skill, index) => ({

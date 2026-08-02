@@ -42,7 +42,15 @@ describe("picode-professional-extensions", () => {
             trusted: true,
           },
         ],
-        catalogComponents: [{ id: "rust-lsp", kind: "lsp", enabled: true, trusted: false }],
+        catalogComponents: [
+          { id: "rust-lsp", kind: "lsp", enabled: true, trusted: false },
+          {
+            id: "herdr-terminal-host",
+            kind: "native-helper",
+            enabled: false,
+            trusted: false,
+          },
+        ],
         components: [
           {
             id: "rust-lsp",
@@ -81,8 +89,28 @@ describe("picode-professional-extensions", () => {
             runningProcesses: [],
             modelDiscoverable: true,
           },
+          {
+            id: "herdr-terminal-host",
+            kind: "native-helper",
+            state: "discovered",
+            source: "https://github.com/herdrdev/herdr#44b3adb",
+            version: "0.7.5",
+            license: "Apache-2.0",
+            permissions: ["ProcessExecute", "Network"],
+            taskBindings: [],
+            runningProcesses: [],
+            modelDiscoverable: false,
+          },
         ],
       })),
+      herdrStatus: vi.fn(async () => ({
+        decision: "declined",
+        installed: false,
+        enabled: false,
+        trusted: false,
+        running: false,
+      })),
+      resetHerdrDecision: vi.fn(async () => ({})),
       capabilitySnapshot: vi.fn(async () => ({
         capabilities: [
           {
@@ -179,6 +207,11 @@ describe("picode-professional-extensions", () => {
       "server stopped",
     );
     expect(panel.querySelector('[data-component-trust="rust-lsp"]')).not.toBeNull();
+    expect(panel.querySelector('[data-component="herdr-terminal-host"]')?.textContent).toContain(
+      "Apache-2.0",
+    );
+    expect(panel.querySelector('[data-component-enable="herdr-terminal-host"]')).toBeNull();
+    expect(panel.querySelector("[data-herdr-reset]")).not.toBeNull();
     const componentSkillBundle = panel.querySelector(
       '[data-component-skill-bundle="github.com/mattpocock/skills"]',
     );
@@ -203,6 +236,11 @@ describe("picode-professional-extensions", () => {
     );
     expect(panel.querySelector("[data-effective-output]").textContent).toContain("task-build");
     expect(panel.querySelector("[data-effective-output]").textContent).toContain("AGENTS.md");
+
+    panel.querySelector("[data-herdr-reset]").click();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(transport.resetHerdrDecision).toHaveBeenCalledTimes(1);
 
     const tier = panel.querySelector('[data-capability-tier="firstmate-crew-orchestrator"]');
     tier.value = "discoverable";

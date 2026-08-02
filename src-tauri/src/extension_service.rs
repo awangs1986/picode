@@ -758,6 +758,35 @@ impl ExtensionService {
         self.persist()
     }
 
+    /// Remove one managed extension after terminating all of its resident
+    /// processes. Artifact deletion remains the installing adapter's
+    /// responsibility so ExtensionService never guesses ownership of paths.
+    pub fn uninstall(&self, extension_id: &str) -> Result<(), String> {
+        let job_ids = {
+            let state = self.lock_state()?;
+            if !state.installations.contains_key(extension_id) {
+                return Ok(());
+            }
+            state
+                .runs
+                .values()
+                .filter(|run| run.extension_id == extension_id && !run.state.terminal())
+                .map(|run| run.job_id.clone())
+                .collect::<Vec<_>>()
+        };
+        for job_id in job_ids {
+            let _ = self.work.cancel(&job_id);
+        }
+        self.refresh()?;
+        let mut state = self.lock_state()?;
+        state.installations.remove(extension_id);
+        state.trusted_extensions.remove(extension_id);
+        state.last_errors.remove(extension_id);
+        state.runs.retain(|_, run| run.extension_id != extension_id);
+        drop(state);
+        self.persist()
+    }
+
     pub fn migrate_legacy_hook_state(&self, legacy_root: &Path) -> Result<usize, String> {
         let path = legacy_root.join("state.json");
         if !path.is_file() {
@@ -2753,6 +2782,9 @@ fn component_views(
         });
     }
     for component in state.catalog_components.values() {
+        if state.installations.contains_key(&component.id) {
+            continue;
+        }
         let running_processes = running_for(&component.id);
         let task_bindings = bindings_for(&running_processes);
         views.push(ExtensionComponentView {

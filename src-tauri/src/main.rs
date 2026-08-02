@@ -25,6 +25,7 @@ mod guidance_policy;
 mod harness;
 mod harness_service;
 mod harness_v2_router;
+mod herdr_installer;
 mod hook_manager;
 mod host_data;
 mod host_router;
@@ -74,6 +75,9 @@ use extension_service::{
 use guidance_policy::{GuidanceMode, GuidancePolicy, GuidanceRequest, ModelGuidanceProfile};
 use harness_service::HarnessService;
 use harness_v2_router::HarnessV2Router;
+use herdr_installer::{
+    HerdrDecision, HerdrInstaller, HttpArtifactDownloader, WorkHerdrProcessAdapter,
+};
 use hook_manager::HookManager;
 use host_server::HostServer;
 use metadata_store::MetadataStore;
@@ -119,6 +123,7 @@ type TaskExperienceState = Arc<TaskExperienceService>;
 type CapabilityServiceState = Arc<Mutex<CapabilityService>>;
 type OrchestrationServiceState = Arc<OrchestrationService>;
 type ExtensionServiceState = Arc<ExtensionManager>;
+type HerdrInstallerState = Arc<HerdrInstaller>;
 type SecretStoreState = Arc<Mutex<SecretStore>>;
 type RuntimeSpineState = Arc<Mutex<RuntimeSpine>>;
 type AcpAdapterState = Arc<AcpAdapter>;
@@ -1561,6 +1566,7 @@ fn install_control_handler(
     capability_service: CapabilityServiceState,
     orchestration_service: OrchestrationServiceState,
     extension_service: ExtensionServiceState,
+    herdr_installer: HerdrInstallerState,
     runtime_spine: RuntimeSpineState,
     session_kernel: SessionKernelState,
     acp_adapter: AcpAdapterState,
@@ -1594,6 +1600,7 @@ fn install_control_handler(
             let capability_service = capability_service.clone();
             let orchestration_service = orchestration_service.clone();
             let extension_service = extension_service.clone();
+            let herdr_installer = herdr_installer.clone();
             let runtime_spine = runtime_spine.clone();
             let session_kernel = session_kernel.clone();
             let acp_adapter = acp_adapter.clone();
@@ -1759,6 +1766,12 @@ fn install_control_handler(
                     | "git_rewind_apply"
                     | "git_handoff_create"
                     | "extension_install"
+                    | "herdr_status"
+                    | "herdr_decide"
+                    | "herdr_install"
+                    | "herdr_launch_chat"
+                    | "herdr_reset_decision"
+                    | "herdr_remove"
                     | "extension_snapshot"
                     | "extension_migrate"
                     | "extension_set_enabled"
@@ -3291,6 +3304,11 @@ fn install_control_handler(
                                 .ok_or("manifest is required")?,
                         )
                         .map_err(|error| format!("Invalid extension manifest: {error}"))?;
+                        if manifest.id == herdr_installer::HERDR_EXTENSION_ID {
+                            return Err(
+                                "Herdr is reserved for its pinned, verified installer flow".into(),
+                            );
+                        }
                         extension_service.install(manifest)?;
                         Ok(
                             serde_json::to_value(extension_service.snapshot()).map_err(
@@ -3298,6 +3316,53 @@ fn install_control_handler(
                             )?,
                         )
                     }
+                    "herdr_status" => serde_json::to_value(herdr_installer.inspect())
+                        .map_err(|error| format!("Cannot encode Herdr status: {error}")),
+                    "herdr_decide" => {
+                        let decision = match arg_str("decision").as_deref() {
+                            Some("approved") => HerdrDecision::Approved,
+                            Some("declined") => HerdrDecision::Declined,
+                            Some("undecided") => HerdrDecision::Undecided,
+                            _ => {
+                                return Err(
+                                    "decision must be approved, declined, or undecided".into()
+                                )
+                            }
+                        };
+                        serde_json::to_value(herdr_installer.decide(decision)?)
+                            .map_err(|error| format!("Cannot encode Herdr status: {error}"))
+                    }
+                    "herdr_install" => {
+                        let downloader = HttpArtifactDownloader::new()?;
+                        let process = WorkHerdrProcessAdapter::new(work_manager.clone());
+                        serde_json::to_value(
+                            herdr_installer
+                                .install_and_trust(&downloader, &process)
+                                .await?,
+                        )
+                        .map_err(|error| format!("Cannot encode Herdr installation: {error}"))
+                    }
+                    "herdr_launch_chat" => {
+                        let tui_executable = arg_str("tuiExecutable")
+                            .map(PathBuf::from)
+                            .ok_or("tuiExecutable is required")?;
+                        let broker_port = arg_u16("brokerPort").ok_or("brokerPort is required")?;
+                        let chat_id = arg_str("chatId");
+                        let process = WorkHerdrProcessAdapter::new(work_manager.clone());
+                        serde_json::to_value(herdr_installer.launch_chat(
+                            &process,
+                            &tui_executable,
+                            broker_port,
+                            chat_id.as_deref(),
+                        )?)
+                        .map_err(|error| format!("Cannot encode Herdr launch: {error}"))
+                    }
+                    "herdr_reset_decision" => {
+                        serde_json::to_value(herdr_installer.reset_decision()?)
+                            .map_err(|error| format!("Cannot encode Herdr status: {error}"))
+                    }
+                    "herdr_remove" => serde_json::to_value(herdr_installer.remove()?)
+                        .map_err(|error| format!("Cannot encode Herdr status: {error}")),
                     "extension_snapshot" => serde_json::to_value(extension_service.snapshot())
                         .map_err(|error| format!("Cannot encode Extension snapshot: {error}")),
                     "extension_migrate" => {
@@ -3368,6 +3433,13 @@ fn install_control_handler(
                     "extension_component_set_enabled" => {
                         let id = arg_str("id").ok_or("id is required")?;
                         let enabled = arg_bool("enabled").ok_or("enabled is required")?;
+                        if id == herdr_installer::HERDR_EXTENSION_ID
+                            && !herdr_installer.inspect().installed
+                        {
+                            return Err(
+                                "Install Herdr through the managed TUI approval flow".into()
+                            );
+                        }
                         extension_service.set_component_enabled(&id, enabled)?;
                         if matches!(id.as_str(), "rust-lsp" | "debug-adapter") {
                             capability_service
@@ -3387,6 +3459,13 @@ fn install_control_handler(
                     "extension_component_set_trusted" => {
                         let id = arg_str("id").ok_or("id is required")?;
                         let trusted = arg_bool("trusted").ok_or("trusted is required")?;
+                        if id == herdr_installer::HERDR_EXTENSION_ID
+                            && !herdr_installer.inspect().installed
+                        {
+                            return Err(
+                                "Install Herdr through the managed TUI approval flow".into()
+                            );
+                        }
                         extension_service.set_component_trusted(&id, trusted)?;
                         Ok(Value::Null)
                     }
@@ -4168,6 +4247,31 @@ fn main() {
                     .register_catalog_component(component)
                     .map_err(std::io::Error::other)?;
             }
+            let herdr_release = herdr_installer::release_for_current_platform().ok();
+            extension_service
+                .register_catalog_component(ManagedCatalogComponent {
+                    id: herdr_installer::HERDR_EXTENSION_ID.into(),
+                    kind: "native-helper".into(),
+                    source: herdr_release
+                        .as_ref()
+                        .map(|release| format!("{}#{}", release.source, release.commit))
+                        .unwrap_or_else(|| "https://github.com/herdrdev/herdr".into()),
+                    version: herdr_release
+                        .as_ref()
+                        .map(|release| {
+                            format!("{} ({})", release.version, release.platform_status)
+                        })
+                        .unwrap_or_else(|| "0.7.5 (unsupported platform)".into()),
+                    license: "Apache-2.0".into(),
+                    permissions: vec!["ProcessExecute".into(), "Network".into()],
+                    enabled: false,
+                    trusted: false,
+                })
+                .map_err(std::io::Error::other)?;
+            let herdr_installer = Arc::new(
+                HerdrInstaller::open(&app_data_dir.join("herdr"), extension_service.clone())
+                    .map_err(std::io::Error::other)?,
+            );
             for component in extension_service.snapshot().catalog_components {
                 capability_service
                     .lock()
@@ -4287,6 +4391,7 @@ fn main() {
                 capability_service,
                 orchestration_service.clone(),
                 extension_service.clone(),
+                herdr_installer,
                 runtime_spine.clone(),
                 session_kernel.clone(),
                 acp_adapter,
