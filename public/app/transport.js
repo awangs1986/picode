@@ -73,6 +73,34 @@ export class WsTransport {
     });
   }
 
+  observeConversation(chatId) {
+    return this._control("conversation_observe", { chatId });
+  }
+
+  claimConversation(chatId) {
+    return this._control("conversation_claim", { chatId });
+  }
+
+  renewConversation(chatId, generation) {
+    return this._control("conversation_renew", { chatId, generation });
+  }
+
+  releaseConversation(chatId, generation) {
+    return this._control("conversation_release", { chatId, generation });
+  }
+
+  reportFailedConversationProbe(chatId) {
+    return this._control("conversation_probe_failed", { chatId });
+  }
+
+  authorizeConversation(chatId, generation, mutationRequestId) {
+    return this._control("conversation_authorize", {
+      chatId,
+      generation,
+      mutationRequestId,
+    });
+  }
+
   // ── Process / window lifecycle (create project, sessions, instances) ───────
 
   openWorkspace(cwd, options = {}) {
@@ -536,8 +564,20 @@ export class WsTransport {
     );
   }
 
-  deleteChats(filePaths) {
-    return this._control("chat_delete", { filePaths }, { timeoutMs: NO_TIMEOUT });
+  deleteChats(filePaths, control = null) {
+    return this._control(
+      "chat_delete",
+      {
+        filePaths,
+        ...(control?.generation
+          ? {
+              conversationGeneration: control.generation,
+              mutationRequestId: control.mutationRequestId,
+            }
+          : {}),
+      },
+      { timeoutMs: NO_TIMEOUT },
+    );
   }
 
   scanBackupSessions() {

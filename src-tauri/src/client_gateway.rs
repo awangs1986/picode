@@ -41,6 +41,7 @@ pub struct SharedClientFacts {
     pub extensions: Value,
     pub work: Value,
     pub runtime: Value,
+    pub conversation_control: Value,
     pub packages: Vec<String>,
 }
 
@@ -58,6 +59,7 @@ pub struct SharedClientSnapshot {
     pub extensions: Value,
     pub work: Value,
     pub runtime: Value,
+    pub conversation_control: Value,
     pub packages: Vec<String>,
 }
 
@@ -108,6 +110,7 @@ impl ClientGateway {
             extensions: facts.extensions,
             work: facts.work,
             runtime: facts.runtime,
+            conversation_control: facts.conversation_control,
             packages: facts.packages,
         };
         let value = serde_json::to_value(&snapshot)
@@ -187,6 +190,7 @@ mod tests {
             extensions: json!({ "lifecycle": [{ "id": "skill-a", "state": "enabled" }] }),
             work: json!([]),
             runtime: json!({ "instances": [] }),
+            conversation_control: json!([]),
             packages: vec!["npm:pi-subagents@0.37.2".into()],
         }))
     }

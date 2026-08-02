@@ -37,6 +37,34 @@ describe("WsTransport", () => {
     );
   });
 
+  test("conversation control operations share the broker control transport", async () => {
+    const ws = fakeWsClient();
+    const transport = new WsTransport(ws, {});
+
+    await transport.claimConversation("chat-a");
+    await transport.renewConversation("chat-a", 2);
+    await transport.releaseConversation("chat-a", 2);
+
+    expect(ws.sendControl).toHaveBeenNthCalledWith(
+      1,
+      "conversation_claim",
+      { chatId: "chat-a" },
+      {},
+    );
+    expect(ws.sendControl).toHaveBeenNthCalledWith(
+      2,
+      "conversation_renew",
+      { chatId: "chat-a", generation: 2 },
+      {},
+    );
+    expect(ws.sendControl).toHaveBeenNthCalledWith(
+      3,
+      "conversation_release",
+      { chatId: "chat-a", generation: 2 },
+      {},
+    );
+  });
+
   test("create project (openWorkspace) sends an open_workspace control command", async () => {
     const ws = fakeWsClient();
     const transport = createTransport({ wsClient: ws, env: { location: { port: "47821" } } });

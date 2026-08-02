@@ -169,12 +169,31 @@ describe("WebSocketClient broker routing", () => {
       {
         type: "broker_command",
         protocolVersion: 1,
+        clientId: client.clientId,
+        clientSurface: "gui",
         requestId: "req-1",
         workspaceId: "workspace:/tmp/project",
         sessionId: "/tmp/project/session-a.jsonl",
         payload: { type: "mirror_sync_request" },
       },
     ]);
+  });
+
+  test("attaches the current conversation fencing generation to chat mutations", () => {
+    const sent = [];
+    const client = new WebSocketClient("ws://127.0.0.1:49000/ui-ws");
+    client.ws = {
+      readyState: WebSocket.OPEN,
+      send: (message) => sent.push(JSON.parse(message)),
+    };
+    client.setRoutingContext({ sessionId: "chat-a", sourcePort: 47821 });
+    client.setConversationControl({ chatId: "chat-a", generation: 7 });
+
+    client.send({ type: "prompt", message: "continue" });
+
+    expect(sent[0].clientId).toBe(client.clientId);
+    expect(sent[0].clientSurface).toBe("gui");
+    expect(sent[0].conversationGeneration).toBe(7);
   });
 
   test("attaches broker route metadata to unwrapped rpc events", () => {

@@ -4,6 +4,7 @@
 
 import { setupContextViz } from "./ui/context-viz.js";
 import "./cost/dashboard.js";
+import { ConversationClient } from "./app/conversation-client.js";
 import { StateManager } from "./app/state.js";
 import { initTransport } from "./app/transport.js";
 import { createAppUpdater } from "./app/updater.js";
@@ -197,6 +198,7 @@ const wsClient = new WebSocketClient(wsUrl);
 // Native-only ops are gated on
 // `transport.capabilities.native` (advertised by the broker handshake).
 const transport = initTransport({ wsClient, env: window });
+const conversationClient = new ConversationClient(transport, wsClient);
 const firstmateEntryButton = document.getElementById("firstmate-entry-btn");
 
 async function refreshFirstmateEntry() {
@@ -257,7 +259,23 @@ const sidebar = new SessionSidebar(
   handleNewProjectChat,
   {
     onOpenProject: () => handleOpenFolder(),
-    deleteSessions: (filePaths) => transport.deleteChats(filePaths),
+    deleteSessions: (filePaths, control) => transport.deleteChats(filePaths, control),
+    authorizeSessionMutation: async ({ filePath, operation, mutationRequestId }) => {
+      const control = await conversationClient.ensureControl(filePath);
+      if (!control.granted || !control.generation) {
+        throw new Error(
+          t("chat.controlDenied", {}, "Another active client currently controls this chat."),
+        );
+      }
+      if (operation !== "delete") {
+        await transport.authorizeConversation(filePath, control.generation, mutationRequestId);
+      }
+      return {
+        chatId: filePath,
+        generation: control.generation,
+        mutationRequestId,
+      };
+    },
     prepareSessionRemoval: async () => {
       await newSession();
     },
@@ -1269,6 +1287,24 @@ wsClient.addEventListener("commandUndeliverable", (e) => {
   }
 });
 
+wsClient.addEventListener("commandForbidden", (e) => {
+  const { requestId, error } = e.detail || {};
+  const pending = requestId ? inFlightPrompts.get(requestId) : null;
+  if (pending) {
+    clearTimeout(pending.timer);
+    inFlightPrompts.delete(requestId);
+    state.setStreaming(false);
+    showTypingIndicator(false);
+    if (pending.message && !messageInput.value.trim()) {
+      messageInput.value = pending.message;
+      messageInput.style.height = "auto";
+    }
+  }
+  messageRenderer.renderError(
+    error || t("chat.controlDenied", {}, "Another active client currently controls this chat."),
+  );
+});
+
 // Mirror mode: receive full state snapshot on connect
 wsClient.addEventListener("mirrorSync", (e) => {
   handleMirrorSync(e.detail);
@@ -2057,6 +2093,31 @@ async function sendMessage() {
   if (!message) return;
 
   const sessionId = wsClient.sessionId || activePicodeTask?.chatId || "";
+  if (sessionId) {
+    try {
+      const control = await conversationClient.ensureControl(sessionId);
+      if (!control.granted) {
+        const owner = control.controller?.clientId || "another client";
+        messageRenderer.renderError(
+          t(
+            "chat.controlObserved",
+            { owner },
+            `This chat is active in ${owner}. Picode kept your draft and opened this window as an observer.`,
+          ),
+        );
+        return;
+      }
+    } catch (error) {
+      messageRenderer.renderError(
+        t(
+          "chat.controlFailed",
+          { error: error?.message || "unknown error" },
+          `Could not obtain chat control: ${error?.message || "unknown error"}`,
+        ),
+      );
+      return;
+    }
+  }
   if (sessionId && currentModelProvider && transport.available) {
     isPreparingPrompt = true;
     try {

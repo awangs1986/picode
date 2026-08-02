@@ -24,6 +24,7 @@ export class SessionSidebar {
     this.prepareSessionRemoval = options.prepareSessionRemoval || null;
     this.onForkSession = options.onForkSession || null;
     this.renameSession = options.renameSession || null;
+    this.authorizeSessionMutation = options.authorizeSessionMutation || null;
     this.writeClipboard = options.copyText || copyTextToClipboard;
     this.onActionError = options.onActionError || null;
     this.superAgentPath = options.superAgentPath || "";
@@ -164,6 +165,22 @@ export class SessionSidebar {
     this.render();
   }
 
+  async toggleArchivedWithControl(filePath) {
+    await this.authorizeMutation(filePath, "archive");
+    this.toggleArchived(filePath);
+  }
+
+  async authorizeMutation(filePath, operation) {
+    if (!this.authorizeSessionMutation) return null;
+    return this.authorizeSessionMutation({
+      filePath,
+      operation,
+      mutationRequestId:
+        globalThis.crypto?.randomUUID?.() ||
+        `${operation}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`,
+    });
+  }
+
   archiveImportedSessions(filePaths) {
     const known = new Set(this.archived);
     const additions = [];
@@ -263,7 +280,22 @@ export class SessionSidebar {
 
     try {
       if (!this.deleteSessions) throw new Error("Native chat deletion is unavailable");
-      const data = await this.deleteSessions(paths);
+      let data;
+      if (this.authorizeSessionMutation) {
+        const errors = [];
+        for (const filePath of paths) {
+          try {
+            const control = await this.authorizeMutation(filePath, "delete");
+            const result = await this.deleteSessions([filePath], control);
+            errors.push(...(result.errors || []));
+          } catch (_error) {
+            errors.push(filePath);
+          }
+        }
+        data = { errors };
+      } else {
+        data = await this.deleteSessions(paths);
+      }
       const errorSet = new Set(data.errors || []);
       const deleted = new Set(paths.filter((p) => !errorSet.has(p)));
       this.archived = this.archived.filter((p) => !deleted.has(p));
@@ -618,7 +650,7 @@ export class SessionSidebar {
       onCopyId: () => this.copySessionId(session),
       onCopyTranscript: () => this.copySessionTranscript(session, project),
       onFork: () => this.forkSession(session, project),
-      onToggleArchive: () => this.toggleArchived(session.filePath),
+      onToggleArchive: () => this.toggleArchivedWithControl(session.filePath),
       onRemove: () => this.removeSession(session, project),
     });
   }
@@ -668,6 +700,7 @@ export class SessionSidebar {
       if (newName && newName !== currentName) {
         try {
           if (this.renameSession) {
+            await this.authorizeMutation(session?.filePath, "rename");
             await this.renameSession({ session, name: newName });
           } else {
             const response = await fetch("/api/rpc", {
@@ -794,9 +827,13 @@ export class SessionSidebar {
     );
     const archiveBtn = item.querySelector(".session-archive-btn");
     if (archiveBtn) {
-      archiveBtn.addEventListener("click", (e) => {
+      archiveBtn.addEventListener("click", async (e) => {
         e.stopPropagation();
-        this.toggleArchived(session.filePath);
+        try {
+          await this.toggleArchivedWithControl(session.filePath);
+        } catch (error) {
+          this.reportContextActionError(error);
+        }
       });
     }
     const deleteBtn = item.querySelector(".session-delete-btn");

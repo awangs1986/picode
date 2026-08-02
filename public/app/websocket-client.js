@@ -55,6 +55,7 @@ export class WebSocketClient extends EventTarget {
     this.workspaceId = null;
     this.sessionId = null;
     this.sourcePort = null;
+    this.conversationControl = null;
     this.requestCounter = 0;
     // Whether the broker advertised native (OS/window) capabilities. Updated by
     // the `capabilities` handshake frame; consumers gate native-only UI on it.
@@ -81,6 +82,22 @@ export class WebSocketClient extends EventTarget {
       sessionId: this.sessionId,
       sourcePort: this.sourcePort,
     });
+    this.dispatchEvent(
+      new CustomEvent("routingChanged", {
+        detail: {
+          workspaceId: this.workspaceId,
+          sessionId: this.sessionId,
+          sourcePort: this.sourcePort,
+        },
+      }),
+    );
+  }
+
+  setConversationControl(control) {
+    this.conversationControl =
+      control?.chatId && Number.isFinite(control?.generation)
+        ? { chatId: control.chatId, generation: control.generation }
+        : null;
   }
 
   connect() {
@@ -193,18 +210,31 @@ export class WebSocketClient extends EventTarget {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       // Prefer broker envelope, while remaining backward-compatible with
       // servers that still expect raw command payloads.
-      const payload =
+      let payload =
         data && data.type === "broker_command"
           ? data
           : {
               type: "broker_command",
               protocolVersion: this.protocolVersion,
+              clientId: this.clientId,
+              clientSurface: this.clientSurface,
               requestId: `req-${++this.requestCounter}`,
               workspaceId: this.workspaceId || undefined,
               sessionId: this.sessionId || undefined,
               sourcePort: this.sourcePort || undefined,
               payload: data,
             };
+      if (!payload.clientId) payload = { ...payload, clientId: this.clientId };
+      if (!payload.clientSurface) payload = { ...payload, clientSurface: this.clientSurface };
+      if (
+        this.conversationControl?.chatId &&
+        payload.sessionId === this.conversationControl.chatId
+      ) {
+        payload = {
+          ...payload,
+          conversationGeneration: this.conversationControl.generation,
+        };
+      }
       console.debug("[WS route] send", {
         command: payload.payload?.type || payload.type,
         requestId: payload.requestId,
@@ -366,6 +396,11 @@ export class WebSocketClient extends EventTarget {
     // prompt does not vanish silently — callers correlate via requestId.
     if (message.type === "command_undeliverable") {
       this.dispatchEvent(new CustomEvent("commandUndeliverable", { detail: message }));
+      return;
+    }
+
+    if (message.type === "command_forbidden") {
+      this.dispatchEvent(new CustomEvent("commandForbidden", { detail: message }));
       return;
     }
 

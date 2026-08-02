@@ -243,6 +243,12 @@ struct BrokerClient {
     pending: Arc<Mutex<HashMap<String, oneshot::Sender<Result<Value, String>>>>>,
 }
 
+#[derive(Clone, Debug)]
+struct TuiLease {
+    chat_id: String,
+    generation: u64,
+}
+
 impl BrokerClient {
     async fn connect(port: u16) -> Result<(Self, mpsc::UnboundedReceiver<Value>), String> {
         let url = format!("ws://127.0.0.1:{port}/ui-ws");
@@ -315,6 +321,8 @@ impl BrokerClient {
         method: &str,
         params: Value,
         source_port: Option<u16>,
+        lease: Option<&TuiLease>,
+        mutation_request_id: Option<&str>,
     ) -> Result<Value, String> {
         let mut args = json!({
             "request": {
@@ -325,6 +333,12 @@ impl BrokerClient {
         });
         if let Some(port) = source_port {
             args["sourcePort"] = json!(port);
+        }
+        if let Some(lease) = lease {
+            args["conversationGeneration"] = json!(lease.generation);
+        }
+        if let Some(request_id) = mutation_request_id {
+            args["mutationRequestId"] = json!(request_id);
         }
         self.control("acp_request", args).await
     }
@@ -436,6 +450,71 @@ fn selected_chat(chat_id: &Option<String>) -> Result<&str, String> {
         .ok_or_else(|| "Select a chat with /use CHAT_ID or create one with /new".into())
 }
 
+async fn claim_tui_control(client: &BrokerClient, chat_id: &str) -> Result<TuiLease, String> {
+    let mut claim = client
+        .control("conversation_claim", json!({ "chatId": chat_id }))
+        .await?;
+    if claim.get("decision").and_then(Value::as_str) == Some("observing")
+        && claim.pointer("/control/state").and_then(Value::as_str) == Some("suspect")
+    {
+        let deadline = claim
+            .pointer("/control/controller/challengeDeadline")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let wait_ms = deadline.saturating_sub(now).min(10_000);
+        if wait_ms > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(wait_ms)).await;
+        }
+        if client
+            .control("conversation_probe_failed", json!({ "chatId": chat_id }))
+            .await
+            .is_ok()
+        {
+            claim = client
+                .control("conversation_claim", json!({ "chatId": chat_id }))
+                .await?;
+        }
+    }
+    if claim.get("decision").and_then(Value::as_str) != Some("granted") {
+        let state = claim
+            .pointer("/control/state")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let owner = claim
+            .pointer("/control/controller/clientId")
+            .and_then(Value::as_str)
+            .unwrap_or("another client");
+        return Err(format!(
+            "Chat is observer-only ({state}); controlled by {owner}. Input was not sent."
+        ));
+    }
+    let generation = claim
+        .pointer("/control/controller/generation")
+        .and_then(Value::as_u64)
+        .ok_or("Conversation claim did not return a fencing generation")?;
+    Ok(TuiLease {
+        chat_id: chat_id.into(),
+        generation,
+    })
+}
+
+async fn ensure_tui_control(
+    client: &BrokerClient,
+    lease: &mut Option<TuiLease>,
+    chat_id: &str,
+) -> Result<TuiLease, String> {
+    if let Some(current) = lease.as_ref().filter(|current| current.chat_id == chat_id) {
+        return Ok(current.clone());
+    }
+    let claimed = claim_tui_control(client, chat_id).await?;
+    *lease = Some(claimed.clone());
+    Ok(claimed)
+}
+
 fn runtime_chat_id<'a>(snapshot: &'a Value, chat_id: &'a str) -> &'a str {
     snapshot
         .get("sessions")
@@ -467,6 +546,7 @@ async fn execute_command(
     command: TuiCommand,
     snapshot: &mut Value,
     chat_id: &mut Option<String>,
+    lease: &mut Option<TuiLease>,
     source_port: Option<u16>,
 ) -> Result<bool, String> {
     let result = match command {
@@ -500,7 +580,9 @@ async fn execute_command(
             if let Some(workspace_id) = workspace_id {
                 params["workspaceId"] = json!(workspace_id);
             }
-            let created = client.acp("session/new", params, source_port).await?;
+            let created = client
+                .acp("session/new", params, source_port, None, None)
+                .await?;
             *chat_id = created
                 .pointer("/result/sessionId")
                 .or_else(|| created.get("sessionId"))
@@ -509,6 +591,18 @@ async fn execute_command(
             created
         }
         TuiCommand::Use(selected) => {
+            if let Some(current) = lease.take() {
+                let _ = client
+                    .control(
+                        "conversation_release",
+                        json!({ "chatId": current.chat_id, "generation": current.generation }),
+                    )
+                    .await;
+            }
+            match claim_tui_control(client, &selected).await {
+                Ok(claimed) => *lease = Some(claimed),
+                Err(error) => eprintln!("{error}"),
+            }
             *chat_id = Some(selected);
             json!({ "selected": chat_id })
         }
@@ -518,12 +612,17 @@ async fn execute_command(
                     "session/load",
                     json!({ "sessionId": selected_chat(chat_id)? }),
                     source_port,
+                    None,
+                    None,
                 )
                 .await?
         }
         TuiCommand::Prompt(message) => {
             let session_id = selected_chat(chat_id)?;
             let request_id = Uuid::new_v4().to_string();
+            let lease = ensure_tui_control(client, lease, session_id)
+                .await
+                .map_err(|error| format!("{error}\nDraft: {message}"))?;
             if let Some(port) = live_chat_port(snapshot, session_id) {
                 let runtime_session_id = runtime_chat_id(snapshot, session_id);
                 client
@@ -532,6 +631,8 @@ async fn execute_command(
                         json!({
                             "sessionId": runtime_session_id,
                             "sourcePort": port,
+                            "conversationGeneration": lease.generation,
+                            "mutationRequestId": request_id,
                             "payload": {
                                 "type": "prompt",
                                 "message": message,
@@ -550,12 +651,16 @@ async fn execute_command(
                             "message": message,
                         }),
                         source_port,
+                        Some(&lease),
+                        Some(&request_id),
                     )
                     .await?
             }
         }
         TuiCommand::Cancel => {
             let session_id = selected_chat(chat_id)?;
+            let mutation_request_id = Uuid::new_v4().to_string();
+            let lease = ensure_tui_control(client, lease, session_id).await?;
             if let Some(port) = live_chat_port(snapshot, session_id) {
                 let runtime_session_id = runtime_chat_id(snapshot, session_id);
                 client
@@ -564,6 +669,8 @@ async fn execute_command(
                         json!({
                             "sessionId": runtime_session_id,
                             "sourcePort": port,
+                            "conversationGeneration": lease.generation,
+                            "mutationRequestId": mutation_request_id,
                             "payload": { "type": "abort" }
                         }),
                     )
@@ -574,6 +681,8 @@ async fn execute_command(
                         "session/cancel",
                         json!({ "sessionId": session_id }),
                         source_port,
+                        Some(&lease),
+                        Some(&mutation_request_id),
                     )
                     .await?
             }
@@ -590,6 +699,8 @@ async fn execute_command(
                         "session/fork",
                         json!({ "sessionId": session_id }),
                         source_port,
+                        None,
+                        None,
                     )
                     .await?;
                 *chat_id = forked
@@ -601,20 +712,30 @@ async fn execute_command(
             }
         }
         TuiCommand::Archive(archived) => {
+            let session_id = selected_chat(chat_id)?;
+            let lease = ensure_tui_control(client, lease, session_id).await?;
+            let mutation_request_id = Uuid::new_v4().to_string();
             client
                 .acp(
                     "session/archive",
-                    json!({ "sessionId": selected_chat(chat_id)?, "archived": archived }),
+                    json!({ "sessionId": session_id, "archived": archived }),
                     source_port,
+                    Some(&lease),
+                    Some(&mutation_request_id),
                 )
                 .await?
         }
         TuiCommand::Rename(title) => {
+            let session_id = selected_chat(chat_id)?;
+            let lease = ensure_tui_control(client, lease, session_id).await?;
+            let mutation_request_id = Uuid::new_v4().to_string();
             client
                 .acp(
                     "session/rename",
-                    json!({ "sessionId": selected_chat(chat_id)?, "title": title }),
+                    json!({ "sessionId": session_id, "title": title }),
                     source_port,
+                    Some(&lease),
+                    Some(&mutation_request_id),
                 )
                 .await?
         }
@@ -677,10 +798,13 @@ async fn main() -> ExitCode {
         }
     };
     let mut chat_id = options.chat_id;
+    let mut lease: Option<TuiLease> = None;
     println!("Picode managed TUI · Core {broker_port}");
     println!("{}", render_snapshot(&snapshot));
     print_help();
     let mut lines = spawn_stdin_reader();
+    let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(5));
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         print!(
             "picode{}> ",
@@ -691,6 +815,16 @@ async fn main() -> ExitCode {
         );
         let _ = io::stdout().flush();
         tokio::select! {
+            _ = heartbeat.tick(), if lease.is_some() => {
+                if let Some(current) = lease.clone() {
+                    if client.control(
+                        "conversation_renew",
+                        json!({ "chatId": current.chat_id, "generation": current.generation }),
+                    ).await.is_err() {
+                        lease = None;
+                    }
+                }
+            }
             Some(event) = events.recv() => {
                 if let Some(line) = render_event(&event) {
                     println!("\n{line}");
@@ -710,10 +844,19 @@ async fn main() -> ExitCode {
                     command,
                     &mut snapshot,
                     &mut chat_id,
+                    &mut lease,
                     options.source_port,
                 ).await {
                     Ok(true) => {}
-                    Ok(false) => return ExitCode::SUCCESS,
+                    Ok(false) => {
+                        if let Some(current) = lease.take() {
+                            let _ = client.control(
+                                "conversation_release",
+                                json!({ "chatId": current.chat_id, "generation": current.generation }),
+                            ).await;
+                        }
+                        return ExitCode::SUCCESS;
+                    }
                     Err(error) => eprintln!("{error}"),
                 }
             }

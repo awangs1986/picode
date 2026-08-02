@@ -84,6 +84,9 @@ use pi_auth_sync::PiAuthSynchronizer;
 use pi_manager::{
     locked_pi_version, wait_for_endpoint, wait_for_health as wait_for_pi_health, PiManager,
 };
+use picode::conversation_control::{
+    ActivityState, Authorization, ClientIdentity, ConversationControl,
+};
 use picode::core_locator::{remove_owned_locator, write_locator, CoreLocator, CORE_LOCATOR_FILE};
 use remote_auth::RemoteAuth;
 use runtime_coordinator::RuntimeTarget;
@@ -126,6 +129,7 @@ type HookManagerState = Arc<HookManager>;
 type SessionKernelState = Arc<Mutex<session_kernel::SessionKernel>>;
 type CompletionCoordinatorState = Arc<CompletionCoordinator>;
 type ClientGatewayState = Arc<ClientGateway>;
+type ConversationControlState = Arc<Mutex<ConversationControl>>;
 
 struct CoreLocatorPath(PathBuf);
 
@@ -139,6 +143,7 @@ struct CoreSnapshotSource {
     extensions: ExtensionServiceState,
     work: WorkManagerState,
     runtime: RuntimeSpineState,
+    conversation_control: ConversationControlState,
 }
 
 impl SharedSnapshotSource for CoreSnapshotSource {
@@ -185,6 +190,15 @@ impl SharedSnapshotSource for CoreSnapshotSource {
                     .map_err(|_| "Runtime Spine lock is poisoned".to_owned())?;
                 serde_json::to_value(runtime.snapshot())
                     .map_err(|error| format!("Cannot encode runtime snapshot: {error}"))?
+            },
+            conversation_control: {
+                let mut control = self
+                    .conversation_control
+                    .lock()
+                    .map_err(|_| "Conversation Control lock is poisoned".to_owned())?;
+                serde_json::to_value(control.snapshot(unix_millis())).map_err(|error| {
+                    format!("Cannot encode Conversation Control snapshot: {error}")
+                })?
             },
             packages: self.manager.list_configured_package_sources()?,
         })
@@ -1378,6 +1392,110 @@ pub(crate) fn unix_millis() -> u64 {
         .as_millis() as u64
 }
 
+fn install_conversation_control(
+    broker: &Arc<BrokerWs>,
+    conversation_control: ConversationControlState,
+    session_kernel: SessionKernelState,
+) {
+    let disconnected = conversation_control.clone();
+    broker.set_client_disconnect_observer(Arc::new(move |connection_id| {
+        if let Ok(mut control) = disconnected.lock() {
+            control.disconnect_connection(connection_id, unix_millis());
+        }
+    }));
+
+    let activity = conversation_control.clone();
+    let activity_sessions = session_kernel.clone();
+    broker.set_runtime_activity_observer(Arc::new(move |session_id, event_type, at| {
+        let state = match event_type {
+            "agent_start"
+            | "message_start"
+            | "message_update"
+            | "tool_execution_start"
+            | "tool_execution_update"
+            | "tool_execution_end"
+            | "auto_compaction_start"
+            | "auto_compaction_end"
+            | "auto_retry_start" => Some(ActivityState::Active),
+            "agent_end" => Some(ActivityState::WaitingForUser),
+            "session_start" => Some(ActivityState::Idle),
+            "error" | "extension_error" => Some(ActivityState::SuspectedStall),
+            _ => None,
+        };
+        if let Some(state) = state {
+            // A runtime event can arrive before any client selects the chat.
+            // In that case there is no ownership fact to update yet.
+            let stable_id = activity_sessions
+                .lock()
+                .ok()
+                .and_then(|sessions| sessions.stable_chat_id(session_id))
+                .unwrap_or_else(|| session_id.to_owned());
+            if let Ok(mut control) = activity.lock() {
+                let _ = control.record_activity(&stable_id, state, at);
+            }
+        }
+    }));
+
+    let authorizer_sessions = session_kernel;
+    broker.set_command_authorizer(Arc::new(move |client, envelope| {
+        let payload_type = envelope.pointer("/payload/type").and_then(Value::as_str);
+        if !matches!(
+            payload_type,
+            Some(
+                "prompt"
+                    | "abort"
+                    | "set_model"
+                    | "compact"
+                    | "rewind"
+                    | "rename_session"
+                    | "set_session_name"
+                    | "delete_session"
+            )
+        ) {
+            return Ok(());
+        }
+        let chat_id = envelope
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .or_else(|| {
+                envelope
+                    .pointer("/payload/sessionId")
+                    .and_then(Value::as_str)
+            });
+        let Some(chat_id) = chat_id.filter(|chat_id| !chat_id.trim().is_empty()) else {
+            // The first prompt of a brand-new Pi chat has no persisted session
+            // identity yet. Its creator remains the only route until Pi emits
+            // the canonical session ID, at which point normal fencing applies.
+            return Ok(());
+        };
+        let stable_chat_id = authorizer_sessions
+            .lock()
+            .map_err(|_| "Session Kernel lock is poisoned".to_owned())?
+            .stable_chat_id(chat_id)
+            .unwrap_or_else(|| chat_id.to_owned());
+        let generation = envelope
+            .get("conversationGeneration")
+            .and_then(Value::as_u64)
+            .ok_or("Conversation control is required before mutating this chat")?;
+        let identity =
+            ClientIdentity::new(&client.client_id, &client.surface, client.connection_id)?;
+        let authorization = conversation_control
+            .lock()
+            .map_err(|_| "Conversation Control lock is poisoned".to_owned())?
+            .authorize(
+                &stable_chat_id,
+                &identity,
+                generation,
+                &client.request_id,
+                unix_millis(),
+            )?;
+        if authorization == Authorization::Duplicate {
+            return Err("Duplicate conversation mutation was already accepted".into());
+        }
+        Ok(())
+    }));
+}
+
 #[allow(clippy::too_many_arguments)]
 fn install_task_runtime_observer(
     broker: &Arc<BrokerWs>,
@@ -1444,6 +1562,7 @@ fn install_control_handler(
     orchestration_service: OrchestrationServiceState,
     extension_service: ExtensionServiceState,
     runtime_spine: RuntimeSpineState,
+    session_kernel: SessionKernelState,
     acp_adapter: AcpAdapterState,
     work_manager: WorkManagerState,
     context_engine: ContextEngineState,
@@ -1452,6 +1571,7 @@ fn install_control_handler(
     secret_store: SecretStoreState,
     scratch_root: PathBuf,
     client_gateway: ClientGatewayState,
+    conversation_control: ConversationControlState,
     app: AppHandle,
 ) {
     let broker_for_handler = broker.clone();
@@ -1475,6 +1595,7 @@ fn install_control_handler(
             let orchestration_service = orchestration_service.clone();
             let extension_service = extension_service.clone();
             let runtime_spine = runtime_spine.clone();
+            let session_kernel = session_kernel.clone();
             let acp_adapter = acp_adapter.clone();
             let work_manager = work_manager.clone();
             let context_engine = context_engine.clone();
@@ -1483,6 +1604,7 @@ fn install_control_handler(
             let secret_store = secret_store.clone();
             let scratch_root = scratch_root.clone();
             let client_gateway = client_gateway.clone();
+            let conversation_control = conversation_control.clone();
             let app = app.clone();
             Box::pin(async move {
                 let arg = |key: &str| args.get(key).cloned().unwrap_or(Value::Null);
@@ -1493,6 +1615,17 @@ fn install_control_handler(
                         .and_then(|n| u16::try_from(n).ok())
                 };
                 let arg_bool = |key: &str| args.get(key).and_then(Value::as_bool);
+                let arg_u64 = |key: &str| args.get(key).and_then(Value::as_u64);
+                let conversation_identity = || {
+                    ClientIdentity::new(&client.client_id, &client.surface, client.connection_id)
+                };
+                let stable_conversation_id = |candidate: &str| -> Result<String, String> {
+                    Ok(session_kernel
+                        .lock()
+                        .map_err(|_| "Session Kernel lock is poisoned".to_owned())?
+                        .stable_chat_id(candidate)
+                        .unwrap_or_else(|| candidate.to_owned()))
+                };
 
                 let harness_router = HarnessV2Router {
                     manager: &manager,
@@ -1506,6 +1639,51 @@ fn install_control_handler(
                     hooks: &hook_manager,
                     extensions: &extension_service,
                 };
+                if command == "acp_request" {
+                    let request = args.get("request").ok_or("request is required")?;
+                    let method = request.get("method").and_then(Value::as_str).unwrap_or("");
+                    if matches!(
+                        method,
+                        "session/prompt"
+                            | "session/cancel"
+                            | "session/rename"
+                            | "session/archive"
+                            | "session/delete"
+                            | "session/purge"
+                            | "session/rewind"
+                    ) {
+                        let params = request.get("params").unwrap_or(&Value::Null);
+                        let chat_id = params
+                            .get("sessionId")
+                            .and_then(Value::as_str)
+                            .ok_or("ACP mutation sessionId is required")?;
+                        let stable_chat_id = stable_conversation_id(chat_id)?;
+                        let generation = arg_u64("conversationGeneration")
+                            .ok_or("conversationGeneration is required")?;
+                        let mutation_request_id = args
+                            .get("mutationRequestId")
+                            .and_then(Value::as_str)
+                            .or_else(|| params.get("requestId").and_then(Value::as_str))
+                            .unwrap_or(&client.request_id);
+                        let authorization = conversation_control
+                            .lock()
+                            .map_err(|_| "Conversation Control lock is poisoned".to_owned())?
+                            .authorize(
+                                &stable_chat_id,
+                                &conversation_identity()?,
+                                generation,
+                                mutation_request_id,
+                                unix_millis(),
+                            )?;
+                        if authorization == Authorization::Duplicate {
+                            return Ok(serde_json::json!({
+                                "accepted": false,
+                                "duplicate": true,
+                                "requestId": mutation_request_id,
+                            }));
+                        }
+                    }
+                }
                 if let Some(result) = harness_router.handle(&command, &args, client.local).await {
                     return result;
                 }
@@ -1521,6 +1699,12 @@ fn install_control_handler(
                     | "custom_provider_save"
                     | "chat_prepare_prompt"
                     | "chat_runtime_command"
+                    | "conversation_observe"
+                    | "conversation_claim"
+                    | "conversation_renew"
+                    | "conversation_probe_failed"
+                    | "conversation_release"
+                    | "conversation_authorize"
                     | "chat_migration_scan"
                     | "chat_migration_import"
                     | "chat_migration_context_open"
@@ -1642,8 +1826,100 @@ fn install_control_handler(
                         serde_json::to_value(client_gateway.connect(&hello, unix_millis())?)
                             .map_err(|error| format!("Cannot encode client snapshot: {error}"))
                     }
+                    "conversation_observe" => {
+                        let chat_id = stable_conversation_id(
+                            &arg_str("chatId").ok_or("chatId is required")?,
+                        )?;
+                        let mut control = conversation_control
+                            .lock()
+                            .map_err(|_| "Conversation Control lock is poisoned".to_owned())?;
+                        serde_json::to_value(control.observe(&chat_id, unix_millis()))
+                            .map_err(|error| format!("Cannot encode conversation control: {error}"))
+                    }
+                    "conversation_claim" => {
+                        let chat_id = stable_conversation_id(
+                            &arg_str("chatId").ok_or("chatId is required")?,
+                        )?;
+                        let mut control = conversation_control
+                            .lock()
+                            .map_err(|_| "Conversation Control lock is poisoned".to_owned())?;
+                        serde_json::to_value(control.claim(
+                            &chat_id,
+                            &conversation_identity()?,
+                            unix_millis(),
+                        )?)
+                        .map_err(|error| format!("Cannot encode conversation claim: {error}"))
+                    }
+                    "conversation_renew" => {
+                        let chat_id = stable_conversation_id(
+                            &arg_str("chatId").ok_or("chatId is required")?,
+                        )?;
+                        let generation = arg_u64("generation").ok_or("generation is required")?;
+                        let mut control = conversation_control
+                            .lock()
+                            .map_err(|_| "Conversation Control lock is poisoned".to_owned())?;
+                        serde_json::to_value(control.renew(
+                            &chat_id,
+                            &conversation_identity()?,
+                            generation,
+                            unix_millis(),
+                        )?)
+                        .map_err(|error| format!("Cannot encode conversation renewal: {error}"))
+                    }
+                    "conversation_probe_failed" => {
+                        let chat_id = stable_conversation_id(
+                            &arg_str("chatId").ok_or("chatId is required")?,
+                        )?;
+                        let mut control = conversation_control
+                            .lock()
+                            .map_err(|_| "Conversation Control lock is poisoned".to_owned())?;
+                        serde_json::to_value(control.probe_failed(&chat_id, unix_millis())?)
+                            .map_err(|error| format!("Cannot encode failed probe: {error}"))
+                    }
+                    "conversation_release" => {
+                        let chat_id = stable_conversation_id(
+                            &arg_str("chatId").ok_or("chatId is required")?,
+                        )?;
+                        let generation = arg_u64("generation").ok_or("generation is required")?;
+                        serde_json::to_value(
+                            conversation_control
+                                .lock()
+                                .map_err(|_| "Conversation Control lock is poisoned".to_owned())?
+                                .release(
+                                    &chat_id,
+                                    &conversation_identity()?,
+                                    generation,
+                                    unix_millis(),
+                                )?,
+                        )
+                        .map_err(|error| format!("Cannot encode conversation release: {error}"))
+                    }
+                    "conversation_authorize" => {
+                        let chat_id = stable_conversation_id(
+                            &arg_str("chatId").ok_or("chatId is required")?,
+                        )?;
+                        let generation = arg_u64("generation").ok_or("generation is required")?;
+                        let request_id = arg_str("mutationRequestId")
+                            .unwrap_or_else(|| client.request_id.clone());
+                        serde_json::to_value(
+                            conversation_control
+                                .lock()
+                                .map_err(|_| "Conversation Control lock is poisoned".to_owned())?
+                                .authorize(
+                                    &chat_id,
+                                    &conversation_identity()?,
+                                    generation,
+                                    &request_id,
+                                    unix_millis(),
+                                )?,
+                        )
+                        .map_err(|error| {
+                            format!("Cannot encode conversation authorization: {error}")
+                        })
+                    }
                     "chat_runtime_command" => {
                         let session_id = arg_str("sessionId").ok_or("sessionId is required")?;
+                        let stable_chat_id = stable_conversation_id(&session_id)?;
                         let mut payload = args
                             .get("payload")
                             .cloned()
@@ -1667,6 +1943,33 @@ fn install_control_handler(
                                     .and_then(|port| u16::try_from(port).ok())
                             })
                             .ok_or("No live Pi runtime owns this chat")?;
+                        let generation = arg_u64("conversationGeneration")
+                            .ok_or("conversationGeneration is required")?;
+                        let mutation_request_id = arg_str("mutationRequestId")
+                            .or_else(|| {
+                                payload
+                                    .get("requestId")
+                                    .and_then(Value::as_str)
+                                    .map(str::to_owned)
+                            })
+                            .unwrap_or_else(|| client.request_id.clone());
+                        let authorization = conversation_control
+                            .lock()
+                            .map_err(|_| "Conversation Control lock is poisoned".to_owned())?
+                            .authorize(
+                                &stable_chat_id,
+                                &conversation_identity()?,
+                                generation,
+                                &mutation_request_id,
+                                unix_millis(),
+                            )?;
+                        if authorization == Authorization::Duplicate {
+                            return Ok(serde_json::json!({
+                                "queued": false,
+                                "duplicate": true,
+                                "requestId": mutation_request_id,
+                            }));
+                        }
                         if let Some(routed_port) = broker.port_for_session(&session_id) {
                             if routed_port != source_port {
                                 return Err("Chat route and source port disagree".into());
@@ -2023,6 +2326,32 @@ fn install_control_handler(
                             .filter_map(Value::as_str)
                             .map(str::to_string)
                             .collect();
+                        if file_paths.len() != 1 {
+                            return Err(
+                                "Chat deletion must authorize and delete one chat at a time".into(),
+                            );
+                        }
+                        let stable_chat_id = stable_conversation_id(&file_paths[0])?;
+                        let generation = arg_u64("conversationGeneration")
+                            .ok_or("conversationGeneration is required")?;
+                        let mutation_request_id = arg_str("mutationRequestId")
+                            .unwrap_or_else(|| client.request_id.clone());
+                        let authorization = conversation_control
+                            .lock()
+                            .map_err(|_| "Conversation Control lock is poisoned".to_owned())?
+                            .authorize(
+                                &stable_chat_id,
+                                &conversation_identity()?,
+                                generation,
+                                &mutation_request_id,
+                                unix_millis(),
+                            )?;
+                        if authorization == Authorization::Duplicate {
+                            return Ok(serde_json::json!({
+                                "errors": [],
+                                "duplicate": true,
+                            }));
+                        }
                         serde_json::to_value(chat_migration.delete_sessions(&file_paths)?)
                             .map_err(|error| format!("Cannot encode chat deletion result: {error}"))
                     }
@@ -3915,6 +4244,16 @@ fn main() {
                     .map_err(std::io::Error::other)?,
             ));
             let scratch_root = app_data_dir.join("scratch");
+            let conversation_control = Arc::new(Mutex::new(ConversationControl::new(
+                15_000,
+                5_000,
+                4_096,
+            )));
+            install_conversation_control(
+                &broker,
+                conversation_control.clone(),
+                session_kernel.clone(),
+            );
             let client_gateway = Arc::new(ClientGateway::new(
                 Arc::new(CoreSnapshotSource {
                     manager: manager.clone(),
@@ -3926,6 +4265,7 @@ fn main() {
                     extensions: extension_service.clone(),
                     work: work_manager.clone(),
                     runtime: runtime_spine.clone(),
+                    conversation_control: conversation_control.clone(),
                 }),
                 4 * 1024 * 1024,
             ));
@@ -3948,6 +4288,7 @@ fn main() {
                 orchestration_service.clone(),
                 extension_service.clone(),
                 runtime_spine.clone(),
+                session_kernel.clone(),
                 acp_adapter,
                 work_manager.clone(),
                 context_engine.clone(),
@@ -3956,6 +4297,7 @@ fn main() {
                 secret_store,
                 scratch_root,
                 client_gateway,
+                conversation_control.clone(),
                 app.handle().clone(),
             );
             install_task_runtime_observer(

@@ -285,6 +285,16 @@ impl SessionKernel {
         sessions
     }
 
+    pub fn stable_chat_id(&self, candidate: &str) -> Option<String> {
+        if self.sessions.contains_key(candidate) {
+            return Some(candidate.to_owned());
+        }
+        self.sessions
+            .values()
+            .find(|record| record.descriptor.external_session_id.as_deref() == Some(candidate))
+            .map(|record| record.descriptor.id.clone())
+    }
+
     /// Mirrors completed Pi messages into the canonical SessionKernel. The
     /// original Pi JSONL remains Pi's runtime file; this copy gives GUI, ACP,
     /// headless, backup and imported history one durable event vocabulary.

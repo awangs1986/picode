@@ -13,6 +13,10 @@ const PROTOCOL_VERSION: u8 = 1;
 
 type Tx = mpsc::UnboundedSender<String>;
 pub type UpstreamEventObserver = Arc<dyn Fn(u16, Value) + Send + Sync>;
+pub type ClientDisconnectObserver = Arc<dyn Fn(u64) + Send + Sync>;
+pub type CommandAuthorizer =
+    Arc<dyn Fn(&ClientContext, &Value) -> Result<(), String> + Send + Sync>;
+pub type RuntimeActivityObserver = Arc<dyn Fn(&str, &str, u64) + Send + Sync>;
 
 /// Emits an intermediate progress frame for an in-flight `broker_control`
 /// request (e.g. updater download chunks). The broker wires this to the
@@ -25,6 +29,7 @@ pub struct ClientContext {
     pub client_id: String,
     pub surface: String,
     pub local: bool,
+    pub request_id: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
@@ -55,6 +60,9 @@ struct BrokerInner {
     next_client_id: AtomicU64,
     control_handler: Mutex<Option<ControlHandler>>,
     upstream_event_observer: Mutex<Option<UpstreamEventObserver>>,
+    client_disconnect_observer: Mutex<Option<ClientDisconnectObserver>>,
+    command_authorizer: Mutex<Option<CommandAuthorizer>>,
+    runtime_activity_observer: Mutex<Option<RuntimeActivityObserver>>,
 }
 
 #[derive(Clone)]
@@ -178,6 +186,18 @@ impl BrokerWs {
 
     pub fn set_upstream_event_observer(&self, observer: UpstreamEventObserver) {
         *self.inner.upstream_event_observer.lock().unwrap() = Some(observer);
+    }
+
+    pub fn set_client_disconnect_observer(&self, observer: ClientDisconnectObserver) {
+        *self.inner.client_disconnect_observer.lock().unwrap() = Some(observer);
+    }
+
+    pub fn set_command_authorizer(&self, authorizer: CommandAuthorizer) {
+        *self.inner.command_authorizer.lock().unwrap() = Some(authorizer);
+    }
+
+    pub fn set_runtime_activity_observer(&self, observer: RuntimeActivityObserver) {
+        *self.inner.runtime_activity_observer.lock().unwrap() = Some(observer);
     }
 
     pub fn register_session(&self, port: u16, session_id: &str) {
@@ -312,6 +332,15 @@ impl BrokerWs {
         }
 
         self.inner.ui_clients.lock().unwrap().remove(&client_id);
+        if let Some(observer) = self
+            .inner
+            .client_disconnect_observer
+            .lock()
+            .unwrap()
+            .clone()
+        {
+            observer(client_id);
+        }
         writer_task.abort();
     }
 
@@ -327,6 +356,14 @@ impl BrokerWs {
         if value.get("type").and_then(Value::as_str) == Some("broker_control") {
             self.dispatch_control(&value, client_tx, local_client, connection_id);
             return;
+        }
+
+        let client = client_context(&value, local_client, connection_id);
+        if let Some(authorizer) = self.inner.command_authorizer.lock().unwrap().clone() {
+            if let Err(error) = authorizer(&client, &value) {
+                self.notify_forbidden(client_tx, &value, &error);
+                return;
+            }
         }
 
         let Some(port) = self.resolve_command_port(&value) else {
@@ -395,6 +432,20 @@ impl BrokerWs {
         );
     }
 
+    fn notify_forbidden(&self, client_tx: &Tx, value: &Value, error: &str) {
+        let _ = client_tx.send(
+            json!({
+                "type": "command_forbidden",
+                "protocolVersion": PROTOCOL_VERSION,
+                "requestId": value.get("requestId").cloned().unwrap_or(Value::Null),
+                "command": value.pointer("/payload/type").cloned().unwrap_or(Value::Null),
+                "error": error,
+                "sessionId": value.get("sessionId").cloned().unwrap_or(Value::Null),
+            })
+            .to_string(),
+        );
+    }
+
     fn dispatch_control(
         &self,
         value: &Value,
@@ -413,30 +464,7 @@ impl BrokerWs {
             .unwrap_or("")
             .to_string();
         let args = value.get("args").cloned().unwrap_or(Value::Null);
-        let client_id = value
-            .get("clientId")
-            .and_then(Value::as_str)
-            .filter(|id| {
-                !id.is_empty()
-                    && id.len() <= 128
-                    && id
-                        .bytes()
-                        .all(|byte| byte.is_ascii_alphanumeric() || b"._-:".contains(&byte))
-            })
-            .map(str::to_owned)
-            .unwrap_or_else(|| format!("connection-{connection_id}"));
-        let surface = value
-            .get("clientSurface")
-            .and_then(Value::as_str)
-            .filter(|surface| matches!(*surface, "gui" | "tui" | "headless" | "remote"))
-            .unwrap_or(if local_client { "gui" } else { "remote" })
-            .to_owned();
-        let client = ClientContext {
-            connection_id,
-            client_id,
-            surface,
-            local: local_client,
-        };
+        let client = client_context(value, local_client, connection_id);
 
         let handler = self.inner.control_handler.lock().unwrap().clone();
         let tx = client_tx.clone();
@@ -668,6 +696,18 @@ impl BrokerWs {
         if let Some(observer) = self.inner.upstream_event_observer.lock().unwrap().clone() {
             observer(port, payload.clone());
         }
+        if let (Some(session_id), Some(event_type)) = (
+            extract_session_id(&payload),
+            payload
+                .get("event")
+                .unwrap_or(&payload)
+                .get("type")
+                .and_then(Value::as_str),
+        ) {
+            if let Some(observer) = self.inner.runtime_activity_observer.lock().unwrap().clone() {
+                observer(session_id, event_type, unix_millis());
+            }
+        }
         let workspace_id = payload.get("workspaceId").cloned().unwrap_or(Value::Null);
         let session_id = payload.get("sessionId").cloned().unwrap_or(Value::Null);
         Some(
@@ -699,6 +739,45 @@ impl BrokerWs {
             }
         }
     }
+}
+
+fn client_context(value: &Value, local_client: bool, connection_id: u64) -> ClientContext {
+    let client_id = value
+        .get("clientId")
+        .and_then(Value::as_str)
+        .filter(|id| {
+            !id.is_empty()
+                && id.len() <= 128
+                && id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"._-:".contains(&byte))
+        })
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("connection-{connection_id}"));
+    let surface = value
+        .get("clientSurface")
+        .and_then(Value::as_str)
+        .filter(|surface| matches!(*surface, "gui" | "tui" | "headless" | "remote"))
+        .unwrap_or(if local_client { "gui" } else { "remote" })
+        .to_owned();
+    ClientContext {
+        connection_id,
+        client_id,
+        surface,
+        local: local_client,
+        request_id: value
+            .get("requestId")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned(),
+    }
+}
+
+fn unix_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 fn extract_session_id(payload: &Value) -> Option<&str> {
