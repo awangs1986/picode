@@ -4268,6 +4268,16 @@ fn main() {
                     trusted: false,
                 })
                 .map_err(std::io::Error::other)?;
+            if !extension_service
+                .snapshot()
+                .installations
+                .iter()
+                .any(|manifest| manifest.id == herdr_installer::HERDR_EXTENSION_ID)
+            {
+                extension_service
+                    .set_catalog_component_enabled(herdr_installer::HERDR_EXTENSION_ID, false)
+                    .map_err(std::io::Error::other)?;
+            }
             let herdr_installer = Arc::new(
                 HerdrInstaller::open(&app_data_dir.join("herdr"), extension_service.clone())
                     .map_err(std::io::Error::other)?,

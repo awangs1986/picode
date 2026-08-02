@@ -90,6 +90,12 @@ const checks = [
     args: ["scripts/p4-extension-gate.mjs"],
   },
   {
+    name: "p4-client-workflow-red-gate",
+    executable: node,
+    displayExecutable: "node",
+    args: ["scripts/p4-client-workflow-gate.mjs"],
+  },
+  {
     name: "design-css",
     executable: node,
     displayExecutable: "node",

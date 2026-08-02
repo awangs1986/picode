@@ -239,11 +239,14 @@ fn resolve_broker_port(options: &TuiOptions) -> Result<u16, String> {
     ))
 }
 
+type ControlReply = Result<Value, String>;
+type PendingRequests = Arc<Mutex<HashMap<String, oneshot::Sender<ControlReply>>>>;
+
 struct BrokerClient {
     client_id: String,
     broker_port: u16,
     writer: Arc<AsyncMutex<SocketWriter>>,
-    pending: Arc<Mutex<HashMap<String, oneshot::Sender<Result<Value, String>>>>>,
+    pending: PendingRequests,
 }
 
 #[derive(Clone, Debug)]
@@ -350,7 +353,7 @@ impl BrokerClient {
 
 fn spawn_reader(
     mut reader: SocketReader,
-    pending: Arc<Mutex<HashMap<String, oneshot::Sender<Result<Value, String>>>>>,
+    pending: PendingRequests,
     events: mpsc::UnboundedSender<Value>,
 ) {
     tokio::spawn(async move {

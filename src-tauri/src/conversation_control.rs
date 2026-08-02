@@ -300,21 +300,25 @@ impl ConversationControl {
         Ok(ReleaseResult::Released)
     }
 
-    pub fn disconnect_connection(&mut self, connection_id: u64, _now: u64) {
+    pub fn disconnect_connection(&mut self, connection_id: u64, now: u64) {
         for record in self.chats.values_mut() {
-            let should_release = record.owner.as_ref().is_some_and(|owner| {
-                owner.identity.connection_id == connection_id && owner.activity.permits_takeover()
-            });
-            if should_release {
-                record.owner = None;
-            } else if let Some(owner) = record
+            if let Some(owner) = record
                 .owner
                 .as_mut()
                 .filter(|owner| owner.identity.connection_id == connection_id)
             {
-                owner.connected = false;
                 owner.selected = false;
-                owner.challenge_deadline = None;
+                if owner.activity == ActivityState::Active {
+                    owner.connected = false;
+                    owner.challenge_deadline = None;
+                } else {
+                    // A socket disappearing is ambiguous: the peer may be
+                    // partitioned while its process is still alive. Expire the
+                    // lease and require the normal challenge/probe path. An
+                    // orderly route switch calls release() explicitly instead.
+                    owner.lease_expires_at = now.saturating_sub(1);
+                    owner.challenge_deadline = Some(now.saturating_add(self.challenge_ms));
+                }
             }
         }
     }
@@ -480,6 +484,10 @@ mod tests {
         ClientIdentity::new(id, "gui", connection_id).unwrap()
     }
 
+    fn surface_client(id: &str, surface: &str, connection_id: u64) -> ClientIdentity {
+        ClientIdentity::new(id, surface, connection_id).unwrap()
+    }
+
     #[test]
     fn concurrent_claims_elect_one_controller_and_fence_every_mutation() {
         let mut control = ConversationControl::new(1_000, 250, 64);
@@ -574,6 +582,28 @@ mod tests {
     }
 
     #[test]
+    fn ambiguous_idle_disconnect_requires_a_failed_probe_before_takeover() {
+        let mut control = ConversationControl::new(100, 50, 64);
+        let a = client("gui-a", 1);
+        let b = client("tui-b", 2);
+        control.claim("chat-a", &a, 100).unwrap();
+
+        control.disconnect_connection(1, 120);
+        assert_eq!(control.observe("chat-a", 121).state, ControlState::Suspect);
+        assert!(matches!(
+            control.claim("chat-a", &b, 130).unwrap(),
+            ClaimResult::Observing(_)
+        ));
+        assert!(control.probe_failed("chat-a", 160).is_err());
+        control.probe_failed("chat-a", 171).unwrap();
+        assert!(control
+            .claim("chat-a", &b, 172)
+            .unwrap()
+            .granted_generation()
+            .is_some());
+    }
+
+    #[test]
     fn switching_away_retains_active_run_then_releases_at_safe_transition() {
         let mut control = ConversationControl::new(1_000, 250, 64);
         let a = client("gui-a", 1);
@@ -606,16 +636,75 @@ mod tests {
             .granted_generation()
             .unwrap();
         control.disconnect_connection(1, 110);
+        assert_eq!(control.observe("chat-a", 111).state, ControlState::Suspect);
+        control.probe_failed("chat-a", 361).unwrap();
         let new = control
-            .claim("chat-a", &b, 111)
+            .claim("chat-a", &b, 362)
             .unwrap()
             .granted_generation()
             .unwrap();
 
         assert!(new > old);
         assert!(control
-            .authorize("chat-a", &a, old, "late-old", 112)
+            .authorize("chat-a", &a, old, "late-old", 363)
             .unwrap_err()
             .contains("generation"));
+    }
+
+    #[test]
+    fn lost_acknowledgement_cannot_replay_after_a_cross_surface_takeover() {
+        let mut control = ConversationControl::new(100, 50, 64);
+        let gui = surface_client("gui-a", "gui", 1);
+        let tui = surface_client("tui-b", "tui", 2);
+        let remote = surface_client("remote-c", "remote", 3);
+        let old = control
+            .claim("chat-a", &gui, 100)
+            .unwrap()
+            .granted_generation()
+            .unwrap();
+        assert_eq!(
+            control
+                .authorize("chat-a", &gui, old, "lost-ack-request", 101)
+                .unwrap(),
+            Authorization::Authorized
+        );
+        assert!(matches!(
+            control.claim("chat-a", &remote, 102).unwrap(),
+            ClaimResult::Observing(_)
+        ));
+
+        control.disconnect_connection(1, 110);
+        control.probe_failed("chat-a", 161).unwrap();
+        let new = control
+            .claim("chat-a", &tui, 162)
+            .unwrap()
+            .granted_generation()
+            .unwrap();
+        assert!(new > old);
+        assert_eq!(
+            control
+                .authorize("chat-a", &gui, old, "lost-ack-request", 163)
+                .unwrap(),
+            Authorization::Duplicate
+        );
+        assert!(control
+            .authorize("chat-a", &remote, new, "remote-write", 164)
+            .unwrap_err()
+            .contains("controller"));
+    }
+
+    #[test]
+    fn core_restart_drops_only_volatile_control_leases() {
+        let gui = client("gui-a", 1);
+        let mut before = ConversationControl::new(1_000, 250, 64);
+        before.claim("durable-chat-id", &gui, 100).unwrap();
+        assert_eq!(before.snapshot(101).len(), 1);
+
+        let mut after = ConversationControl::new(1_000, 250, 64);
+        assert!(after.snapshot(101).is_empty());
+        assert_eq!(
+            after.observe("durable-chat-id", 101).state,
+            ControlState::Unowned
+        );
     }
 }

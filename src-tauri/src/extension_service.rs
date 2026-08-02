@@ -1216,7 +1216,7 @@ impl ExtensionService {
         validate_identifier(&component.id, "catalog component")?;
         if !matches!(
             component.kind.as_str(),
-            "lsp" | "dap" | "mcp" | "hook" | "firstmate"
+            "lsp" | "dap" | "mcp" | "hook" | "firstmate" | "native-helper"
         ) || component.source.trim().is_empty()
             || component.version.trim().is_empty()
             || component.license.trim().is_empty()
@@ -4004,6 +4004,38 @@ mod tests {
             std::env::temp_dir().join(format!("picode-extension-{label}-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    #[test]
+    fn native_helpers_are_discoverable_but_remain_disabled_and_untrusted() {
+        let root = test_root("native-helper-catalog");
+        let service = test_service(&root);
+        service
+            .register_catalog_component(ManagedCatalogComponent {
+                id: "terminal-host".into(),
+                kind: "native-helper".into(),
+                source: "https://example.invalid/terminal-host".into(),
+                version: "1.0.0".into(),
+                license: "Apache-2.0".into(),
+                permissions: vec!["ProcessExecute".into()],
+                enabled: false,
+                trusted: false,
+            })
+            .unwrap();
+
+        let component = service
+            .snapshot()
+            .catalog_components
+            .into_iter()
+            .find(|component| component.id == "terminal-host")
+            .unwrap();
+        assert!(!component.enabled);
+        assert!(!component.trusted);
+        assert!(service
+            .authorize_catalog_component("terminal-host")
+            .is_err());
+        assert_eq!(service.snapshot().resident_process_count, 0);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn test_service(root: &std::path::Path) -> ExtensionService {

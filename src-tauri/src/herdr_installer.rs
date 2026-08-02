@@ -377,7 +377,7 @@ impl HerdrInstaller {
         let staged = (|| {
             extract_executable(&release, &bytes, &staged_executable)?;
             process.health(&staged_executable)?;
-            Ok::<_, String>(sha256_file(&staged_executable)?)
+            sha256_file(&staged_executable)
         })();
         let executable_hash = match staged {
             Ok(hash) => hash,
@@ -464,71 +464,85 @@ impl HerdrInstaller {
             run.extension_id == HERDR_EXTENSION_ID
                 && run.state == crate::extension_service::ExtensionRunState::Running
         });
-        let run = match running {
-            Some(run) => run,
-            None => self.extensions.start_extension(
-                HERDR_EXTENSION_ID,
-                "picode.herdr.host",
-                "picode.herdr.server",
-                &self.root,
-                Duration::from_secs(7 * 24 * 60 * 60),
-            )?,
+        let (run, started_here) = match running {
+            Some(run) => (run, false),
+            None => (
+                self.extensions.start_extension(
+                    HERDR_EXTENSION_ID,
+                    "picode.herdr.host",
+                    "picode.herdr.server",
+                    &self.root,
+                    Duration::from_secs(7 * 24 * 60 * 60),
+                )?,
+                true,
+            ),
         };
 
-        let mut healthy = false;
-        let status_args = vec!["status".into(), "server".into()];
-        for _ in 0..20 {
-            if process
-                .command(
-                    &installed.executable,
-                    &status_args,
-                    &self.root,
-                    Duration::from_secs(2),
-                )
-                .is_ok()
-            {
-                healthy = true;
-                break;
+        let topology = (|| {
+            let mut healthy = false;
+            let status_args = vec!["status".into(), "server".into()];
+            for _ in 0..20 {
+                if process
+                    .command(
+                        &installed.executable,
+                        &status_args,
+                        &self.root,
+                        Duration::from_secs(2),
+                    )
+                    .is_ok()
+                {
+                    healthy = true;
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(100));
             }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        if !healthy {
-            let _ = self.extensions.cancel_run(&run.id);
-            return self.fail("Herdr server failed its post-launch health check".into());
-        }
+            if !healthy {
+                return Err("Herdr server failed its post-launch health check".into());
+            }
 
-        let label = chat_id.unwrap_or("Picode");
-        if label.len() > 256 || label.contains(['\r', '\n', '\0']) {
-            return Err("invalid chat identity for Herdr launch".into());
-        }
-        let create_output = process.command(
-            &installed.executable,
-            &[
-                "workspace".into(),
-                "create".into(),
-                "--cwd".into(),
-                self.root.to_string_lossy().into_owned(),
-                "--label".into(),
-                format!("Picode · {label}"),
-                "--focus".into(),
-            ],
-            &self.root,
-            Duration::from_secs(10),
-        )?;
-        let created: serde_json::Value = serde_json::from_str(create_output.trim())
-            .map_err(|error| format!("parse Herdr workspace response: {error}"))?;
-        let pane_id = created
-            .pointer("/result/root_pane/pane_id")
-            .and_then(serde_json::Value::as_str)
-            .ok_or("Herdr workspace response did not include a root pane")?
-            .to_owned();
-        let command = tui_shell_command(tui_executable, broker_port, chat_id);
-        process.command(
-            &installed.executable,
-            &["pane".into(), "run".into(), pane_id.clone(), command],
-            &self.root,
-            Duration::from_secs(10),
-        )?;
+            let label = chat_id.unwrap_or("Picode");
+            if label.len() > 256 || label.contains(['\r', '\n', '\0']) {
+                return Err("invalid chat identity for Herdr launch".into());
+            }
+            let create_output = process.command(
+                &installed.executable,
+                &[
+                    "workspace".into(),
+                    "create".into(),
+                    "--cwd".into(),
+                    self.root.to_string_lossy().into_owned(),
+                    "--label".into(),
+                    format!("Picode · {label}"),
+                    "--focus".into(),
+                ],
+                &self.root,
+                Duration::from_secs(10),
+            )?;
+            let created: serde_json::Value = serde_json::from_str(create_output.trim())
+                .map_err(|error| format!("parse Herdr workspace response: {error}"))?;
+            let pane_id = created
+                .pointer("/result/root_pane/pane_id")
+                .and_then(serde_json::Value::as_str)
+                .ok_or("Herdr workspace response did not include a root pane")?
+                .to_owned();
+            let command = tui_shell_command(tui_executable, broker_port, chat_id);
+            process.command(
+                &installed.executable,
+                &["pane".into(), "run".into(), pane_id.clone(), command],
+                &self.root,
+                Duration::from_secs(10),
+            )?;
+            Ok::<_, String>(pane_id)
+        })();
+        let pane_id = match topology {
+            Ok(pane_id) => pane_id,
+            Err(error) => {
+                if started_here {
+                    let _ = self.extensions.cancel_run(&run.id);
+                }
+                return self.fail(error);
+            }
+        };
         Ok(HerdrLaunch {
             attach_executable: installed.executable,
             server_run_id: run.id,
@@ -823,6 +837,18 @@ mod tests {
         calls: AtomicUsize,
     }
 
+    struct OfflineDownloader;
+
+    impl ArtifactDownloader for OfflineDownloader {
+        fn download<'a>(
+            &'a self,
+            _release: &'a HerdrRelease,
+            _max_bytes: usize,
+        ) -> BoxFuture<'a, Result<Vec<u8>, String>> {
+            Box::pin(async { Err("synthetic offline network".into()) })
+        }
+    }
+
     impl ArtifactDownloader for FakeDownloader {
         fn download<'a>(
             &'a self,
@@ -973,6 +999,54 @@ mod tests {
             .contains("health"));
         assert!(!installer.inspect().installed);
         assert!(!installer.inspect().trusted);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn offline_and_unsupported_platforms_fail_closed_without_residents() {
+        let (root, installer, work) = fixture();
+        installer.decide(HerdrDecision::Approved).unwrap();
+        let process = FakeProcess {
+            health_calls: AtomicUsize::new(0),
+            fail_health: false,
+        };
+        assert!(installer
+            .install_and_trust(&OfflineDownloader, &process)
+            .await
+            .unwrap_err()
+            .contains("offline"));
+        assert!(!installer.inspect().installed);
+        assert!(!installer.inspect().trusted);
+        assert!(work.snapshot().unwrap().is_empty());
+        assert!(release_for("solaris", "sparc64")
+            .unwrap_err()
+            .contains("no pinned"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn removal_returns_a_reviewed_install_to_zero_residency() {
+        let (root, installer, work) = fixture();
+        installer.decide(HerdrDecision::Approved).unwrap();
+        let mut release = release_for_current_platform().unwrap();
+        let bytes = test_asset(&release, b"removable-herdr");
+        release.artifact_sha256 = sha256_hex(&bytes);
+        let downloader = FakeDownloader {
+            bytes,
+            calls: AtomicUsize::new(0),
+        };
+        let process = FakeProcess {
+            health_calls: AtomicUsize::new(0),
+            fail_health: false,
+        };
+        installer
+            .install_release_for_test(release, &downloader, &process)
+            .await
+            .unwrap();
+        let removed = installer.remove().unwrap();
+        assert_eq!(removed.decision, HerdrDecision::Undecided);
+        assert!(!removed.installed && !removed.enabled && !removed.trusted && !removed.running);
+        assert!(work.snapshot().unwrap().is_empty());
         fs::remove_dir_all(root).unwrap();
     }
 }
