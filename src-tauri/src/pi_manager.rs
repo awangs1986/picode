@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::fs;
 use std::io::Write;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -9,24 +8,18 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::native_pi_manager::NativeLaunchSpec;
+use crate::pi_runtime_profile::{
+    package_source_contains, PiRuntimeProfile, CURSOR_OAUTH_PACKAGE_NAME, CURSOR_SDK_PACKAGE,
+    CURSOR_SDK_PACKAGE_NAME,
+};
 use serde_json::Value;
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-const CURSOR_OAUTH_PACKAGE: &str = "npm:@rahularya01/pi-cursor@1.4.0";
-const CURSOR_OAUTH_PACKAGE_NAME: &str = "@rahularya01/pi-cursor";
-const CURSOR_SDK_PACKAGE: &str = "npm:pi-cursor-sdk@0.1.61";
-const CURSOR_SDK_PACKAGE_NAME: &str = "pi-cursor-sdk";
 const MATT_POCOCK_SKILLS_PACKAGE: &str = "git:github.com/mattpocock/skills";
 const PI_SUBAGENTS_PACKAGE: &str = "npm:pi-subagents@0.37.2";
 const PI_SUBAGENTS_PACKAGE_NAME: &str = "pi-subagents";
-const CURSOR_BRIDGE_ORIGINAL: &str = "spawn(process.execPath,[";
-const CURSOR_BRIDGE_PATCHED: &str = "spawn(process.env.PICODE_CURSOR_NODE||\"node\",[";
-const CURSOR_OAUTH_REFRESH_ORIGINAL: &str =
-    "async refreshModels(M){if(!M.allowNetwork||M.signal?.aborted)return r.map(Bt);";
-const CURSOR_OAUTH_REFRESH_PATCHED: &str =
-    "async refreshModels(M){if(M.signal?.aborted)return r.map(Bt);";
 
 struct PiProcess {
     child: Child,
@@ -40,6 +33,7 @@ pub struct PiManager {
     /// Maps workspace_port -> [dedicated session ports] for cleanup on window close.
     workspace_dedicated: Arc<Mutex<HashMap<u16, Vec<u16>>>>,
     static_dir: PathBuf,
+    runtime_profile: PiRuntimeProfile,
 }
 
 struct EmbeddedExtensionResolution {
@@ -103,7 +97,7 @@ fn configure_child_process_for_windows(_command: &mut Command) {}
 /// that `npm`, `npx`, and friends are always reachable.
 ///
 /// Directories already present in PATH are not duplicated.
-fn build_augmented_path() -> String {
+fn build_augmented_path(runtime_profile: &PiRuntimeProfile) -> String {
     use std::path::{Path, PathBuf};
 
     let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
@@ -123,7 +117,7 @@ fn build_augmented_path() -> String {
 
         if let Ok(home) = std::env::var("HOME") {
             let h = Path::new(&home);
-            extras.push(pi_extension_npm_bin_dir(h));
+            extras.push(runtime_profile.npm_bin_dir());
             extras.push(h.join(".local/bin"));
             extras.push(h.join(".bun/bin"));
             extras.push(h.join(".volta/bin"));
@@ -156,7 +150,7 @@ fn build_augmented_path() -> String {
         }
         if let Ok(home) = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")) {
             let h = Path::new(&home);
-            extras.push(pi_extension_npm_bin_dir(h));
+            extras.push(runtime_profile.npm_bin_dir());
             extras.push(h.join(".cargo").join("bin"));
             extras.push(h.join(".bun").join("bin"));
             extras.push(h.join("scoop").join("shims"));
@@ -174,28 +168,8 @@ fn build_augmented_path() -> String {
         .unwrap_or_else(|| std::env::var("PATH").unwrap_or_default())
 }
 
-fn pi_extension_npm_bin_dir(home: &Path) -> PathBuf {
-    home.join(".pi")
-        .join("agent")
-        .join("npm")
-        .join("node_modules")
-        .join(".bin")
-}
-
-fn log_child_path_diagnostics(context: &str, path: &str) {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .ok();
-    let Some(home) = home else {
-        log::info!(
-            "[pi-desktop] child PATH diagnostics: context={} home=<unset> path={}",
-            context,
-            path
-        );
-        return;
-    };
-
-    let pi_extension_bin = pi_extension_npm_bin_dir(Path::new(&home));
+fn log_child_path_diagnostics(context: &str, path: &str, runtime_profile: &PiRuntimeProfile) {
+    let pi_extension_bin = runtime_profile.npm_bin_dir();
     let hypa_bin = pi_extension_bin.join(if cfg!(target_os = "windows") {
         "hypa.cmd"
     } else {
@@ -332,14 +306,6 @@ fn mirror_is_up_to_date(src: &Path, dest: &Path) -> bool {
     }
 }
 
-fn package_source_contains(source: &str, package_name: &str) -> bool {
-    let source = source.trim().strip_prefix("npm:").unwrap_or(source.trim());
-    source == package_name
-        || source
-            .strip_prefix(package_name)
-            .is_some_and(|suffix| suffix.starts_with('@'))
-}
-
 fn missing_default_package_sources(sources: &[String]) -> Vec<&'static str> {
     let mut missing = Vec::new();
     if sources.iter().any(|source| {
@@ -374,56 +340,14 @@ fn node_version_at_least_22_19(output: &str) -> bool {
     major > 22 || (major == 22 && minor >= 19)
 }
 
-fn patch_cursor_bridge_contents(contents: &str) -> Result<Option<String>, String> {
-    if contents.contains(CURSOR_BRIDGE_PATCHED) {
-        return Ok(None);
-    }
-    let matches = contents.matches(CURSOR_BRIDGE_ORIGINAL).count();
-    if matches != 1 {
-        return Err(format!(
-            "The pinned Cursor OAuth extension has an unexpected bridge layout ({matches} matches); refusing to modify third-party code"
-        ));
-    }
-    Ok(Some(contents.replacen(
-        CURSOR_BRIDGE_ORIGINAL,
-        CURSOR_BRIDGE_PATCHED,
-        1,
-    )))
-}
-
-fn patch_cursor_oauth_model_refresh_contents(contents: &str) -> Result<Option<String>, String> {
-    if contents.contains(CURSOR_OAUTH_REFRESH_PATCHED) {
-        return Ok(None);
-    }
-    let matches = contents.matches(CURSOR_OAUTH_REFRESH_ORIGINAL).count();
-    if matches != 1 {
-        return Err(format!(
-            "The pinned Cursor OAuth extension has an unexpected model refresh layout ({matches} matches); refusing to modify third-party code"
-        ));
-    }
-    Ok(Some(contents.replacen(
-        CURSOR_OAUTH_REFRESH_ORIGINAL,
-        CURSOR_OAUTH_REFRESH_PATCHED,
-        1,
-    )))
-}
-
-fn pi_agent_dir() -> Result<PathBuf, String> {
-    if let Some(path) = std::env::var_os("PI_CODING_AGENT_DIR").filter(|value| !value.is_empty()) {
-        return Ok(PathBuf::from(path));
-    }
-    dirs::home_dir()
-        .map(|home| home.join(".pi").join("agent"))
-        .ok_or_else(|| "Cannot find the current user's home directory".to_string())
-}
-
 impl PiManager {
-    pub fn new(static_dir: PathBuf) -> Self {
+    pub fn new(static_dir: PathBuf, runtime_profile: PiRuntimeProfile) -> Self {
         Self {
             processes: Arc::new(Mutex::new(HashMap::new())),
             session_ports: Arc::new(Mutex::new(HashMap::new())),
             workspace_dedicated: Arc::new(Mutex::new(HashMap::new())),
             static_dir,
+            runtime_profile,
         }
     }
 
@@ -475,7 +399,8 @@ impl PiManager {
                 &strip_verbatim_prefix(&bridge.to_string_lossy()),
             ))],
             pi_version: locked_pi_version().to_owned(),
-            path_env: build_augmented_path(),
+            path_env: build_augmented_path(&self.runtime_profile),
+            runtime_environment: self.runtime_profile.environment().into_iter().collect(),
         })
     }
 
@@ -680,12 +605,6 @@ impl PiManager {
         session_path: Option<&str>,
         ephemeral: bool,
     ) -> Result<(), String> {
-        // Existing OAuth installs may predate the live model refresh patch.
-        // Apply it on the next explicit Picode start without scanning or
-        // importing any system credentials.
-        if let Err(error) = self.patch_existing_cursor_oauth_integration() {
-            log::warn!("[cursor] could not prepare live model refresh: {}", error);
-        }
         let pi_bin = self.resolve_bundled_pi()?;
         // Tauri resolves resource paths as `\\?\`-prefixed extended-length
         // paths. Bun (the embedded pi runtime) segfaults on Windows arm64 when
@@ -764,11 +683,12 @@ impl PiManager {
             static_dir
         );
 
-        let augmented_path = build_augmented_path();
-        log_child_path_diagnostics("spawn", &augmented_path);
+        let augmented_path = build_augmented_path(&self.runtime_profile);
+        log_child_path_diagnostics("spawn", &augmented_path, &self.runtime_profile);
 
         let mut child = Command::new(&pi_bin_str);
         configure_child_process_for_windows(&mut child);
+        self.runtime_profile.apply_to_command(&mut child);
         child
             .args(&args)
             .current_dir(&cwd)
@@ -787,7 +707,6 @@ impl PiManager {
             // activation, so keep the provider cache disabled to avoid
             // showing yesterday's Cursor model list in the GUI.
             .env("PI_CURSOR_SDK_DISABLE_MODEL_CACHE", "1")
-            .env("PICODE_CURSOR_NODE", "node")
             .stdin(Stdio::piped())
             // Drop stdout: pi emits RPC frames on it that we don't consume here, and
             // letting it fill an unread pipe would eventually block the child.
@@ -956,10 +875,11 @@ impl PiManager {
     pub fn run_pi_command(&self, args: &[String]) -> Result<String, String> {
         let pi_bin = self.resolve_bundled_pi()?;
         let pi_bin_str = strip_verbatim_prefix(&pi_bin.to_string_lossy());
-        let augmented_path = build_augmented_path();
-        log_child_path_diagnostics("run_pi_command", &augmented_path);
+        let augmented_path = build_augmented_path(&self.runtime_profile);
+        log_child_path_diagnostics("run_pi_command", &augmented_path, &self.runtime_profile);
         let mut command = Command::new(&pi_bin_str);
         configure_child_process_for_windows(&mut command);
+        self.runtime_profile.apply_to_command(&mut command);
         command
             .args(args)
             .env("PATH", augmented_path)
@@ -1041,55 +961,44 @@ impl PiManager {
         Ok(missing.into_iter().map(str::to_owned).collect())
     }
 
-    /// Ensure the Cursor provider package selected by an explicitly activated
-    /// account is installed. Cursor API-key accounts use the official
-    /// `@cursor/sdk`-backed Pi package; imported Desktop/CLI OAuth accounts
-    /// use the separately marked, unofficial bridge. Both packages register
-    /// provider id `cursor`, so silently installing both would make provider
-    /// behavior depend on load order.
+    /// Ensure an explicitly activated Cursor account uses the one supported
+    /// formal channel. Desktop/CLI OAuth remains importable for backup, but is
+    /// never executable inside Picode's runtime profile.
     pub fn ensure_cursor_integration(&self, metadata: &Value) -> Result<(), String> {
         let credential_kind = metadata
             .get("credentialKind")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        let wants_oauth = credential_kind == "cursor_ide_cli_oauth";
-        let sources = self.list_configured_package_sources()?;
-        let official_installed = sources
-            .iter()
-            .any(|source| package_source_contains(source, CURSOR_SDK_PACKAGE_NAME));
-        let oauth_installed = sources
-            .iter()
-            .any(|source| package_source_contains(source, CURSOR_OAUTH_PACKAGE_NAME));
+        if credential_kind == "cursor_ide_cli_oauth" {
+            return Err(
+                "Cursor Desktop/CLI OAuth is retained for account backup only. Picode's formal Cursor chat channel requires a Cursor SDK API Key and pi-cursor-sdk@0.1.61."
+                    .to_string(),
+            );
+        }
+        self.ensure_formal_cursor_integration()
+    }
 
-        if wants_oauth {
-            if official_installed {
-                return Err(
-                    "Cursor OAuth cannot be activated while the official pi-cursor-sdk package is installed. Keep the official SDK for API-key accounts, or remove it explicitly before trying the experimental OAuth integration."
-                        .to_string(),
-                );
-            }
-            self.require_node_22()?;
-            if !oauth_installed {
-                self.install_package_source(CURSOR_OAUTH_PACKAGE)?;
-            }
-            self.patch_installed_cursor_oauth_bridge()?;
-        } else {
-            if oauth_installed {
-                return Err(
-                    "Cursor SDK API-key accounts cannot be activated while the experimental pi-cursor OAuth package is installed. Remove that package explicitly before using the official SDK."
-                        .to_string(),
-                );
-            }
-            self.require_node_22()?;
-            if !official_installed {
-                self.install_package_source(CURSOR_SDK_PACKAGE)?;
-            }
+    pub fn ensure_formal_cursor_integration(&self) -> Result<(), String> {
+        self.require_node_22()?;
+        let sources = self.list_configured_package_sources()?;
+        for source in sources.iter().filter(|source| {
+            package_source_contains(source, CURSOR_OAUTH_PACKAGE_NAME)
+                || (package_source_contains(source, CURSOR_SDK_PACKAGE_NAME)
+                    && source.trim() != CURSOR_SDK_PACKAGE)
+        }) {
+            self.remove_package_source(source)?;
+        }
+        if !sources
+            .iter()
+            .any(|source| source.trim() == CURSOR_SDK_PACKAGE)
+        {
+            self.install_package_source(CURSOR_SDK_PACKAGE)?;
         }
         Ok(())
     }
 
     fn require_node_22(&self) -> Result<(), String> {
-        let augmented_path = build_augmented_path();
+        let augmented_path = build_augmented_path(&self.runtime_profile);
         let mut command = Command::new("node");
         configure_child_process_for_windows(&mut command);
         let output = command
@@ -1117,49 +1026,13 @@ impl PiManager {
         }
     }
 
-    fn patch_installed_cursor_oauth_bridge(&self) -> Result<(), String> {
-        let package_path = pi_agent_dir()?
-            .join("npm")
-            .join("node_modules")
-            .join("@rahularya01")
-            .join("pi-cursor")
-            .join("dist")
-            .join("index.js");
-        let contents = fs::read_to_string(&package_path).map_err(|error| {
-            format!(
-                "Cursor OAuth package was installed but its compiled extension could not be read ({}): {error}",
-                package_path.display()
-            )
-        })?;
-        let bridge_patched = patch_cursor_bridge_contents(&contents)?;
-        let refresh_patched = patch_cursor_oauth_model_refresh_contents(
-            bridge_patched.as_deref().unwrap_or(&contents),
-        )?;
-        let Some(patched) = refresh_patched.or(bridge_patched) else {
-            return Ok(());
-        };
-        fs::write(&package_path, patched).map_err(|error| {
-            format!(
-                "Cursor OAuth package was installed but its Bun/Node bridge compatibility patch could not be saved: {error}"
-            )
-        })
-    }
-
-    fn patch_existing_cursor_oauth_integration(&self) -> Result<(), String> {
-        let package_path = pi_agent_dir()?
-            .join("npm")
-            .join("node_modules")
-            .join("@rahularya01")
-            .join("pi-cursor")
-            .join("dist")
-            .join("index.js");
-        if package_path.exists() {
-            self.patch_installed_cursor_oauth_bridge()?;
-        }
-        Ok(())
-    }
-
     pub fn install_package_source(&self, source: &str) -> Result<(), String> {
+        if package_source_contains(source, CURSOR_OAUTH_PACKAGE_NAME) {
+            return Err(
+                "The unofficial Cursor OAuth package cannot be installed in Picode's formal runtime profile. Import remains available for backup; chat requires a Cursor SDK API Key."
+                    .to_string(),
+            );
+        }
         let args = vec!["install".to_string(), source.to_string()];
         let _ = self.run_pi_command(&args)?;
         Ok(())
@@ -1207,17 +1080,11 @@ mod tests {
 
     #[test]
     fn augmented_path_includes_pi_extension_npm_bin() {
-        let home = std::env::var("USERPROFILE")
-            .or_else(|_| std::env::var("HOME"))
-            .expect("a home directory environment variable must be set for this test");
-        let expected = Path::new(&home)
-            .join(".pi")
-            .join("agent")
-            .join("npm")
-            .join("node_modules")
-            .join(".bin");
+        let root = std::env::temp_dir().join("picode-pi-manager-path");
+        let profile = PiRuntimeProfile::new(&root.join("app"), &root.join("home"));
+        let expected = profile.npm_bin_dir();
 
-        let path = build_augmented_path();
+        let path = build_augmented_path(&profile);
         let dirs: Vec<PathBuf> = std::env::split_paths(&path).collect();
 
         assert!(
@@ -1278,26 +1145,18 @@ mod tests {
     }
 
     #[test]
-    fn cursor_bridge_patch_is_explicit_and_idempotent() {
-        let original = "const n=spawn(process.execPath,[bi],{stdio:[\"pipe\"]});";
-        let patched = patch_cursor_bridge_contents(original)
-            .unwrap()
-            .expect("first patch should modify the source");
-        assert!(patched.contains(CURSOR_BRIDGE_PATCHED));
-        assert!(patch_cursor_bridge_contents(&patched).unwrap().is_none());
-    }
+    fn cursor_oauth_is_backup_only_in_the_formal_runtime() {
+        let root = std::env::temp_dir().join("picode-cursor-formal-channel");
+        let profile = PiRuntimeProfile::new(&root.join("app"), &root.join("home"));
+        let manager = PiManager::new(root.join("public"), profile);
+        let error = manager
+            .ensure_cursor_integration(&serde_json::json!({
+                "credentialKind": "cursor_ide_cli_oauth"
+            }))
+            .unwrap_err();
 
-    #[test]
-    fn cursor_oauth_model_refresh_patch_allows_live_registry_refresh() {
-        let original =
-            "async refreshModels(M){if(!M.allowNetwork||M.signal?.aborted)return r.map(Bt);";
-        let patched = patch_cursor_oauth_model_refresh_contents(original)
-            .unwrap()
-            .expect("first patch should modify the model refresh guard");
-        assert!(patched.contains(CURSOR_OAUTH_REFRESH_PATCHED));
-        assert!(patch_cursor_oauth_model_refresh_contents(&patched)
-            .unwrap()
-            .is_none());
+        assert!(error.contains("backup only"));
+        assert!(error.contains("pi-cursor-sdk@0.1.61"));
     }
 
     #[test]

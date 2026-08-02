@@ -108,6 +108,49 @@ impl AccountImportService {
         Ok(self.vault.load()?.active_account(provider).cloned())
     }
 
+    pub fn active_accounts(&self) -> Result<Vec<StoredAccount>, String> {
+        let document = self.vault.load()?;
+        Ok(document
+            .active_by_provider
+            .iter()
+            .filter_map(|(provider, account_id)| {
+                document
+                    .accounts
+                    .iter()
+                    .find(|account| &account.provider == provider && &account.id == account_id)
+            })
+            .cloned()
+            .collect())
+    }
+
+    /// Retain imported Cursor OAuth material for backup/export while removing
+    /// its previous ability to become Picode's active chat credential.
+    pub fn enforce_formal_cursor_channel(&self) -> Result<usize, String> {
+        self.vault.update(|document| {
+            let mut changed = 0;
+            let mut disabled_ids = HashSet::new();
+            for account in &mut document.accounts {
+                if account.provider == "cursor"
+                    && account
+                        .metadata
+                        .get("credentialKind")
+                        .and_then(Value::as_str)
+                        == Some("cursor_ide_cli_oauth")
+                {
+                    if account.chat_compatible {
+                        account.chat_compatible = false;
+                        changed += 1;
+                    }
+                    disabled_ids.insert(account.id.clone());
+                }
+            }
+            document.active_by_provider.retain(|provider, account_id| {
+                provider != "cursor" || !disabled_ids.contains(account_id)
+            });
+            Ok(changed)
+        })
+    }
+
     pub fn active_account_for_pi_provider(
         &self,
         pi_provider: &str,
@@ -1026,9 +1069,7 @@ fn cursor_desktop_candidate(
         .clone()
         .unwrap_or_else(|| format!("Cursor {}", &id[id.len().saturating_sub(8)..]));
     let mut warnings = vec![
-        "Experimental Cursor OAuth uses the unofficial @rahularya01/pi-cursor extension and reverse-engineered Cursor protocols. Cursor may change or block it at any time."
-            .to_string(),
-        "Activating this account installs executable third-party Pi extension code and requires Node.js 22 or later. Restart Picode before using Cursor models."
+        "Cursor Desktop/CLI OAuth is imported for encrypted backup only and cannot be activated for Picode chat. Use a Cursor SDK API Key for the formal pi-cursor-sdk@0.1.61 channel."
             .to_string(),
     ];
     if refresh.is_none() {
@@ -1053,7 +1094,7 @@ fn cursor_desktop_candidate(
         label: label.clone(),
         email: email.clone(),
         auth_kind: "oauth".to_string(),
-        chat_compatible: true,
+        chat_compatible: false,
         imported_at: now_ms(),
         source,
         endpoint: None,
@@ -1065,9 +1106,8 @@ fn cursor_desktop_candidate(
         }),
         metadata: json!({
             "credentialKind": "cursor_ide_cli_oauth",
-            "integration": "@rahularya01/pi-cursor",
-            "integrationVersion": "1.4.0",
-            "experimental": true,
+            "integration": "backup-only",
+            "formalChannel": "pi-cursor-sdk@0.1.61",
             "authId": auth_id,
             "hasRefreshToken": refresh.is_some(),
         }),
@@ -1357,7 +1397,7 @@ mod tests {
     }
 
     #[test]
-    fn cursor_desktop_oauth_uses_pi_oauth_shape_for_experimental_chat() {
+    fn cursor_desktop_oauth_is_parsed_for_backup_but_not_chat_activation() {
         let candidate = parse_cursor_json(
             r#"{
               "cachedEmail": "cursor@example.com",
@@ -1369,7 +1409,7 @@ mod tests {
         )
         .unwrap()
         .remove(0);
-        assert!(candidate.account.chat_compatible);
+        assert!(!candidate.account.chat_compatible);
         assert_eq!(
             candidate.account.metadata["credentialKind"],
             "cursor_ide_cli_oauth"
@@ -1378,6 +1418,40 @@ mod tests {
         assert_eq!(candidate.account.credentials["access"], "desktop-access");
         assert_eq!(candidate.account.credentials["refresh"], "desktop-refresh");
         assert!(!candidate.summary.warnings.is_empty());
+    }
+
+    #[test]
+    fn existing_cursor_oauth_accounts_are_retained_but_deactivated() {
+        let root = std::env::temp_dir().join(format!("picode-cursor-policy-{}", Uuid::new_v4()));
+        let vault = Arc::new(AccountVault::with_key(
+            root.join("accounts.vault"),
+            [11_u8; 32],
+        ));
+        let mut oauth = cursor_desktop_candidate(
+            "access".into(),
+            Some("refresh".into()),
+            Some("auth-id".into()),
+            None,
+            None,
+            source(),
+        )
+        .account;
+        oauth.chat_compatible = true;
+        vault
+            .replace(&VaultDocument {
+                version: 1,
+                accounts: vec![oauth.clone()],
+                active_by_provider: BTreeMap::from([("cursor".into(), oauth.id.clone())]),
+            })
+            .unwrap();
+        let service = AccountImportService::new(vault.clone());
+
+        assert_eq!(service.enforce_formal_cursor_channel().unwrap(), 1);
+        let document = vault.load().unwrap();
+        assert_eq!(document.accounts.len(), 1);
+        assert!(!document.accounts[0].chat_compatible);
+        assert!(document.active_account("cursor").is_none());
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

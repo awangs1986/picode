@@ -37,6 +37,7 @@ mod orchestration_service;
 mod pi_auth_sync;
 mod pi_manager;
 mod pi_rpc_bridge;
+mod pi_runtime_profile;
 mod remote_auth;
 mod resource_sampler;
 mod runtime_coordinator;
@@ -88,6 +89,7 @@ use pi_auth_sync::PiAuthSynchronizer;
 use pi_manager::{
     locked_pi_version, wait_for_endpoint, wait_for_health as wait_for_pi_health, PiManager,
 };
+use pi_runtime_profile::PiRuntimeProfile;
 use picode::conversation_control::{
     ActivityState, Authorization, ClientIdentity, ConversationControl,
 };
@@ -1038,7 +1040,15 @@ fn setup_native_runtime(app: &mut tauri::App, static_dir: PathBuf) -> Result<(),
         session_id,
         format!("instance-{}", uuid::Uuid::new_v4().simple()),
     );
-    let resolver = PiManager::new(static_dir.clone());
+    let runtime_profile = PiRuntimeProfile::for_current_user(&app_data_dir)?;
+    runtime_profile.initialize()?;
+    let resolver = PiManager::new(static_dir.clone(), runtime_profile);
+    if let Err(error) = resolver.ensure_default_packages() {
+        log::warn!("Native runtime could not prepare default Pi packages: {error}");
+    }
+    if let Err(error) = resolver.ensure_formal_cursor_integration() {
+        log::warn!("Native runtime could not prepare formal Cursor SDK channel: {error}");
+    }
     let launch = resolver.native_launch_spec(&cwd, session_path.as_deref())?;
     let runtimes = NativePiManager::new(256);
     let remote_auth = Arc::new(Mutex::new(RemoteAuth::new(metadata)));
@@ -4088,7 +4098,23 @@ fn main() {
                 setup_native_runtime(app, static_dir).map_err(std::io::Error::other)?;
                 return Ok(());
             }
-            let manager = Arc::new(PiManager::new(static_dir));
+            let app_data_dir = app
+                .path()
+                .app_data_dir()
+                .map_err(std::io::Error::other)?;
+            let runtime_profile = PiRuntimeProfile::for_current_user(&app_data_dir)
+                .map_err(std::io::Error::other)?;
+            let migration = runtime_profile
+                .initialize()
+                .map_err(std::io::Error::other)?;
+            if migration.settings_imported || migration.removed_cursor_packages > 0 {
+                log::info!(
+                    "Initialized isolated Picode Pi profile: imported_settings={} removed_cursor_packages={}",
+                    migration.settings_imported,
+                    migration.removed_cursor_packages
+                );
+            }
+            let manager = Arc::new(PiManager::new(static_dir, runtime_profile.clone()));
             match manager.ensure_default_packages() {
                 Ok(installed) if !installed.is_empty() => {
                     log::info!("Installed default Pi packages: {}", installed.join(", "));
@@ -4101,11 +4127,12 @@ fn main() {
                     log::warn!("Could not install default Pi packages: {error}");
                 }
             }
+            if let Err(error) = manager.ensure_formal_cursor_integration() {
+                // Offline startup remains usable. Cursor activation retries the
+                // exact pinned package installation and surfaces the error.
+                log::warn!("Could not prepare formal Cursor SDK channel: {error}");
+            }
             let broker = Arc::new(BrokerWs::start().expect("failed to start broker websocket"));
-            let app_data_dir = app
-                .path()
-                .app_data_dir()
-                .map_err(std::io::Error::other)?;
             let core_locator_path = app_data_dir.join(CORE_LOCATOR_FILE);
             write_locator(
                 &core_locator_path,
@@ -4115,6 +4142,9 @@ fn main() {
             app.manage(CoreLocatorPath(core_locator_path));
             let account_vault = Arc::new(AccountVault::new(app_data_dir.join("accounts.vault")));
             let accounts = Arc::new(AccountImportService::new(account_vault));
+            let disabled_cursor_oauth_accounts = accounts
+                .enforce_formal_cursor_channel()
+                .map_err(std::io::Error::other)?;
             let bindings = Arc::new(
                 AccountBindingStore::open(&app_data_dir.join("account-bindings.sqlite3"))
                     .map_err(std::io::Error::other)?,
@@ -4129,9 +4159,31 @@ fn main() {
                 chat_backup.clone(),
                 &app_data_dir,
             ));
-            let auth_sync = Arc::new(
-                PiAuthSynchronizer::for_current_user().map_err(std::io::Error::other)?,
-            );
+            let auth_sync = Arc::new(PiAuthSynchronizer::for_agent_dir(
+                runtime_profile.agent_dir(),
+            ));
+            if disabled_cursor_oauth_accounts > 0 {
+                auth_sync
+                    .deactivate("cursor")
+                    .map_err(std::io::Error::other)?;
+                log::info!(
+                    "Retained {} Cursor OAuth account(s) for backup and disabled chat activation",
+                    disabled_cursor_oauth_accounts
+                );
+            }
+            for account in accounts
+                .active_accounts()
+                .map_err(std::io::Error::other)?
+            {
+                if let Err(error) = auth_sync.activate(&account, &[]) {
+                    log::warn!(
+                        "Could not materialize active {} account {} into the isolated Pi profile: {}",
+                        account.provider,
+                        account.id,
+                        error
+                    );
+                }
+            }
             let machine_id = std::env::var("COMPUTERNAME")
                 .or_else(|_| std::env::var("HOSTNAME"))
                 .unwrap_or_else(|_| std::env::consts::OS.to_owned());
@@ -4283,9 +4335,18 @@ fn main() {
                     .map_err(std::io::Error::other)?,
             );
             for component in extension_service.snapshot().catalog_components {
-                capability_service
+                let mut capabilities = capability_service
                     .lock()
-                    .map_err(|_| std::io::Error::other("Capability Service lock is poisoned"))?
+                    .map_err(|_| std::io::Error::other("Capability Service lock is poisoned"))?;
+                capabilities
+                    .ensure_external_module(
+                        &component.id,
+                        &component.version,
+                        &format!("ExtensionManager component from {}", component.source),
+                        component.permissions.clone(),
+                    )
+                    .map_err(std::io::Error::other)?;
+                capabilities
                     .set_module_tier(
                         &component.id,
                         if component.enabled {

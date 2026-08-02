@@ -95,7 +95,10 @@ const HAS_BUN_SERVE =
 // We only honor the fields that still make sense in desktop-only mode.
 // TODO(rename->picot): key is `pistudio` for historical reasons. Changing it to `picot`
 // would break existing users' settings — add a migration path before renaming.
-function buildHomeDirCandidates(): string[] {
+function buildHomeDirCandidates(
+  environment: Record<string, string | undefined> = process.env,
+  fallbackHome = os.homedir(),
+): string[] {
   const candidates: string[] = [];
   const seen = new Set<string>();
   const add = (value?: string) => {
@@ -108,31 +111,37 @@ function buildHomeDirCandidates(): string[] {
     candidates.push(normalized);
   };
 
-  add(process.env.HOME);
-  add(process.env.USERPROFILE);
-  if (process.env.HOMEDRIVE && process.env.HOMEPATH) {
-    add(`${process.env.HOMEDRIVE}${process.env.HOMEPATH}`);
+  add(environment.HOME);
+  add(environment.USERPROFILE);
+  if (environment.HOMEDRIVE && environment.HOMEPATH) {
+    add(`${environment.HOMEDRIVE}${environment.HOMEPATH}`);
   }
-  add(os.homedir());
+  add(fallbackHome);
 
   return candidates;
 }
 
-function resolvePiAgentRoot(): string {
+export function resolvePiAgentRoot(
+  environment: Record<string, string | undefined> = process.env,
+  fallbackHome = os.homedir(),
+): string {
+  const ownedRoot = environment.PI_CODING_AGENT_DIR?.trim();
+  if (ownedRoot) return path.resolve(ownedRoot);
+
   // Prefer whichever home candidate already has .pi/agent on disk.
-  for (const home of buildHomeDirCandidates()) {
+  for (const home of buildHomeDirCandidates(environment, fallbackHome)) {
     const candidate = path.join(home, ".pi", "agent");
     if (fs.existsSync(candidate)) return candidate;
   }
 
   // Fallback for some Windows setups where app data is relocated.
-  const appData = process.env.APPDATA;
+  const appData = environment.APPDATA;
   if (typeof appData === "string" && appData.trim()) {
     const roamingCandidate = path.join(path.resolve(appData), "pi", "agent");
     if (fs.existsSync(roamingCandidate)) return roamingCandidate;
   }
 
-  const home = buildHomeDirCandidates()[0] || "~";
+  const home = buildHomeDirCandidates(environment, fallbackHome)[0] || "~";
   return path.join(home, ".pi", "agent");
 }
 
@@ -417,7 +426,9 @@ function findPublicDir(): string {
 
   return path.resolve(process.cwd(), "public");
 }
-const SESSIONS_DIR = path.join(PI_AGENT_ROOT, "sessions");
+const SESSIONS_DIR = process.env.PI_CODING_AGENT_SESSION_DIR?.trim()
+  ? path.resolve(process.env.PI_CODING_AGENT_SESSION_DIR)
+  : path.join(PI_AGENT_ROOT, "sessions");
 const PICOT_MODELS_PREFS_PATH = path.join(PI_AGENT_ROOT, "picot-models.json");
 const CHAT_WORKER_STATUS_DIR = path.join(PI_AGENT_ROOT, "chat", "worker-status");
 // TODO(rename->picot): directory `pistudio-instances` kept for backward compat — migrate to `picot-instances` once existing users are handled.

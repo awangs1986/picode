@@ -24,6 +24,7 @@ pub struct NativeLaunchSpec {
     pub extensions: Vec<PathBuf>,
     pub pi_version: String,
     pub path_env: String,
+    pub runtime_environment: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,7 +46,8 @@ impl NativeLaunchSpec {
             args.push("--session".into());
             args.push(session_path.to_string_lossy().into_owned());
         }
-        let environment = BTreeMap::from([
+        let mut environment = self.runtime_environment.clone();
+        environment.extend([
             ("PATH".into(), self.path_env.clone()),
             (
                 "PI_SUBAGENT_PI_BINARY".into(),
@@ -549,6 +551,7 @@ mod tests {
     use super::{NativeLaunchSpec, NativePiManager};
     use crate::runtime_coordinator::RuntimeTarget;
     use serde_json::json;
+    use std::collections::BTreeMap;
     use std::path::PathBuf;
     use std::time::Duration;
 
@@ -561,6 +564,16 @@ mod tests {
             extensions: vec![PathBuf::from("/extensions/picot-bridge.mjs")],
             pi_version: "0.83.0".into(),
             path_env: "/usr/bin".into(),
+            runtime_environment: BTreeMap::from([
+                (
+                    "PI_CODING_AGENT_DIR".into(),
+                    "/app/picode/pi-runtime/agent".into(),
+                ),
+                (
+                    "PI_CODING_AGENT_SESSION_DIR".into(),
+                    "/home/user/.pi/agent/sessions".into(),
+                ),
+            ]),
         };
         let launch = spec.command_description();
         assert_eq!(launch.program, PathBuf::from("/embedded/pi"));

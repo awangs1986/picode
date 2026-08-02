@@ -169,12 +169,16 @@ The original Picot project whose ongoing fixes and features Picode intends to in
 _Avoid_: One-time source snapshot, disposable dependency
 
 **Official Cursor SDK Channel**:
-The Picode Cursor route backed by the official Cursor `@cursor/sdk` through the `pi-cursor-sdk` Pi provider. It uses a manually supplied Cursor SDK API key and keeps Cursor's local agent loop, model catalog, and tool behavior inside Pi.
+The only executable Picode Cursor route, pinned to `pi-cursor-sdk@0.1.61` and backed by the official Cursor `@cursor/sdk` local Agent. It uses a manually supplied Cursor SDK API key, isolates Cursor state by Pi Chat Session, accepts resume state only on an exact session/workspace/model/tool/store/compaction match, and bootstraps a fresh Cursor Agent from the current Pi transcript when strict resume fails.
 _Avoid_: Cursor Desktop OAuth, reverse-engineered Cursor protocol
 
-**Experimental Cursor OAuth Channel**:
-A separately activated, manually imported Cursor Desktop/CLI OAuth route that depends on an unofficial Pi extension and reverse-engineered protocol details. It is mutually exclusive with the Official Cursor SDK Channel for the `cursor` provider.
-_Avoid_: Automatic Cursor login reuse, official Cursor SDK authentication
+**Cursor OAuth Backup Record**:
+A manually imported Cursor Desktop/CLI OAuth credential retained in the encrypted Account Vault for backup or export. It is never projected into Picode's Pi auth store, cannot be activated for chat, and does not install executable provider code.
+_Avoid_: Cursor chat channel, active Cursor account
+
+**Pi Runtime Profile**:
+Picode's application-owned Pi configuration, package, authentication, and provider directory. It is separate from standalone Pi's `~/.pi/agent` directory, while its session directory explicitly points to the existing Pi transcript tree so GUI and TUI preserve the same chats without sharing executable package state.
+_Avoid_: Standalone Pi configuration, copied chat database
 
 **Picode Compatibility Identifier**:
 An internal Picot-era identifier deliberately retained so renaming the product does not move existing sessions, settings, backups, or protected account data.

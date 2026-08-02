@@ -133,6 +133,9 @@ impl CapabilityCatalog {
         );
         Ok(())
     }
+    pub fn contains(&self, id: &str) -> bool {
+        self.entries.contains_key(id)
+    }
     pub fn search_tools(&self, query: &str, limit: usize) -> Vec<CapabilitySearchResult> {
         let terms: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
         let mut results: Vec<_> = self

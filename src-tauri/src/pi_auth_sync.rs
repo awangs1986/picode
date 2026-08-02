@@ -12,14 +12,11 @@ pub struct PiAuthSynchronizer {
 }
 
 impl PiAuthSynchronizer {
-    pub fn for_current_user() -> Result<Self, String> {
-        let home = dirs::home_dir()
-            .ok_or_else(|| "Cannot find the current user's home directory".to_string())?;
-        let agent_dir = home.join(".pi").join("agent");
-        Ok(Self {
+    pub fn for_agent_dir(agent_dir: &Path) -> Self {
+        Self {
             auth_path: agent_dir.join("auth.json"),
             models_path: agent_dir.join("models.json"),
-        })
+        }
     }
 
     #[cfg(test)]
@@ -35,6 +32,18 @@ impl PiAuthSynchronizer {
         account: &StoredAccount,
         deactivated_pi_providers: &[String],
     ) -> Result<(), String> {
+        if account.provider == "cursor"
+            && account
+                .metadata
+                .get("credentialKind")
+                .and_then(Value::as_str)
+                == Some("cursor_ide_cli_oauth")
+        {
+            return Err(
+                "Cursor OAuth backup records cannot be projected into Picode's Pi auth store"
+                    .to_string(),
+            );
+        }
         if !account.chat_compatible {
             return Err("This account cannot be activated for Pi chat".to_string());
         }
@@ -359,6 +368,24 @@ mod tests {
             credentials: json!({ "type": "api_key", "key": "cpa_secret" }),
             metadata: json!({}),
         }
+    }
+
+    #[test]
+    fn cursor_oauth_backup_never_reaches_the_runtime_auth_file() {
+        let (root, sync) = setup();
+        let mut account = proxy_account();
+        account.provider = "cursor".into();
+        account.pi_provider = "cursor".into();
+        account.metadata = json!({ "credentialKind": "cursor_ide_cli_oauth" });
+        account.credentials = json!({
+            "type": "oauth",
+            "access": "access",
+            "refresh": "refresh",
+            "expires": 2_000_000_000_000_u64
+        });
+
+        assert!(sync.activate(&account, &[]).unwrap_err().contains("backup"));
+        assert!(!root.join("auth.json").exists());
     }
 
     #[test]

@@ -125,7 +125,9 @@ impl CapabilityService {
             catalog.register(manifest)?;
         }
         for (id, tier) in &state.module_tiers {
-            catalog.set_tier(id, *tier)?;
+            if catalog.contains(id) {
+                catalog.set_tier(id, *tier)?;
+            }
         }
         let service = Self {
             root: root.to_owned(),
@@ -143,6 +145,39 @@ impl CapabilityService {
             resident_process_count: self.catalog.resident_process_count(),
             capabilities: self.catalog.summaries(),
         }
+    }
+
+    /// Register an ExtensionManager-owned component in the capability view.
+    /// This does not enable, trust, load, or start the component; it only
+    /// prevents the secondary search/catalog projection from inventing an
+    /// independent lifecycle state.
+    pub fn ensure_external_module(
+        &mut self,
+        id: &str,
+        version: &str,
+        summary: &str,
+        permissions: impl IntoIterator<Item = String>,
+    ) -> Result<(), String> {
+        if self.catalog.contains(id) {
+            return Ok(());
+        }
+        self.catalog.register(CapabilityManifest {
+            schema_version: 1,
+            id: id.to_owned(),
+            version: version.to_owned(),
+            summary: summary.to_owned(),
+            keywords: id
+                .split(['-', '.', '_'])
+                .filter(|term| !term.is_empty())
+                .map(str::to_owned)
+                .collect(),
+            scope: CapabilityScope::Global,
+            activation: Activation::Explicit,
+            tier: CapabilityTier::Disabled,
+            permissions: permissions.into_iter().collect(),
+            resident_cost_bytes: 0,
+        })?;
+        Ok(())
     }
 
     pub fn effective_report(
@@ -779,6 +814,38 @@ mod tests {
     use super::*;
     use crate::execution::TaskKind;
     use std::fs;
+
+    #[test]
+    fn extension_owned_components_can_join_the_catalog_without_becoming_running() {
+        let root = std::env::temp_dir().join(format!(
+            "picode-external-capability-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let mut service = CapabilityService::open(&root.join("state")).unwrap();
+
+        service
+            .ensure_external_module(
+                "picode.herdr",
+                "0.7.5",
+                "ExtensionManager component",
+                ["ProcessExecute".to_string(), "Network".to_string()],
+            )
+            .unwrap();
+        service
+            .set_module_tier("picode.herdr", CapabilityTier::Disabled)
+            .unwrap();
+
+        let herdr = service
+            .snapshot()
+            .capabilities
+            .into_iter()
+            .find(|capability| capability.id == "picode.herdr")
+            .unwrap();
+        assert_eq!(herdr.tier, CapabilityTier::Disabled);
+        assert!(!herdr.loaded);
+        assert_eq!(service.resident_process_count(), 0);
+        let _ = fs::remove_dir_all(root);
+    }
 
     #[test]
     fn simple_tasks_require_opt_in_and_task_tools_never_leak_globally() {

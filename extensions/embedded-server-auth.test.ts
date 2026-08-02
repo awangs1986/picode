@@ -1,7 +1,21 @@
+import { join, resolve } from "node:path";
 import { describe, expect, test, vi } from "vitest";
-import { removeRegistryApiKey, setRegistryApiKey } from "./embedded-server.ts";
+import { removeRegistryApiKey, resolvePiAgentRoot, setRegistryApiKey } from "./embedded-server.ts";
 
 describe("embedded server credential compatibility", () => {
+  test("uses Picode's explicit runtime profile before any home directory", () => {
+    const ownedRoot = join("owned", "pi-runtime", "agent");
+    expect(
+      resolvePiAgentRoot(
+        {
+          PI_CODING_AGENT_DIR: ownedRoot,
+          USERPROFILE: join("legacy", "home"),
+        },
+        join("fallback", "home"),
+      ),
+    ).toBe(resolve(ownedRoot));
+  });
+
   test("uses the current Pi credential-store interface", async () => {
     const modify = vi.fn(async (_provider, update) => update(undefined));
     const remove = vi.fn(async () => {});
