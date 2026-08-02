@@ -73,6 +73,7 @@ use extension_service::{
     DapLaunchConfig, DiagnosticFinding, ExtensionManifest, ExtensionScope, ExternalSource,
     ManagedCatalogComponent, ManagedSkill, ProjectAdapter, RegressionMetrics, RegressionScenario,
 };
+use futures_util::{SinkExt, StreamExt};
 use guidance_policy::{GuidanceMode, GuidancePolicy, GuidanceRequest, ModelGuidanceProfile};
 use harness_service::HarnessService;
 use harness_v2_router::HarnessV2Router;
@@ -93,12 +94,15 @@ use pi_runtime_profile::PiRuntimeProfile;
 use picode::conversation_control::{
     ActivityState, Authorization, ClientIdentity, ConversationControl,
 };
-use picode::core_locator::{remove_owned_locator, write_locator, CoreLocator, CORE_LOCATOR_FILE};
+use picode::core_locator::{
+    locator_candidates, read_locator, remove_owned_locator, write_locator, CoreLocator,
+    CORE_LOCATOR_FILE, CORE_START_LOCK_FILE,
+};
 use remote_auth::RemoteAuth;
 use runtime_coordinator::RuntimeTarget;
 use runtime_spine::RuntimeSpine;
 use secrets::{SecretReference, SecretStore};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -114,6 +118,7 @@ use tauri::TitleBarStyle;
 use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_dialog::MessageDialogKind;
+use tokio_tungstenite::tungstenite::Message;
 use work_manager::WorkManager;
 use zeroize::Zeroize;
 
@@ -720,6 +725,11 @@ fn encode_query_value(value: &str) -> String {
 
 fn open_workspace_window(app: &AppHandle, port: u16, broker_ws_url: &str) -> Result<(), String> {
     let label = format!("workspace-{}", port);
+    if let Some(window) = app.get_webview_window(&label) {
+        window.show().map_err(|error| error.to_string())?;
+        window.set_focus().map_err(|error| error.to_string())?;
+        return Ok(());
+    }
     let url = format!(
         "http://localhost:{}?brokerWs={}",
         port,
@@ -1022,6 +1032,113 @@ fn select_fresh_startup_target(managed_default_cwd: String) -> (String, Option<S
 fn native_runtime_enabled() -> bool {
     cfg!(debug_assertions)
         && std::env::var("PICOT_RUNTIME").is_ok_and(|value| value.eq_ignore_ascii_case("native"))
+}
+
+fn core_only_requested(arguments: impl IntoIterator<Item = std::ffi::OsString>) -> bool {
+    arguments
+        .into_iter()
+        .any(|argument| argument == "--core-only")
+}
+
+fn core_only_mode() -> bool {
+    core_only_requested(std::env::args_os().skip(1))
+}
+
+async fn request_existing_core_show_gui(locator_path: &Path) -> Result<(), String> {
+    let locator = read_locator(locator_path)?;
+    let url = format!("ws://127.0.0.1:{}/ui-ws", locator.broker_port);
+    let (mut socket, _) = tokio::time::timeout(
+        Duration::from_secs(1),
+        tokio_tungstenite::connect_async(&url),
+    )
+    .await
+    .map_err(|_| format!("Connect to existing Picode Core at {url}: timed out"))?
+    .map_err(|error| format!("Connect to existing Picode Core at {url}: {error}"))?;
+    let request_id = format!("gui-launch-{}-{}", std::process::id(), uuid::Uuid::new_v4());
+    socket
+        .send(Message::Text(
+            json!({
+                "type": "broker_control",
+                "protocolVersion": 1,
+                "clientId": request_id,
+                "clientSurface": "gui",
+                "requestId": request_id,
+                "command": "show_gui",
+                "args": {},
+            })
+            .to_string(),
+        ))
+        .await
+        .map_err(|error| format!("Request existing Picode GUI: {error}"))?;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while let Some(message) = socket.next().await {
+            let message = message.map_err(|error| format!("Read Picode Core response: {error}"))?;
+            let Message::Text(text) = message else {
+                continue;
+            };
+            let response: Value = serde_json::from_str(&text)
+                .map_err(|error| format!("Parse Picode Core response: {error}"))?;
+            if response.get("type").and_then(Value::as_str) != Some("control_response")
+                || response.get("requestId").and_then(Value::as_str) != Some(&request_id)
+            {
+                continue;
+            }
+            if response.get("ok").and_then(Value::as_bool) == Some(true) {
+                return Ok(());
+            }
+            return Err(response
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("Existing Picode Core rejected the GUI request")
+                .to_owned());
+        }
+        Err("Existing Picode Core closed before acknowledging the GUI request".to_owned())
+    })
+    .await
+    .map_err(|_| "Existing Picode Core did not acknowledge the GUI request".to_owned())?
+}
+
+fn handoff_gui_launch_to_existing_core() -> bool {
+    let candidates = locator_candidates(None);
+    let startup_in_progress = candidates.iter().any(|path| {
+        path.parent()
+            .is_some_and(|parent| parent.join(CORE_START_LOCK_FILE).is_file())
+    });
+    if !startup_in_progress && !candidates.iter().any(|path| path.is_file()) {
+        return false;
+    }
+    let wait = if startup_in_progress {
+        Duration::from_secs(90)
+    } else {
+        Duration::from_secs(3)
+    };
+    let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    else {
+        return false;
+    };
+    runtime.block_on(async {
+        let deadline = Instant::now() + wait;
+        loop {
+            for candidate in &candidates {
+                if request_existing_core_show_gui(candidate).await.is_ok() {
+                    return true;
+                }
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+}
+
+fn core_locator_path(app_data_dir: &Path) -> PathBuf {
+    std::env::var_os("PICODE_CORE_LOCATOR_PATH")
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| app_data_dir.join(CORE_LOCATOR_FILE))
 }
 
 fn setup_native_runtime(app: &mut tauri::App, static_dir: PathBuf) -> Result<(), String> {
@@ -1833,9 +1950,25 @@ fn install_control_handler(
                     | "hook_set_enabled"
                     | "hook_set_trusted"
                     | "hook_invoke"
+                    | "show_gui"
                         if !client.local =>
                     {
                         Err("This control is available only from the local desktop app".to_string())
+                    }
+                    "core_ready" => {
+                        let port = broker
+                            .active_port()
+                            .ok_or("Picode Core is still starting its Pi runtime")?;
+                        wait_for_endpoint(port, "/api/health", 1).await?;
+                        Ok(json!({ "protocolVersion": 1, "sourcePort": port }))
+                    }
+                    "show_gui" => {
+                        let port = broker
+                            .active_port()
+                            .ok_or("Picode Core has no active Pi runtime")?;
+                        wait_for_endpoint(port, "/api/health", 1).await?;
+                        open_workspace_window(&app, port, &broker.url())?;
+                        Ok(json!({ "sourcePort": port }))
                     }
                     "client_snapshot" => {
                         let hello: ClientHello = serde_json::from_value(args.clone())
@@ -4077,6 +4210,10 @@ fn main() {
         eprintln!("[picot] failed to sync PATH from login shell: {err}");
     }
 
+    let core_only = core_only_mode();
+    if !core_only && handoff_gui_launch_to_existing_core() {
+        return;
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
@@ -4092,9 +4229,9 @@ fn main() {
                 .level_for("hyper", log::LevelFilter::Warn)
                 .build(),
         )
-        .setup(|app| {
+        .setup(move |app| {
             let static_dir = find_static_dir(app);
-            if native_runtime_enabled() {
+            if native_runtime_enabled() && !core_only {
                 setup_native_runtime(app, static_dir).map_err(std::io::Error::other)?;
                 return Ok(());
             }
@@ -4133,7 +4270,7 @@ fn main() {
                 log::warn!("Could not prepare formal Cursor SDK channel: {error}");
             }
             let broker = Arc::new(BrokerWs::start().expect("failed to start broker websocket"));
-            let core_locator_path = app_data_dir.join(CORE_LOCATOR_FILE);
+            let core_locator_path = core_locator_path(&app_data_dir);
             write_locator(
                 &core_locator_path,
                 &CoreLocator::new(broker.port(), std::process::id(), unix_millis()),
@@ -4542,6 +4679,12 @@ fn main() {
             if let Err(err) = manager.spawn(&cwd, initial_port, session_path.as_deref()) {
                 startup_ok = false;
                 log::error!("[pi-desktop] startup failed to spawn pi: {}", err);
+                if core_only {
+                    return Err(std::io::Error::other(format!(
+                        "Picode Core could not start the embedded Pi runtime: {err}"
+                    ))
+                    .into());
+                }
                 if let Err(window_err) = open_bootstrap_window(&app.handle().clone(), &err) {
                     log::error!(
                         "[pi-desktop] failed to open bootstrap window after startup error: {}",
@@ -4577,6 +4720,8 @@ fn main() {
                         if let Some(broker) = app_handle.try_state::<BrokerWsState>() {
                             broker.unregister_port(initial_port);
                         }
+                    } else if core_only {
+                        log::info!("Picode Core is ready in background-only mode");
                     } else if let Some(broker) = app_handle.try_state::<BrokerWsState>() {
                         if let Err(e) = open_workspace_window(&app_handle, initial_port, &broker.url()) {
                             log::error!("Failed to open window: {}", e);
@@ -4642,7 +4787,9 @@ fn main() {
 
 #[cfg(test)]
 mod startup_tests {
-    use super::{prepare_managed_default_workspace, select_fresh_startup_target};
+    use super::{
+        core_only_requested, prepare_managed_default_workspace, select_fresh_startup_target,
+    };
 
     #[test]
     fn fresh_startup_uses_managed_scratch_and_never_adopts_a_previous_workspace() {
@@ -4663,5 +4810,11 @@ mod startup_tests {
         assert!(expected.is_dir());
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn core_only_flag_selects_the_background_host_without_affecting_normal_gui_launch() {
+        assert!(core_only_requested(["--core-only".into()]));
+        assert!(!core_only_requested(["--some-other-flag".into()]));
     }
 }

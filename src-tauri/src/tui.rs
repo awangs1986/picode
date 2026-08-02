@@ -1,12 +1,14 @@
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
-use picode::core_locator::{read_locator, CORE_LOCATOR_FILE};
+use picode::core_locator::{locator_candidates, read_locator, CORE_START_LOCK_FILE};
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, IsTerminal, Write};
-use std::path::PathBuf;
-use std::process::ExitCode;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, ExitCode, Stdio};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot, Mutex as AsyncMutex};
 use tokio_tungstenite::tungstenite::Message;
@@ -16,6 +18,9 @@ use uuid::Uuid;
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 type SocketWriter = SplitSink<Socket, Message>;
 type SocketReader = SplitStream<Socket>;
+
+const CORE_BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(90);
+const CORE_BOOTSTRAP_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Debug, PartialEq)]
 struct TuiOptions {
@@ -199,44 +204,164 @@ fn parse_control_command(rest: &str) -> Result<TuiCommand, String> {
     })
 }
 
-fn locator_candidates(explicit: Option<&PathBuf>) -> Vec<PathBuf> {
-    if let Some(explicit) = explicit {
-        return vec![explicit.clone()];
-    }
-    let mut candidates = Vec::new();
-    if let Ok(root) = std::env::var("PICODE_APP_DATA_DIR") {
-        candidates.push(PathBuf::from(root).join(CORE_LOCATOR_FILE));
-    }
-    if let Some(root) = dirs::data_dir() {
-        candidates.push(root.join("works.earendil.picot").join(CORE_LOCATOR_FILE));
-    }
-    if let Some(root) = dirs::data_local_dir() {
-        let candidate = root.join("works.earendil.picot").join(CORE_LOCATOR_FILE);
-        if !candidates.contains(&candidate) {
-            candidates.push(candidate);
-        }
-    }
-    candidates
-}
-
-fn resolve_broker_port(options: &TuiOptions) -> Result<u16, String> {
+fn explicit_broker_port(options: &TuiOptions) -> Result<Option<u16>, String> {
     if let Some(port) = options.broker_port {
-        return Ok(port);
+        return Ok(Some(port));
     }
     if let Ok(value) = std::env::var("PICODE_BROKER_PORT") {
-        return parse_port(Some(&value), "PICODE_BROKER_PORT");
+        return parse_port(Some(&value), "PICODE_BROKER_PORT").map(Some);
     }
-    let mut errors = Vec::new();
-    for path in locator_candidates(options.locator_path.as_ref()) {
-        match read_locator(&path) {
-            Ok(locator) => return Ok(locator.broker_port),
-            Err(error) => errors.push(format!("{}: {error}", path.display())),
+    Ok(None)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct CoreLaunchPlan {
+    executable: PathBuf,
+    locator_path: PathBuf,
+}
+
+fn prepare_core_launch(
+    options: &TuiOptions,
+    tui_executable: &Path,
+) -> Result<CoreLaunchPlan, String> {
+    let locator_path = locator_candidates(options.locator_path.as_deref())
+        .into_iter()
+        .next()
+        .ok_or("Cannot resolve the Picode Core locator path")?;
+    let executable = std::env::var_os("PICODE_CORE_EXECUTABLE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            tui_executable
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join(format!("picode{}", std::env::consts::EXE_SUFFIX))
+        });
+    if !executable.is_file() {
+        return Err(format!(
+            "Picode Core executable was not found beside the TUI: {}",
+            executable.display()
+        ));
+    }
+    Ok(CoreLaunchPlan {
+        executable,
+        locator_path,
+    })
+}
+
+struct CoreStartLock {
+    path: PathBuf,
+}
+
+impl CoreStartLock {
+    fn try_acquire(locator_path: &Path) -> Result<Option<Self>, String> {
+        let parent = locator_path
+            .parent()
+            .ok_or("Core locator path must have a parent")?;
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("Create Core locator directory: {error}"))?;
+        let path = parent.join(CORE_START_LOCK_FILE);
+        Self::try_acquire_path(path, true)
+    }
+
+    fn try_acquire_path(path: PathBuf, recover_stale: bool) -> Result<Option<Self>, String> {
+        match OpenOptions::new().create_new(true).write(true).open(&path) {
+            Ok(mut file) => {
+                write!(file, "{}", std::process::id())
+                    .and_then(|_| file.sync_all())
+                    .map_err(|error| format!("Write Core startup lock: {error}"))?;
+                Ok(Some(Self { path }))
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                if recover_stale && core_start_lock_is_stale(&path) {
+                    match fs::remove_file(&path) {
+                        Ok(()) => return Self::try_acquire_path(path, false),
+                        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                            return Self::try_acquire_path(path, false);
+                        }
+                        Err(_) => {}
+                    }
+                }
+                Ok(None)
+            }
+            Err(error) => Err(format!("Acquire Core startup lock: {error}")),
         }
     }
-    Err(format!(
-        "Picode Core was not found. Start the GUI or pass --broker-port. Checked: {}",
-        errors.join("; ")
-    ))
+}
+
+fn core_start_lock_is_stale(path: &Path) -> bool {
+    let expired = fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| modified.elapsed().ok())
+        .is_some_and(|elapsed| elapsed > Duration::from_secs(600));
+    if expired {
+        return true;
+    }
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|contents| contents.trim().parse::<u32>().ok())
+        .is_some_and(|pid| !process_is_running(pid))
+}
+
+#[cfg(windows)]
+fn process_is_running(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if handle.is_null() {
+        return false;
+    }
+    let mut exit_code = 0;
+    let running = unsafe { GetExitCodeProcess(handle, &mut exit_code) } != 0
+        && exit_code == STILL_ACTIVE as u32;
+    unsafe { CloseHandle(handle) };
+    running
+}
+
+#[cfg(not(windows))]
+fn process_is_running(pid: u32) -> bool {
+    Command::new("kill")
+        .arg("-0")
+        .arg(pid.to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+impl Drop for CoreStartLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+fn spawn_core(plan: &CoreLaunchPlan) -> Result<Child, String> {
+    let mut command = Command::new(&plan.executable);
+    command
+        .arg("--core-only")
+        .env("PICODE_CORE_LOCATOR_PATH", &plan.locator_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        use windows_sys::Win32::System::Threading::{
+            CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS,
+        };
+        command.creation_flags(
+            DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB,
+        );
+    }
+    command.spawn().map_err(|error| {
+        format!(
+            "Start Picode Core at {}: {error}",
+            plan.executable.display()
+        )
+    })
 }
 
 type ControlReply = Result<Value, String>;
@@ -274,6 +399,12 @@ impl BrokerClient {
             },
             event_rx,
         ))
+    }
+
+    async fn connect_ready(port: u16) -> Result<(Self, mpsc::UnboundedReceiver<Value>), String> {
+        let (client, events) = Self::connect(port).await?;
+        client.control("core_ready", json!({})).await?;
+        Ok((client, events))
     }
 
     async fn control(&self, command: &str, args: Value) -> Result<Value, String> {
@@ -348,6 +479,89 @@ impl BrokerClient {
             args["mutationRequestId"] = json!(request_id);
         }
         self.control("acp_request", args).await
+    }
+}
+
+async fn connect_managed_core(
+    options: &TuiOptions,
+) -> Result<(BrokerClient, mpsc::UnboundedReceiver<Value>), String> {
+    if let Some(port) = explicit_broker_port(options)? {
+        return BrokerClient::connect_ready(port).await;
+    }
+
+    let candidates = locator_candidates(options.locator_path.as_deref());
+    let mut errors = Vec::new();
+    for path in &candidates {
+        match read_locator(path) {
+            Ok(locator) => match BrokerClient::connect_ready(locator.broker_port).await {
+                Ok(connected) => return Ok(connected),
+                Err(error) => errors.push(format!("{}: {error}", path.display())),
+            },
+            Err(error) => errors.push(format!("{}: {error}", path.display())),
+        }
+    }
+
+    let tui_executable = std::env::current_exe()
+        .map_err(|error| format!("Locate picode-tui executable: {error}"))?;
+    let plan = prepare_core_launch(options, &tui_executable)?;
+    eprintln!("Picode Core is not running; starting it in the background…");
+    connect_bootstrapped_core(plan, errors).await
+}
+
+async fn connect_bootstrapped_core(
+    plan: CoreLaunchPlan,
+    previous_errors: Vec<String>,
+) -> Result<(BrokerClient, mpsc::UnboundedReceiver<Value>), String> {
+    let deadline = Instant::now() + CORE_BOOTSTRAP_TIMEOUT;
+    let mut child: Option<Child> = None;
+    let mut start_lock: Option<CoreStartLock> = None;
+
+    loop {
+        if let Ok(locator) = read_locator(&plan.locator_path) {
+            if let Ok(connected) = BrokerClient::connect_ready(locator.broker_port).await {
+                return Ok(connected);
+            }
+        }
+
+        if let Some(started) = child.as_mut() {
+            if let Some(status) = started
+                .try_wait()
+                .map_err(|error| format!("Check Picode Core startup: {error}"))?
+            {
+                return Err(format!(
+                    "Picode Core exited before becoming ready ({status}). Check the Picode application log."
+                ));
+            }
+        } else if start_lock.is_none() {
+            if let Some(acquired) = CoreStartLock::try_acquire(&plan.locator_path)? {
+                // A GUI may have published the locator between our first read
+                // and acquiring the cross-client startup lock.
+                if let Ok(locator) = read_locator(&plan.locator_path) {
+                    if let Ok(connected) = BrokerClient::connect_ready(locator.broker_port).await {
+                        return Ok(connected);
+                    }
+                }
+                child = Some(spawn_core(&plan)?);
+                start_lock = Some(acquired);
+            }
+        }
+
+        if Instant::now() >= deadline {
+            if let Some(started) = child.as_mut() {
+                let _ = started.kill();
+                let _ = started.wait();
+            }
+            let checked = if previous_errors.is_empty() {
+                plan.locator_path.display().to_string()
+            } else {
+                previous_errors.join("; ")
+            };
+            return Err(format!(
+                "Picode Core did not become ready within {} seconds. Checked: {checked}",
+                CORE_BOOTSTRAP_TIMEOUT.as_secs()
+            ));
+        }
+        tokio::time::sleep(CORE_BOOTSTRAP_POLL_INTERVAL).await;
     }
 }
 
@@ -924,20 +1138,14 @@ async fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let broker_port = match resolve_broker_port(&options) {
-        Ok(port) => port,
-        Err(error) => {
-            eprintln!("{error}");
-            return ExitCode::from(3);
-        }
-    };
-    let (client, mut events) = match BrokerClient::connect(broker_port).await {
+    let (client, mut events) = match connect_managed_core(&options).await {
         Ok(connected) => connected,
         Err(error) => {
             eprintln!("{error}");
             return ExitCode::from(3);
         }
     };
+    let broker_port = client.broker_port;
     let mut snapshot = match client.snapshot().await {
         Ok(snapshot) => snapshot,
         Err(error) => {
@@ -1020,8 +1228,12 @@ async fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_command, parse_options, render_snapshot, TuiCommand};
+    use super::{
+        parse_command, parse_options, prepare_core_launch, render_snapshot, CoreLaunchPlan,
+        CoreStartLock, TuiCommand,
+    };
     use serde_json::json;
+    use std::fs;
 
     #[test]
     fn parses_managed_tui_connection_and_chat_options() {
@@ -1075,5 +1287,71 @@ mod tests {
         assert!(rendered.contains("task-a"));
         assert!(rendered.contains("skill-a"));
         assert!(!rendered.to_lowercase().contains("api key"));
+    }
+
+    #[test]
+    fn missing_locator_bootstraps_the_sibling_core_instead_of_failing() {
+        let root = std::env::temp_dir().join(format!(
+            "picode-tui-core-bootstrap-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let tui_executable = root.join(format!("picode-tui{}", std::env::consts::EXE_SUFFIX));
+        let core_executable = root.join(format!("picode{}", std::env::consts::EXE_SUFFIX));
+        fs::write(&tui_executable, b"tui").unwrap();
+        fs::write(&core_executable, b"core").unwrap();
+        let locator_path = root.join("core-locator.json");
+        let options = super::TuiOptions {
+            broker_port: None,
+            source_port: None,
+            locator_path: Some(locator_path.clone()),
+            chat_id: None,
+        };
+
+        assert_eq!(
+            prepare_core_launch(&options, &tui_executable).unwrap(),
+            CoreLaunchPlan {
+                executable: core_executable,
+                locator_path,
+            }
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn core_start_lock_elects_one_launcher_and_releases_cleanly() {
+        let root = std::env::temp_dir().join(format!(
+            "picode-tui-core-lock-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let locator_path = root.join("core-locator.json");
+
+        let first = CoreStartLock::try_acquire(&locator_path).unwrap().unwrap();
+        assert!(CoreStartLock::try_acquire(&locator_path).unwrap().is_none());
+        drop(first);
+        assert!(CoreStartLock::try_acquire(&locator_path).unwrap().is_some());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn core_start_lock_recovers_when_its_owner_process_is_gone() {
+        let root = std::env::temp_dir().join(format!(
+            "picode-tui-stale-core-lock-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join(picode::core_locator::CORE_START_LOCK_FILE),
+            "4294967295",
+        )
+        .unwrap();
+
+        assert!(CoreStartLock::try_acquire(&root.join("core-locator.json"))
+            .unwrap()
+            .is_some());
+
+        let _ = fs::remove_dir_all(root);
     }
 }

@@ -1,12 +1,39 @@
 use serde::{Deserialize, Serialize};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 pub const CORE_LOCATOR_PROTOCOL_VERSION: u32 = 1;
 pub const CORE_LOCATOR_FILE: &str = "core-locator.json";
+pub const CORE_START_LOCK_FILE: &str = "core-start.lock";
+pub const PICODE_COMPATIBILITY_IDENTIFIER: &str = "works.earendil.picot";
 const MAX_LOCATOR_BYTES: u64 = 1024;
+
+pub fn locator_candidates(explicit: Option<&Path>) -> Vec<PathBuf> {
+    if let Some(explicit) = explicit {
+        return vec![explicit.to_path_buf()];
+    }
+    let mut candidates = Vec::new();
+    if let Ok(root) = std::env::var("PICODE_APP_DATA_DIR") {
+        candidates.push(PathBuf::from(root).join(CORE_LOCATOR_FILE));
+    }
+    if let Some(root) = dirs::data_dir() {
+        candidates.push(
+            root.join(PICODE_COMPATIBILITY_IDENTIFIER)
+                .join(CORE_LOCATOR_FILE),
+        );
+    }
+    if let Some(root) = dirs::data_local_dir() {
+        let candidate = root
+            .join(PICODE_COMPATIBILITY_IDENTIFIER)
+            .join(CORE_LOCATOR_FILE);
+        if !candidates.contains(&candidate) {
+            candidates.push(candidate);
+        }
+    }
+    candidates
+}
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]

@@ -79,7 +79,7 @@ P0 Gate:
 
 Outcome: `picode-tui` is a thin client of Client Gateway and can continue a Picode workflow without a second state machine.
 
-- Add a Rust `picode-tui` binary that connects to the Broker using an explicit port or the published local locator.
+- Add a Rust `picode-tui` binary that connects to the Broker using an explicit port or the published local locator. When no healthy Core exists, the managed TUI starts the sibling Picode executable in background-only mode, waits for Core and Pi readiness, and coordinates concurrent launchers through one app-data startup lock; a later GUI launch reuses that Core.
 - Provide chat/session selection, account/model/Task/extension/Work views, prompt submission, cancel/continue, archive/fork, and a typed control-command palette.
 - Keep full tool/runtime behavior in embedded Pi and existing Picode modules.
 - Expose the same Client Gateway commands to frontend `WsTransport` and TUI.

@@ -511,7 +511,7 @@ Observable Agent, tool, or managed Work progress that retains Conversation Contr
 _Avoid_: Any running process, open window, elapsed time
 
 **Managed TUI**:
-The terminal Client Adapter that uses Picode Core interfaces and therefore shares Chat, account, extension, Task, Work, runtime, and Conversation Control state with the GUI.
+The terminal Client Adapter that uses Picode Core interfaces and therefore shares Chat, account, extension, Task, Work, runtime, and Conversation Control state with the GUI. When no healthy Core is published, it starts the sibling Picode executable in background-only mode under a cross-client startup lock; a later GUI launch asks that same Core to show its window instead of creating a second authority.
 _Avoid_: Raw Pi TUI, headless JSON client, terminal emulator
 
 **TUI Host**:

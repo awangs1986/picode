@@ -6,7 +6,7 @@ Picode GUI, managed TUI, and future authenticated remote clients will be adapter
 
 ## Consequences
 
-Directly launching raw `pi` remains an unmanaged Pi workflow. Surface adapters must not cache authoritative account, extension, Task, Work, runtime, or ownership state. A healthy or meaningfully active controller cannot be displaced; an unresponsive controller can be replaced at an idle, waiting-user, terminal, or surfaced-stall transition without asking the vanished client. Optional Herdr integration preserves the Extension Four-State Lifecycle and zero-residency guarantees.
+Directly launching raw `pi` remains an unmanaged Pi workflow. Surface adapters must not cache authoritative account, extension, Task, Work, runtime, or ownership state. A managed TUI first probes the bounded Core locator; if no healthy Core exists, it starts the sibling Picode executable with `--core-only`, coordinates concurrent launchers with the app-data startup lock, and waits for both the Broker control plane and embedded Pi health before continuing. A later GUI launch hands off a `show_gui` request to that existing Core instead of creating a second authority. A healthy or meaningfully active controller cannot be displaced; an unresponsive controller can be replaced at an idle, waiting-user, terminal, or surfaced-stall transition without asking the vanished client. Optional Herdr integration preserves the Extension Four-State Lifecycle and zero-residency guarantees.
 
 ## Rejected alternatives
 
