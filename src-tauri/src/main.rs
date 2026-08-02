@@ -84,6 +84,7 @@ use pi_auth_sync::PiAuthSynchronizer;
 use pi_manager::{
     locked_pi_version, wait_for_endpoint, wait_for_health as wait_for_pi_health, PiManager,
 };
+use picode::core_locator::{remove_owned_locator, write_locator, CoreLocator, CORE_LOCATOR_FILE};
 use remote_auth::RemoteAuth;
 use runtime_coordinator::RuntimeTarget;
 use runtime_spine::RuntimeSpine;
@@ -126,9 +127,13 @@ type SessionKernelState = Arc<Mutex<session_kernel::SessionKernel>>;
 type CompletionCoordinatorState = Arc<CompletionCoordinator>;
 type ClientGatewayState = Arc<ClientGateway>;
 
+struct CoreLocatorPath(PathBuf);
+
 struct CoreSnapshotSource {
     manager: Arc<PiManager>,
+    broker: Arc<BrokerWs>,
     accounts: Arc<AccountImportService>,
+    sessions: SessionKernelState,
     task_control: TaskControlState,
     orchestration: OrchestrationServiceState,
     extensions: ExtensionServiceState,
@@ -158,6 +163,16 @@ impl SharedSnapshotSource for CoreSnapshotSource {
         Ok(SharedClientFacts {
             accounts: serde_json::to_value(self.accounts.list_accounts()?)
                 .map_err(|error| format!("Cannot encode account summaries: {error}"))?,
+            sessions: {
+                let sessions = self
+                    .sessions
+                    .lock()
+                    .map_err(|_| "Session Kernel lock is poisoned".to_owned())?;
+                serde_json::to_value(sessions.list(false))
+                    .map_err(|error| format!("Cannot encode session summaries: {error}"))?
+            },
+            live_chats: serde_json::to_value(self.broker.live_chat_routes())
+                .map_err(|error| format!("Cannot encode live chat routes: {error}"))?,
             tasks,
             extensions: serde_json::to_value(self.extensions.snapshot())
                 .map_err(|error| format!("Cannot encode Extension snapshot: {error}"))?,
@@ -1505,6 +1520,7 @@ fn install_control_handler(
                     | "custom_provider_discover"
                     | "custom_provider_save"
                     | "chat_prepare_prompt"
+                    | "chat_runtime_command"
                     | "chat_migration_scan"
                     | "chat_migration_import"
                     | "chat_migration_context_open"
@@ -1625,6 +1641,40 @@ fn install_control_handler(
                         }
                         serde_json::to_value(client_gateway.connect(&hello, unix_millis())?)
                             .map_err(|error| format!("Cannot encode client snapshot: {error}"))
+                    }
+                    "chat_runtime_command" => {
+                        let session_id = arg_str("sessionId").ok_or("sessionId is required")?;
+                        let mut payload = args
+                            .get("payload")
+                            .cloned()
+                            .filter(Value::is_object)
+                            .ok_or("payload must be an object")?;
+                        let payload_type = payload
+                            .get("type")
+                            .and_then(Value::as_str)
+                            .ok_or("payload.type is required")?;
+                        if !matches!(
+                            payload_type,
+                            "prompt" | "abort" | "fork" | "new_session" | "set_model"
+                        ) {
+                            return Err("Unsupported managed chat runtime command".into());
+                        }
+                        let source_port = broker
+                            .port_for_session(&session_id)
+                            .or_else(|| {
+                                args.get("sourcePort")
+                                    .and_then(Value::as_u64)
+                                    .and_then(|port| u16::try_from(port).ok())
+                            })
+                            .ok_or("No live Pi runtime owns this chat")?;
+                        if let Some(routed_port) = broker.port_for_session(&session_id) {
+                            if routed_port != source_port {
+                                return Err("Chat route and source port disagree".into());
+                            }
+                        }
+                        payload["sessionId"] = Value::String(session_id);
+                        broker.send_command_to_port(source_port, payload)?;
+                        Ok(serde_json::json!({ "queued": true, "sourcePort": source_port }))
                     }
                     "account_list" => serde_json::to_value(accounts.list_accounts()?)
                         .map_err(|error| format!("Cannot encode account list: {error}")),
@@ -3648,6 +3698,13 @@ fn main() {
                 .path()
                 .app_data_dir()
                 .map_err(std::io::Error::other)?;
+            let core_locator_path = app_data_dir.join(CORE_LOCATOR_FILE);
+            write_locator(
+                &core_locator_path,
+                &CoreLocator::new(broker.port(), std::process::id(), unix_millis()),
+            )
+            .map_err(std::io::Error::other)?;
+            app.manage(CoreLocatorPath(core_locator_path));
             let account_vault = Arc::new(AccountVault::new(app_data_dir.join("accounts.vault")));
             let accounts = Arc::new(AccountImportService::new(account_vault));
             let bindings = Arc::new(
@@ -3861,7 +3918,9 @@ fn main() {
             let client_gateway = Arc::new(ClientGateway::new(
                 Arc::new(CoreSnapshotSource {
                     manager: manager.clone(),
+                    broker: broker.clone(),
                     accounts: accounts.clone(),
+                    sessions: session_kernel.clone(),
                     task_control: task_control.clone(),
                     orchestration: orchestration_service.clone(),
                     extensions: extension_service.clone(),
@@ -4043,6 +4102,11 @@ fn main() {
         .expect("error while building tauri application")
         .run(|app_handle: &tauri::AppHandle, event| {
             if let tauri::RunEvent::Exit = event {
+                if let Some(locator) = app_handle.try_state::<CoreLocatorPath>() {
+                    if let Err(error) = remove_owned_locator(&locator.0, std::process::id()) {
+                        log::warn!("failed to remove owned Core locator: {error}");
+                    }
+                }
                 if let Some(manager) = app_handle.try_state::<NativePiManagerState>() {
                     manager.stop_all();
                 }

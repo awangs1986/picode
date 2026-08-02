@@ -35,6 +35,8 @@ pub struct ClientHello {
 #[derive(Clone, Debug)]
 pub struct SharedClientFacts {
     pub accounts: Value,
+    pub sessions: Value,
+    pub live_chats: Value,
     pub tasks: Value,
     pub extensions: Value,
     pub work: Value,
@@ -50,6 +52,8 @@ pub struct SharedClientSnapshot {
     pub surface: ClientSurface,
     pub generated_at: u64,
     pub accounts: Value,
+    pub sessions: Value,
+    pub live_chats: Value,
     pub tasks: Value,
     pub extensions: Value,
     pub work: Value,
@@ -98,6 +102,8 @@ impl ClientGateway {
             surface: hello.surface,
             generated_at,
             accounts: facts.accounts,
+            sessions: facts.sessions,
+            live_chats: facts.live_chats,
             tasks: facts.tasks,
             extensions: facts.extensions,
             work: facts.work,
@@ -175,6 +181,8 @@ mod tests {
     fn source(accounts: serde_json::Value) -> Arc<dyn SharedSnapshotSource> {
         Arc::new(FixedSource(SharedClientFacts {
             accounts,
+            sessions: json!([{ "id": "chat-a", "title": "Ship it" }]),
+            live_chats: json!([{ "sessionId": "chat-a", "sourcePort": 47821 }]),
             tasks: json!({ "tasks": [{ "id": "task-a" }] }),
             extensions: json!({ "lifecycle": [{ "id": "skill-a", "state": "enabled" }] }),
             work: json!([]),
@@ -212,6 +220,8 @@ mod tests {
 
         assert_eq!(gui.accounts, tui.accounts);
         assert_eq!(gui.tasks, tui.tasks);
+        assert_eq!(gui.sessions, tui.sessions);
+        assert_eq!(gui.live_chats, tui.live_chats);
         assert_eq!(gui.extensions, tui.extensions);
         assert_eq!(gui.packages, tui.packages);
         assert_eq!(gui.generated_at, 42);

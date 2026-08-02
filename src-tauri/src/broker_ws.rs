@@ -27,6 +27,13 @@ pub struct ClientContext {
     pub local: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveChatRoute {
+    pub session_id: String,
+    pub source_port: u16,
+}
+
 /// Async handler for `broker_control` requests. Given a command name + args
 /// (+ a progress sink for streaming ops) it resolves to `Ok(result_json)` or
 /// `Err(message)`. Injected from main.rs so the broker can run process/window
@@ -108,6 +115,22 @@ impl BrokerWs {
             .unwrap()
             .get(session_id.trim())
             .copied()
+    }
+
+    pub fn live_chat_routes(&self) -> Vec<LiveChatRoute> {
+        let mut routes = self
+            .inner
+            .routes
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(session_id, source_port)| LiveChatRoute {
+                session_id: session_id.clone(),
+                source_port: *source_port,
+            })
+            .collect::<Vec<_>>();
+        routes.sort_by(|left, right| left.session_id.cmp(&right.session_id));
+        routes
     }
 
     /// Number of pi upstream connections the broker is currently maintaining.

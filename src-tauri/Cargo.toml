@@ -14,6 +14,10 @@ path = "src/main.rs"
 name = "picode-headless"
 path = "src/headless.rs"
 
+[[bin]]
+name = "picode-tui"
+path = "src/tui.rs"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -49,7 +53,7 @@ axum = { version = "0.8", features = ["ws"] }
 tower-http = { version = "0.6", features = ["fs"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_JobObjects", "Win32_System_ProcessStatus", "Win32_System_Threading"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_System_ProcessStatus", "Win32_System_Threading"] }
 
 [profile.dev]
 incremental = true
