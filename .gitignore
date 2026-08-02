@@ -10,6 +10,12 @@ src-tauri/gen/
 /picode.exe
 /picode-tui.exe
 
+# Local portable runtime resources placed beside the release executables
+/extensions/embedded-server.mjs
+/extensions/pi-chat.mjs
+/extensions/picot-bridge.mjs
+/pi/
+
 # Pi extension bundles (produced by scripts/build-extensions.js)
 extensions/dist/
 
