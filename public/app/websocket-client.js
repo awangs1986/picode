@@ -37,7 +37,7 @@ export function resolveWebSocketUrl(env = globalThis.window || globalThis) {
 }
 
 export class WebSocketClient extends EventTarget {
-  constructor(url) {
+  constructor(url, { surface = "gui", clientId = null } = {}) {
     super();
     this.url = url;
     this.ws = null;
@@ -49,6 +49,9 @@ export class WebSocketClient extends EventTarget {
     this.reconnectTimer = null;
     this.connectionState = "idle";
     this.protocolVersion = 1;
+    this.clientSurface = surface;
+    this.clientId =
+      clientId || globalThis.crypto?.randomUUID?.() || `client-${Date.now().toString(36)}`;
     this.workspaceId = null;
     this.sessionId = null;
     this.sourcePort = null;
@@ -277,6 +280,8 @@ export class WebSocketClient extends EventTarget {
       const envelope = {
         type: "broker_control",
         protocolVersion: this.protocolVersion,
+        clientId: this.clientId,
+        clientSurface: this.clientSurface,
         requestId,
         command,
         args: args || {},

@@ -19,13 +19,21 @@ pub type UpstreamEventObserver = Arc<dyn Fn(u16, Value) + Send + Sync>;
 /// requesting client's socket, tagged with the original `requestId`.
 pub type ProgressSink = Arc<dyn Fn(Value) + Send + Sync>;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClientContext {
+    pub connection_id: u64,
+    pub client_id: String,
+    pub surface: String,
+    pub local: bool,
+}
+
 /// Async handler for `broker_control` requests. Given a command name + args
 /// (+ a progress sink for streaming ops) it resolves to `Ok(result_json)` or
 /// `Err(message)`. Injected from main.rs so the broker can run process/window
 /// lifecycle and native ops on behalf of any client (desktop WebView, remote,
 /// mobile) without main.rs and broker_ws forming a circular dependency.
 pub type ControlHandler = Arc<
-    dyn Fn(String, Value, ProgressSink, bool) -> BoxFuture<'static, Result<Value, String>>
+    dyn Fn(String, Value, ProgressSink, ClientContext) -> BoxFuture<'static, Result<Value, String>>
         + Send
         + Sync,
 >;
@@ -252,6 +260,7 @@ impl BrokerWs {
             json!({
                 "type": "capabilities",
                 "protocolVersion": PROTOCOL_VERSION,
+                "brokerConnectionId": client_id,
                 "native": native,
             })
             .to_string(),
@@ -267,7 +276,9 @@ impl BrokerWs {
 
         while let Some(item) = reader.next().await {
             match item {
-                Ok(Message::Text(text)) => self.route_ui_message(&text, &tx, local_client),
+                Ok(Message::Text(text)) => {
+                    self.route_ui_message(&text, &tx, local_client, client_id)
+                }
                 Ok(Message::Close(_)) => break,
                 Ok(_) => {}
                 Err(err) => {
@@ -281,7 +292,7 @@ impl BrokerWs {
         writer_task.abort();
     }
 
-    fn route_ui_message(&self, text: &str, client_tx: &Tx, local_client: bool) {
+    fn route_ui_message(&self, text: &str, client_tx: &Tx, local_client: bool, connection_id: u64) {
         let Ok(value) = serde_json::from_str::<Value>(text) else {
             log::warn!("[broker-ws] invalid UI message");
             return;
@@ -291,7 +302,7 @@ impl BrokerWs {
         // process/window lifecycle or native ops handled by the host (Rust).
         // Dispatch to the injected control handler and reply to this client only.
         if value.get("type").and_then(Value::as_str) == Some("broker_control") {
-            self.dispatch_control(&value, client_tx, local_client);
+            self.dispatch_control(&value, client_tx, local_client, connection_id);
             return;
         }
 
@@ -361,7 +372,13 @@ impl BrokerWs {
         );
     }
 
-    fn dispatch_control(&self, value: &Value, client_tx: &Tx, local_client: bool) {
+    fn dispatch_control(
+        &self,
+        value: &Value,
+        client_tx: &Tx,
+        local_client: bool,
+        connection_id: u64,
+    ) {
         let request_id = value
             .get("requestId")
             .and_then(Value::as_str)
@@ -373,6 +390,30 @@ impl BrokerWs {
             .unwrap_or("")
             .to_string();
         let args = value.get("args").cloned().unwrap_or(Value::Null);
+        let client_id = value
+            .get("clientId")
+            .and_then(Value::as_str)
+            .filter(|id| {
+                !id.is_empty()
+                    && id.len() <= 128
+                    && id
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || b"._-:".contains(&byte))
+            })
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("connection-{connection_id}"));
+        let surface = value
+            .get("clientSurface")
+            .and_then(Value::as_str)
+            .filter(|surface| matches!(*surface, "gui" | "tui" | "headless" | "remote"))
+            .unwrap_or(if local_client { "gui" } else { "remote" })
+            .to_owned();
+        let client = ClientContext {
+            connection_id,
+            client_id,
+            surface,
+            local: local_client,
+        };
 
         let handler = self.inner.control_handler.lock().unwrap().clone();
         let tx = client_tx.clone();
@@ -411,7 +452,7 @@ impl BrokerWs {
             request_id
         );
         tauri::async_runtime::spawn(async move {
-            let response = match handler(command.clone(), args, sink, local_client).await {
+            let response = match handler(command.clone(), args, sink, client).await {
                 Ok(result) => json!({
                     "type": "control_response",
                     "requestId": request_id,

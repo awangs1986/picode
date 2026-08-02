@@ -10,6 +10,7 @@ mod capability;
 mod capability_service;
 mod chat_backup;
 mod chat_migration;
+mod client_gateway;
 mod code_intelligence;
 mod completion_coordinator;
 mod completion_engine;
@@ -58,6 +59,7 @@ use capability::CapabilityTier;
 use capability_service::{CapabilityService, EffectiveSource};
 use chat_backup::{BackupSelectionFlags, ChatBackupService};
 use chat_migration::ChatMigrationService;
+use client_gateway::{ClientGateway, ClientHello, SharedClientFacts, SharedSnapshotSource};
 use code_intelligence::CodeIntelligence;
 use completion_coordinator::CompletionCoordinator;
 use context_compression::ContextCompressionService;
@@ -122,6 +124,57 @@ type CodeIntelligenceState = Arc<CodeIntelligence>;
 type HookManagerState = Arc<HookManager>;
 type SessionKernelState = Arc<Mutex<session_kernel::SessionKernel>>;
 type CompletionCoordinatorState = Arc<CompletionCoordinator>;
+type ClientGatewayState = Arc<ClientGateway>;
+
+struct CoreSnapshotSource {
+    manager: Arc<PiManager>,
+    accounts: Arc<AccountImportService>,
+    task_control: TaskControlState,
+    orchestration: OrchestrationServiceState,
+    extensions: ExtensionServiceState,
+    work: WorkManagerState,
+    runtime: RuntimeSpineState,
+}
+
+impl SharedSnapshotSource for CoreSnapshotSource {
+    fn collect(&self) -> Result<SharedClientFacts, String> {
+        let tasks = {
+            let control = self
+                .task_control
+                .lock()
+                .map_err(|_| "Task Control lock is poisoned".to_owned())?;
+            let mut value = serde_json::to_value(control.snapshot())
+                .map_err(|error| format!("Cannot encode Task snapshot: {error}"))?;
+            if let Some(object) = value.as_object_mut() {
+                object.insert(
+                    "orchestration".into(),
+                    serde_json::to_value(self.orchestration.snapshot()).map_err(|error| {
+                        format!("Cannot encode Orchestration snapshot: {error}")
+                    })?,
+                );
+            }
+            value
+        };
+        Ok(SharedClientFacts {
+            accounts: serde_json::to_value(self.accounts.list_accounts()?)
+                .map_err(|error| format!("Cannot encode account summaries: {error}"))?,
+            tasks,
+            extensions: serde_json::to_value(self.extensions.snapshot())
+                .map_err(|error| format!("Cannot encode Extension snapshot: {error}"))?,
+            work: serde_json::to_value(self.work.snapshot()?)
+                .map_err(|error| format!("Cannot encode Work snapshot: {error}"))?,
+            runtime: {
+                let runtime = self
+                    .runtime
+                    .lock()
+                    .map_err(|_| "Runtime Spine lock is poisoned".to_owned())?;
+                serde_json::to_value(runtime.snapshot())
+                    .map_err(|error| format!("Cannot encode runtime snapshot: {error}"))?
+            },
+            packages: self.manager.list_configured_package_sources()?,
+        })
+    }
+}
 
 #[derive(Clone)]
 struct ChatDataServices {
@@ -1383,6 +1436,7 @@ fn install_control_handler(
     hook_manager: HookManagerState,
     secret_store: SecretStoreState,
     scratch_root: PathBuf,
+    client_gateway: ClientGatewayState,
     app: AppHandle,
 ) {
     let broker_for_handler = broker.clone();
@@ -1390,7 +1444,7 @@ fn install_control_handler(
         move |command: String,
               args: Value,
               progress: broker_ws::ProgressSink,
-              local_client: bool| {
+              client: broker_ws::ClientContext| {
             let manager = manager.clone();
             let broker = broker_for_handler.clone();
             let accounts = accounts.clone();
@@ -1413,6 +1467,7 @@ fn install_control_handler(
             let hook_manager = hook_manager.clone();
             let secret_store = secret_store.clone();
             let scratch_root = scratch_root.clone();
+            let client_gateway = client_gateway.clone();
             let app = app.clone();
             Box::pin(async move {
                 let arg = |key: &str| args.get(key).cloned().unwrap_or(Value::Null);
@@ -1436,7 +1491,7 @@ fn install_control_handler(
                     hooks: &hook_manager,
                     extensions: &extension_service,
                 };
-                if let Some(result) = harness_router.handle(&command, &args, local_client).await {
+                if let Some(result) = harness_router.handle(&command, &args, client.local).await {
                     return result;
                 }
 
@@ -1555,9 +1610,21 @@ fn install_control_handler(
                     | "hook_set_enabled"
                     | "hook_set_trusted"
                     | "hook_invoke"
-                        if !local_client =>
+                        if !client.local =>
                     {
                         Err("This control is available only from the local desktop app".to_string())
+                    }
+                    "client_snapshot" => {
+                        let hello: ClientHello = serde_json::from_value(args.clone())
+                            .map_err(|error| format!("Invalid client hello: {error}"))?;
+                        if hello.client_id != client.client_id
+                            || hello.surface.as_str() != client.surface
+                        {
+                            return Err("Client hello identity must match the current connection"
+                                .to_owned());
+                        }
+                        serde_json::to_value(client_gateway.connect(&hello, unix_millis())?)
+                            .map_err(|error| format!("Cannot encode client snapshot: {error}"))
                     }
                     "account_list" => serde_json::to_value(accounts.list_accounts()?)
                         .map_err(|error| format!("Cannot encode account list: {error}")),
@@ -3791,6 +3858,18 @@ fn main() {
                     .map_err(std::io::Error::other)?,
             ));
             let scratch_root = app_data_dir.join("scratch");
+            let client_gateway = Arc::new(ClientGateway::new(
+                Arc::new(CoreSnapshotSource {
+                    manager: manager.clone(),
+                    accounts: accounts.clone(),
+                    task_control: task_control.clone(),
+                    orchestration: orchestration_service.clone(),
+                    extensions: extension_service.clone(),
+                    work: work_manager.clone(),
+                    runtime: runtime_spine.clone(),
+                }),
+                4 * 1024 * 1024,
+            ));
             std::env::set_var("PI_STUDIO_BROKER_PORT", broker.port().to_string());
             install_control_handler(
                 &broker,
@@ -3817,6 +3896,7 @@ fn main() {
                 hook_manager.clone(),
                 secret_store,
                 scratch_root,
+                client_gateway,
                 app.handle().clone(),
             );
             install_task_runtime_observer(

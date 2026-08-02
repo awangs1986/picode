@@ -75,6 +75,8 @@ pub struct ExtensionManifest {
     pub components: Vec<String>,
     #[serde(default)]
     pub platforms: Vec<String>,
+    #[serde(default = "default_extension_surfaces")]
+    pub surfaces: Vec<String>,
     #[serde(default)]
     pub health_check: Option<HealthCheck>,
     pub executable: PathBuf,
@@ -106,6 +108,7 @@ impl ExtensionManifest {
             license: "unknown".into(),
             components: vec!["native-helper".into()],
             platforms: vec![std::env::consts::OS.into()],
+            surfaces: default_extension_surfaces(),
             health_check: None,
             executable,
             arguments,
@@ -158,6 +161,15 @@ impl ExtensionManifest {
         {
             return Err("manifest v2 contains an unsupported component".into());
         }
+        const SURFACES: &[&str] = &["gui", "tui", "headless", "remote"];
+        if self.surfaces.is_empty()
+            || self
+                .surfaces
+                .iter()
+                .any(|surface| !SURFACES.contains(&surface.as_str()))
+        {
+            return Err("manifest v2 contains an unsupported or empty surface list".into());
+        }
         if let Some(hash) = &self.source_hash {
             if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
                 return Err("manifest sourceHash must be a full SHA-256 digest".into());
@@ -179,6 +191,15 @@ impl ExtensionManifest {
         self.limits.validate()?;
         Ok(())
     }
+}
+
+fn default_extension_surfaces() -> Vec<String> {
+    vec![
+        "gui".into(),
+        "tui".into(),
+        "headless".into(),
+        "remote".into(),
+    ]
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]

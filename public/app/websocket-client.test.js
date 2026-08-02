@@ -73,6 +73,8 @@ describe("WebSocketClient control commands", () => {
       type: "broker_control",
       command: "get_pi_version",
       requestId: "ctl-1",
+      clientSurface: "gui",
+      clientId: expect.any(String),
     });
 
     client.handleMessage({

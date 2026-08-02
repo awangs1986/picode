@@ -479,3 +479,37 @@ _Avoid_: Executable path only, floating remote branch, trust flag as permission
 **Extension Process Adapter**:
 The Work Manager boundary through which Hook, MCP, LSP, DAP, and native extension work receives one component identity, owner, status, cancellation, timeout, crash result, and bounded output.
 _Avoid_: Adapter-owned process table, raw child process in the GUI, unowned background worker
+
+### Client surfaces and conversation control
+
+**Managed Client**:
+A Picode GUI, TUI, headless, or authenticated remote participant that uses the shared Picode Core interfaces and never owns a private copy of authoritative account, extension, Task, Work, runtime, or chat-control state.
+_Avoid_: Separate frontend backend, independent agent app, synced client database
+
+**Unmanaged Pi Client**:
+A raw Pi process started outside Picode's managed client workflow. It retains ordinary Pi behavior but is not promised Picode account-vault, extension-lifecycle, Task, Work, or Conversation Control parity.
+_Avoid_: Picode TUI, fallback Picode client
+
+**Conversation Controller**:
+The sole Managed Client generation currently authorized to mutate one Chat Session. Control is a user-input authority and does not make the client the owner of the Agent Run or transcript.
+_Avoid_: Chat owner, process owner, active window
+
+**Observer Client**:
+A Managed Client following one Chat Session without mutation authority. It receives ordered state and output and may request control when the Conversation Control policy permits.
+_Avoid_: Disconnected client, stale controller, read replica
+
+**Conversation Control Lease**:
+The revocable, generation-fenced authority granted to one Conversation Controller. A healthy or meaningfully active controller cannot be displaced; an unresponsive controller becomes replaceable only at a safe runtime state.
+_Avoid_: Workspace Write Lease, account lock, permanent chat ownership
+
+**Meaningful Background Activity**:
+Observable Agent, tool, or managed Work progress that retains Conversation Control after its client surface is no longer foreground. Process existence alone is not activity, and waiting for user input is a takeover-safe blocked state.
+_Avoid_: Any running process, open window, elapsed time
+
+**Managed TUI**:
+The terminal Client Adapter that uses Picode Core interfaces and therefore shares Chat, account, extension, Task, Work, runtime, and Conversation Control state with the GUI.
+_Avoid_: Raw Pi TUI, headless JSON client, terminal emulator
+
+**TUI Host**:
+Optional terminal infrastructure that arranges, persists, detaches, and reattaches Managed TUI processes without owning Picode workflow state. Herdr is the default reviewed TUI Host when explicitly installed and trusted.
+_Avoid_: Agent runtime, session authority, Picode Core

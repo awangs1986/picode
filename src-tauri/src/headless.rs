@@ -107,6 +107,8 @@ fn control_frame(request: Value, source_port: Option<u16>) -> (String, Value) {
         request_id.clone(),
         json!({
             "type": "broker_control",
+            "clientId": format!("headless-{}", std::process::id()),
+            "clientSurface": "headless",
             "command": command,
             "requestId": request_id,
             "args": args,

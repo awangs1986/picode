@@ -85,6 +85,15 @@ pub enum RuntimeSessionState {
     Ended,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeSessionSummary {
+    pub target: RuntimeTarget,
+    pub state: RuntimeSessionState,
+    pub last_sequence: u64,
+    pub last_progress_at: Option<u64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeSpineError {
     UnknownSession,
@@ -141,6 +150,21 @@ impl RuntimeSpine {
             retained_events: retained_events.max(1),
             log_path: None,
         }
+    }
+
+    pub fn snapshot(&self) -> Vec<RuntimeSessionSummary> {
+        let mut summaries = self
+            .sessions
+            .values()
+            .map(|session| RuntimeSessionSummary {
+                target: session.target.clone(),
+                state: session.state,
+                last_sequence: session.next_sequence.saturating_sub(1),
+                last_progress_at: session.events.back().map(|event| event.input.at),
+            })
+            .collect::<Vec<_>>();
+        summaries.sort_by(|left, right| left.target.instance_id.cmp(&right.target.instance_id));
+        summaries
     }
 
     pub fn open(

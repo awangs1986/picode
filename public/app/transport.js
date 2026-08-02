@@ -60,6 +60,19 @@ export class WsTransport {
     return this.wsClient.sendControl(command, args, options);
   }
 
+  clientSnapshot(surface = this.wsClient?.clientSurface || "gui", clientId = null) {
+    const resolvedClientId =
+      clientId ||
+      this.wsClient?.clientId ||
+      globalThis.crypto?.randomUUID?.() ||
+      `gui-${Date.now().toString(36)}`;
+    return this._control("client_snapshot", {
+      clientId: resolvedClientId,
+      surface,
+      protocolVersion: 1,
+    });
+  }
+
   // ── Process / window lifecycle (create project, sessions, instances) ───────
 
   openWorkspace(cwd, options = {}) {

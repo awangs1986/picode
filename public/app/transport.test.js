@@ -4,11 +4,39 @@ import { createTransport, WsTransport } from "./transport.js";
 function fakeWsClient(capabilities = { native: true }) {
   return {
     capabilities,
+    clientId: "gui-stable-a",
+    clientSurface: "gui",
     sendControl: vi.fn((command) => Promise.resolve(`ok:${command}`)),
   };
 }
 
 describe("WsTransport", () => {
+  test("desktop and TUI adapters request the same bounded shared snapshot contract", async () => {
+    const ws = fakeWsClient();
+    const transport = new WsTransport(ws, {});
+
+    await transport.clientSnapshot("gui", "gui-window-a");
+
+    expect(ws.sendControl).toHaveBeenCalledWith(
+      "client_snapshot",
+      { clientId: "gui-window-a", surface: "gui", protocolVersion: 1 },
+      {},
+    );
+  });
+
+  test("client snapshot defaults to the connection's durable identity", async () => {
+    const ws = fakeWsClient();
+    const transport = new WsTransport(ws, {});
+
+    await transport.clientSnapshot();
+
+    expect(ws.sendControl).toHaveBeenCalledWith(
+      "client_snapshot",
+      { clientId: "gui-stable-a", surface: "gui", protocolVersion: 1 },
+      {},
+    );
+  });
+
   test("create project (openWorkspace) sends an open_workspace control command", async () => {
     const ws = fakeWsClient();
     const transport = createTransport({ wsClient: ws, env: { location: { port: "47821" } } });
