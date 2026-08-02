@@ -7,6 +7,8 @@ node_modules/
 # Tauri build artifacts
 src-tauri/target/
 src-tauri/gen/
+/picode.exe
+/picode-tui.exe
 
 # Pi extension bundles (produced by scripts/build-extensions.js)
 extensions/dist/
