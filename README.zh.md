@@ -2,13 +2,15 @@
 
 [English](./README.md) | **简体中文**
 
+> ⚠️ **项目正在大规模重构。** 当前公开代码库正从底层重写。旧版本存在多处**致命的设计问题**（控制面与 Agent 边界、Harness 信任假设及相关结构缺陷）。请把现在 `main` 上的内容视为过渡、不稳定状态——在重构落地前，不要基于它搭建生产工作流，也不要做长期 fork。
+
 > 基于 Pi 的轻量、多服务商桌面开发 Harness。
 
 Picode 是面向 [Pi coding agent](https://github.com/earendil-works/pi) 的本地桌面开发工作台，也是 [Picot](https://github.com/shixin-guo/picot) 的持续维护 fork。它服务于个人软件与游戏开发：小任务可以直接开始，中型工程则可以完成实现、本地验证、恢复和交付的完整闭环。
 
-Picode 保留 Pi 作为 Agent 内核，使用 Tauri 2 / Rust 构建桌面控制面。它不会把所有任务强制改造成复杂工程流程。开发者可以选择极简的 **Simple Task**，也可以选择产生验证证据的 **Harness Task**；可选能力只有真正使用时才会加载。
+Picode 保留 Pi 作为 Agent 内核，使用 Tauri 2 / Rust 构建桌面控制面。下文产品方向描述的是重构后的目标形态；仓库里大量代码仍属于正在被替换的旧设计。
 
-> Picode 仍在积极开发，目前主要在 Windows 上验证。用于重要工程前，请备份聊天记录并审查 Agent 将要执行的操作。
+> 目前主要在 Windows 上验证。用于重要工程前，请备份聊天记录并审查 Agent 将要执行的操作。
 
 ## 为什么选择 Picode
 

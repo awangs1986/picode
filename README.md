@@ -2,13 +2,15 @@
 
 **English** | [简体中文](./README.zh.md)
 
+> ⚠️ **Major rewrite in progress.** The current public codebase is being refactored from the ground up. The previous architecture had a number of **fatal design problems** (control-plane / agent boundaries, harness trust assumptions, and related structural issues). Treat what is on `main` today as transitional and unstable — do not build production workflows or long-lived forks on it until the rewrite lands.
+
 > A lightweight, multi-provider desktop development harness built on Pi.
 
 Picode is a local desktop workspace for the [Pi coding agent](https://github.com/earendil-works/pi) and a maintained fork of [Picot](https://github.com/shixin-guo/picot). It is designed for personal software and game development: small enough for a quick fix, but able to carry a medium-sized project through implementation, local verification, recovery, and handoff.
 
-Picode keeps Pi as the agent runtime and uses a Tauri 2 / Rust control plane. It does not try to turn every task into a heavyweight ceremony. The developer chooses a minimal **Simple Task** or an evidence-producing **Harness Task**, and optional capabilities stay unloaded until they are actually needed.
+Picode keeps Pi as the agent runtime and uses a Tauri 2 / Rust control plane. The product direction below describes the intended shape after the rewrite; much of the shipped tree still reflects the older design that is being replaced.
 
-> Picode is under active development and is currently validated most heavily on Windows. Back up important conversations and review agent actions before using it on valuable projects.
+> Validated most heavily on Windows. Back up important conversations and review agent actions before using it on valuable projects.
 
 ## Why Picode
 
