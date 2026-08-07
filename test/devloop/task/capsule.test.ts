@@ -1,0 +1,148 @@
+import { describe, expect, it } from "vitest";
+import {
+  canInject,
+  createCapsule,
+  capsuleDigest,
+  renderCapsule,
+  sealCapsule,
+  supersedeCapsule,
+} from "../../../src/devloop/task/capsule.ts";
+import { makeCapsuleInput, sealedCapsule } from "../../helpers/fixtures.ts";
+
+describe("Capsule v1 lifecycle", () => {
+  it("createCapsule starts in draft status", () => {
+    const cap = createCapsule(makeCapsuleInput());
+    expect(cap.status).toBe("draft");
+    expect(cap.schemaVersion).toBe("picode.capsule/v1");
+    expect(cap.digest).toBeUndefined();
+    expect(cap.capsuleId).toBeTruthy();
+    expect(cap.createdAt).toBeTruthy();
+  });
+
+  it("seals with a stable digest and rejects content drift before injection", () => {
+    const sealed = sealCapsule(createCapsule(makeCapsuleInput()));
+    expect(sealed.ok).toBe(true);
+    if (!sealed.ok) return;
+    expect(sealed.value.digest).toBe(capsuleDigest(sealed.value));
+
+    const tampered = { ...sealed.value, intent: "silently changed" };
+    const result = canInject(tampered, { taskId: "task-1", taskRevision: 1 });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("devloop/capsule-digest-mismatch");
+  });
+
+  it("requires a source digest for mutable file facts", () => {
+    const result = sealCapsule(createCapsule(makeCapsuleInput({
+      verbatimFacts: [{
+        text: "Acceptance: preserves saves",
+        source: { kind: "file", id: "design", locator: "docs/design.md" },
+      }],
+    })));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("devloop/capsule-source-digest-required");
+  });
+
+  it("sealCapsule rejects empty intent", () => {
+    const cap = createCapsule(makeCapsuleInput({ intent: "   " }));
+    const r = sealCapsule(cap);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.code).toBe("devloop/capsule-missing-intent");
+  });
+
+  it("sealCapsule rejects non-draft capsule", () => {
+    const r = sealCapsule(sealedCapsule());
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.code).toBe("devloop/capsule-not-draft");
+  });
+
+  it("supersedeCapsule only works on sealed capsules and records supersededBy", () => {
+    const draft = createCapsule(makeCapsuleInput());
+    expect(supersedeCapsule(draft, "new-id").ok).toBe(false);
+
+    const sealed = sealCapsule(createCapsule(makeCapsuleInput()));
+    expect(sealed.ok).toBe(true);
+    if (!sealed.ok) return;
+    const superseded = supersedeCapsule(sealed.value, "successor-99");
+    expect(superseded.ok).toBe(true);
+    if (superseded.ok) {
+      expect(superseded.value.status).toBe("superseded");
+      expect(superseded.value.supersededBy).toBe("successor-99");
+    }
+  });
+
+  describe("canInject", () => {
+    it("rejects draft capsules", () => {
+      const cap = createCapsule(makeCapsuleInput());
+      const r = canInject(cap, { taskId: cap.taskId, taskRevision: cap.taskRevision });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error.code).toBe("devloop/capsule-not-sealed");
+    });
+
+    it("rejects taskId mismatch", () => {
+      const cap = sealedCapsule({ taskId: "task-a" });
+      const r = canInject(cap, { taskId: "task-b", taskRevision: cap.taskRevision });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error.code).toBe("devloop/capsule-task-mismatch");
+    });
+
+    it("rejects taskRevision mismatch", () => {
+      const cap = sealedCapsule({ taskRevision: 1 });
+      const r = canInject(cap, { taskId: cap.taskId, taskRevision: 2 });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error.code).toBe("devloop/capsule-revision-mismatch");
+    });
+
+    it("rejects workspace head mismatch", () => {
+      const cap = sealedCapsule({
+        workspaceSnapshot: { head: "abc111" },
+      });
+      const r = canInject(cap, {
+        taskId: cap.taskId,
+        taskRevision: cap.taskRevision,
+        workspace: { head: "def222" },
+      });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error.code).toBe("devloop/capsule-snapshot-mismatch");
+    });
+
+    it("allows when all bindings match", () => {
+      const cap = sealedCapsule({
+        workspaceSnapshot: { head: "abc111" },
+      });
+      const r = canInject(cap, {
+        taskId: cap.taskId,
+        taskRevision: cap.taskRevision,
+        workspace: { head: "abc111" },
+      });
+      expect(r.ok).toBe(true);
+    });
+
+    it("skips snapshot check when capsule or current lacks head", () => {
+      const capNoHead = sealedCapsule({ workspaceSnapshot: {} });
+      expect(
+        canInject(capNoHead, {
+          taskId: capNoHead.taskId,
+          taskRevision: capNoHead.taskRevision,
+          workspace: { head: "anything" },
+        }).ok,
+      ).toBe(true);
+
+      const capWithHead = sealedCapsule({ workspaceSnapshot: { head: "abc" } });
+      expect(
+        canInject(capWithHead, {
+          taskId: capWithHead.taskId,
+          taskRevision: capWithHead.taskRevision,
+        }).ok,
+      ).toBe(true);
+    });
+  });
+
+  it("renderCapsule includes verbatim fact text and source pointer", () => {
+    const cap = sealedCapsule({
+      verbatimFacts: [{ text: "ENOENT on /tmp/x", source: { kind: "evidence", id: "ev-42" } }],
+    });
+    const md = renderCapsule(cap);
+    expect(md).toContain("ENOENT on /tmp/x");
+    expect(md).toContain("[evidence:ev-42]");
+  });
+});

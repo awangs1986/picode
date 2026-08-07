@@ -1,85 +1,47 @@
-# Picode P0–P4 acceptance record
+# Picode V3 P0–P4 验收记录
 
-Date: 2026-07-31
-Branch: `feature/p0-p4-complete`
-Scope: P0–P4 only; P5 remains a future planning track.
+> 更新：2026-08-07  
+> 工作区：`D:/otherproject/picode/v3`  
+> 规则：`passed` 只表示命令真实运行成功；`not_run` 不折算为绿色。
 
-## Gate
+## 已通过
 
-The reproducible gate is `node scripts/p0-p4-gate.mjs`. It runs the frontend
-Vitest suite, Rust tests, strict Clippy, Rust formatting, CSS/design checks,
-Tauri permission checks, extension bundling, and Biome. The machine-readable
-result is `docs/verification/p0-p4-gate.json`.
+| Gate | 证据 | 状态 |
+|---|---|---|
+| TypeScript | `npm run typecheck` | passed |
+| 四模块边界 | `npm run check:boundaries` | passed |
+| 固定依赖与摘要 | `npm run check:package-metadata`；所有 runtime dependency 精确版本且 lock integrity 存在 | passed |
+| 全量自动测试 | `npm run check`：68 files / 413 tests | passed |
+| Pi 开发态启动 | `npm run smoke:pi-rpc`；真实 vendored Pi 0.84.0，加载 Picode Extension，执行 `get_state/get_commands/new_session` | passed |
+| 安装产物 | `npm run smoke:package`；真实 `npm pack`、临时安装、CLI doctor、启动 vendored Pi、RPC 新会话 | passed (Windows) |
+| CLI Control Interface | `run/session/task/gate/harness/account/doctor` 结构化契约；正常启动零调试端口；非交互 ask fail-closed | passed (automated seam + packaged doctor) |
+| TDD 真循环 | `test/extension/tdd-real-loop.test.ts`；真实 Vitest RED → Target Gate → fresh Reviewer → Integration Smoke → 同 Snapshot 确认重跑 → Completion Label | passed |
+| RED Gate 自证 | GateRunner 对零匹配、skipped/not_run 和移除红探针保持红灯 | passed |
+| TOOLS.md | 任务级解析、文件夹信任、紧凑注入、切任务清理 | passed |
+| 缓存诊断 | 真实 Pi usage 投影；system/schema/history/provider/model/baseUrl 摘要；JSONL 不落提示词明文 | passed (structural) |
+| 分档提示词 | Simple 零增量；Standard Lean 与 TDD 自包含行为核经 Pi `before_agent_start` 追加并保留 Base Prompt；作者注释剥离、占位符完整解析 | passed (automated seam) |
 
-The gate also runs `scripts/performance-gate.mjs` for bounded long-session,
-zero-resident extension, and streaming-first-event contracts. Machine/provider
-timings use the explicit baseline/current mode documented in
-`docs/verification/PERFORMANCE-GATE.md`; absent measurements are reported as
-`not_requested`, never treated as invented performance evidence.
+## P1–P4 功能闭环
 
-The gate deliberately uses direct executable-plus-argument invocations. It does
-not invoke a shell, does not start a model provider, and does not write project
-files. A failed check leaves the previous JSON artifact intact only until the
-script completes its next run; the new artifact always includes each command's
-exit code, duration, signal, and bounded output tail.
+- P1：Account Vault/OAuth、Web Import Wizard、Execution/Cache Epoch、三档权限、
+  能力两轴与 `search_tools`、首次引导、坏帧隔离已接真实 Pi Adapter。
+- P2：Harness 会话档位、landstrip 配置、MCP 审批桥、pi-subagents 模型与 Envelope、
+  Worktree 单写入者、Slice 软/硬边界、带 digest 的 Capsule、TaskIngress、CLI Control Interface 已接线；HTTP+SSE 仅显式诊断模式。
+- P3：真实 TDD 工具/状态恢复/Gate、Cursor/Claude/Codex ImportCompiler、Foreign
+  Resume、unknown-tool 兼容提示已接线。
+- P4：任务 `TOOLS.md`、任务 Todo 权威、缓存指标、Pi RPC navigation、真实 tarball
+  smoke、三平台 CI 合同和当前文档已完成。
 
-## Implemented outcomes
+## 尚未运行（不能声明 P4 产品发布完成）
 
-- P0: durable Simple/Harness task kinds, portable workspace binding, account
-  handoff with explicit localized `continue`, task and Agent Run lifecycle,
-  resource/stall monitor, recovery state, XML English/Chinese UI, and the
-  compatibility boundary around the existing Pi runtime.
-- P1: versioned Harness discovery and review, trust/drift fingerprints,
-  explicit action authorization, typed execution, bounded verification,
-  structured test result classification, explicit Gate Validity red probes,
-  Evidence Ledger/artifacts, redaction/encryption/retention, and truthful
-  completion labels.
-- P2: three-tier lazy capability catalog with persisted Disabled modules,
-  explicit user/task capability scopes,
-  safe stale-write checks, deterministic local search, one-shot LSP mappings,
-  and the `TOOLS.md` task contract.
-- P3: durable background jobs with restart/cancel/timeout, checkpointed task
-  graph, Git snapshots and safe worktrees, qualified read-only subagent routing,
-  user-selected model policy, and live resource attribution.
-- P4: non-resident extensions, manual selective JSON/rules/skills/commands
-  import, permission migrations, isolated MCP stdio/Streamable HTTP, real
-  DAP adapter process lifecycle with bounded events, project-adapter registries,
-  deduplicated diagnostics, advisory subagents, task-scoped cancellation, crash/hang cleanup, and content-addressed
-  regression records with deterministic comparison.
+| Gate | 原因 | 状态 |
+|---|---|---|
+| Linux 安装产物与会话 | 当前主机为 Windows；workflow 已配置 | not_run |
+| macOS 安装产物与会话 | 当前主机为 Windows；workflow 已配置 | not_run |
+| Windows AppContainer 实际隔离探针 | landstrip 配置已生成，但缺独立破坏性沙箱环境 | not_run |
+| Provider 缓存命中率 | 当前环境无测试 API Key；结构与归因已验证，不能虚构命中率 | not_run |
+| 中型仓库模型驱动 Slice 漂移实验 | 当前环境无测试 Provider；Capsule/换会话结构已验证 | not_run |
+| 三来源真实用户历史性能/失真 | 契约 fixture 已通过，尚未由用户选择真实样本执行 | not_run |
 
-The Harness V2 closure additionally routes real Pi events into RuntimeSpine,
-uses owner-confirmed WorkManager wait/cancel, persists ACP delivery
-acknowledgements, runs real before-tool hooks and automatic BeforeComplete
-Gate/red probes, routes CodeIntelligence to the embedded real LSP adapter,
-checks delegation authority before actual spawn, and uses ExtensionManager as
-the production facade. These paths are exercised through the same broker
-controls used by the GUI/headless adapters rather than test-only state models.
-
-## Safety and scope notes
-
-- Installed extensions are catalog metadata until a user explicitly enables a
-  task-scoped run. A closed monitor panel does not disable resource enforcement.
-- Imported Cursor/Codex/Claude/OpenCode material is copied selectively into a
-  versioned Picode store. Unsupported entries are reported; symlinks and path
-  escapes are rejected. MCP JSON stores references and names, never secret
-  values; secret resolution is JIT and process-scoped.
-- Advisory output is an unverified candidate, not Evidence Ledger proof. Only
-  the main agent can accept or reject it through the normal verification path.
-- Local tests do not contact providers. Token and cost attribution is therefore
-  explicitly `unavailable` in the gate artifact unless provider telemetry is
-  supplied by a real run.
-
-## Commands and observed result
-
-The final run is expected to have zero failed checks. Rust child-process fixtures
-are intentionally marked `#[ignore]` in the parent process and are listed in the
-JSON artifact; they are launched only by their dedicated fixture tests so a test
-process cannot orphan them.
-
-The machine-readable artifact records the exact Rust/frontend counts for the
-run. The P0-P4 implementation now exposes `harness_validate_gate` for explicit
-controlled red probes and `capability_set_tier` for persisted capability
-residency. A project profile without a red probe remains visibly incomplete;
-the passing repository Gate itself does not manufacture red-capability proof.
-CI authority and project-specific engine/content adapters remain external or
-P5 concerns, as documented in the development-harness audit.
+因此，结论是：**P1–P4 可代码化范围已经闭合；Windows 开发态与安装产物通过；
+跨平台、真实 Provider 和真实历史样本属于待执行验收，不能提前标绿。**

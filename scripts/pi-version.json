@@ -1,7 +1,0 @@
-{
-  "version": "0.83.0",
-  "sha256": {
-    "pi-windows-x64.zip": "7bda7993553a0d556f1eed53d96dd4a83e183332475265fb87c79ff269bf357d"
-  },
-  "_comment": "Locked earendil-works/pi release version that Picode bundles. Bump this, run `bun run fetch:pi`, smoke-test, then commit. Every release target must be pinned before publishing."
-}

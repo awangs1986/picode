@@ -1,237 +1,175 @@
-# Picode
+# Picode V3
 
-**English** | [简体中文](./README.zh.md)
+<p align="right"><a href="README.en.md">English</a></p>
 
-> ⚠️ **Major rewrite in progress.** The current public codebase is being refactored from the ground up. The previous architecture had a number of **fatal design problems** (control-plane / agent boundaries, harness trust assumptions, and related structural issues). Treat what is on `main` today as transitional and unstable — do not build production workflows or long-lived forks on it until the rewrite lands.
+Picode V3 是一个面向中小型到中型软件、游戏工程开发的轻量化 Harness。
+它以原版 Pi Agent 为运行时基础，通过 Extension-first 方式增加开发工作流、权限、
+测试、任务切片和可观测性；不重写 Pi Agent，不另造 Rust Core，也不强迫所有任务
+使用完整工程流程。
 
-> A lightweight, multi-provider desktop development harness built on Pi.
+<span style="color:red"><strong>当前状态：开发中，尚未完善，不是稳定发行版。</strong> P0–P4 的可代码化范围已通过本机自动化验证，但 Linux/macOS 实机、真实 Provider、真实中型项目漂移实验、Windows 强沙箱和第三方可选组件安装仍未全部验收。请把当前版本当作开发测试版。</span>
 
-Picode is a local desktop workspace for the [Pi coding agent](https://github.com/earendil-works/pi) and a maintained fork of [Picot](https://github.com/shixin-guo/picot). It is designed for personal software and game development: small enough for a quick fix, but able to carry a medium-sized project through implementation, local verification, recovery, and handoff.
+## 核心理念
 
-Picode keeps Pi as the agent runtime and uses a Tauri 2 / Rust control plane. The product direction below describes the intended shape after the rewrite; much of the shipped tree still reflects the older design that is being replaced.
+- **Pi 保持简洁**：Simple 模式接近原版 Pi；先进模型不被过度提示词和 Harness 约束。
+- **治理按需出现**：Simple、Standard、TDD 是会话级档位，能力按一级常驻、二级可发现懒加载、三级默认停用分层。
+- **事实与提示词分离**：提示词负责协作方式，Guard、TaskControl、GateRunner 和文件权威负责事实与强制条件。
+- **开发者拥有最终权力**：普通文件修改可按权限策略执行；commit、merge、push 等发布动作永远需要用户确认。
+- **上下文抗失真**：长任务切成 Slice，用带来源指针和摘要校验的 Capsule 交接；不依赖模型声称“我记得”。
+- **一个 Workflow**：TUI、CLI 和未来适配器共享同一套 Store、Engine、Guard、Devloop，不建立第二套任务数据库。
 
-> Validated most heavily on Windows. Back up important conversations and review agent actions before using it on valuable projects.
-
-## Why Picode
-
-Most coding-agent applications optimize either for a fast single session or for a large autonomous platform. Picode takes a different position: a low-overhead personal development workstation that can preserve work across providers, accounts, chats, projects, restarts, and operating systems.
-
-| Picode advantage | What it means in practice |
-|---|---|
-| **Pi at the core** | The model loop remains Pi instead of being reimplemented inside the GUI. Picode adds a desktop control plane around a compact agent runtime. |
-| **Simple when the task is simple** | A Simple Task starts in a safe Scratch Space without workspace discovery, Git policy, LSP, MCP, DAP, or extension processes. |
-| **A complete optional development loop** | A Harness Task can bind a repository, plan work, manage background jobs and subagents, run local gates, retain evidence, and prepare a reviewable handoff. |
-| **Provider-independent continuity** | Codex, Claude, Cursor, and compatible APIs can coexist. Chats and task state survive account interruption; execution resumes only after the user explicitly continues it. |
-| **Capabilities without permanent weight** | Optional tools are discoverable through lightweight manifests. Their schemas, processes, servers, browsers, and runtimes load only when invoked. |
-| **Completion backed by evidence** | A green Gate is not automatically trusted. Picode records the result and requires a controlled red probe when a Gate is introduced or materially changed. |
-| **Desktop observability** | The GUI exposes Agent Runs, subagents, jobs, process ownership, resource use, task bindings, extension state, and recent errors. |
-| **Portable long-project state** | Selective chat import, workspace rebinding, encrypted backups, compressed context packages, and path normalization support machine and OS migration. |
-
-## Core philosophy
-
-### 1. Stronger models need less imposed harness
-
-Picode does not assume that every capable model needs a long system prompt, a mandatory workflow, or a stack of automatically invoked Skills. The default path stays close to Pi. Structure is added only when the task, the user, or the project requires it.
-
-- **Simple Task** is the direct path: conversation plus Pi's core capabilities.
-- **Harness Task** is the engineering path: workspace, plan, Gates, evidence, recovery, and optional isolation.
-- An explicitly invoked user Skill may override the task workflow. The override remains visible and task-scoped.
-- Authorization and destructive-operation boundaries remain enforced by the underlying APIs, not by prompt wording.
-
-### 2. Lightweight means lazy residency, not missing capabilities
-
-Picode does not measure simplicity by deleting tools that real development needs. It separates capability availability from memory residency:
-
-1. **Resident Core** — lightweight chat, task, authorization, filesystem/process primitives, Git metadata, and monitoring control.
-2. **Discoverable Lazy Capability** — enabled and searchable, but its full schema, implementation, and processes load only when invoked.
-3. **Disabled User Module** — visible in Settings but absent from the model catalog and forbidden from starting processes, ports, or network activity.
-
-The unified extension lifecycle is:
-
-```text
-Discovered → Enabled → Trusted → Running
-```
-
-Enabled does not mean running. Trusted does not grant extra permissions. Disabled means zero model visibility and zero runtime activity.
-
-### 3. A development Harness must close the loop
-
-Picode targets the local responsibilities of a developer working on software or a game: understand, inspect, plan, edit, build, test, debug, review, and hand off. It does not attempt to replace the CI authority, the main-branch reviewer, the release owner, the game engine, or the IDE.
-
-It is deliberately not a general research, writing, or art-production platform. Optional integrations may support engineering work, but the product boundary remains software development.
-
-### 4. “Green” is not proof unless the Gate can turn red
-
-A command returning exit code zero proves only that one command returned zero. A Picode Completion Gate has a declared predicate, bounded output, retained evidence, and—when introduced or changed—a controlled negative test demonstrating that the same Gate rejects a bad candidate.
-
-### 5. Continuity belongs to the task, not the provider session
-
-Chat, Task Run, plan, evidence, workspace identity, and account execution epoch are separate durable concepts. If account A disconnects, only work owned by A stops. Account B may take over the preserved task, but no model or tool call starts until the user explicitly enters **Continue**.
-
-## Development workflow
-
-The same desktop application supports a fast path and a full engineering path. Neither is silently forced onto the other.
+## 用户视角的开发闭环
 
 ```mermaid
 flowchart TD
-    A["Create a task"] --> B{"Simple or Harness?"}
-
-    B -->|"Simple"| S1["Safe Scratch Space<br/>or optional attached folder"]
-    S1 --> S2["Pi conversation + core tools"]
-    S2 --> S3["Implement / inspect / answer"]
-    S3 --> S4["Simple completion<br/>no Harness claim"]
-
-    B -->|"Harness"| H1["Bind a real workspace"]
-    H1 --> H2["Load project profile and visible overrides"]
-    H2 --> H3["Understand scope, baseline, acceptance conditions"]
-    H3 --> H4["Plan work and design red-capable Gates"]
-    H4 --> H5["Implement with core tools<br/>and lazy capabilities"]
-    H5 --> H6["Build · test · debug · review"]
-    H6 --> H7{"All required Gates pass<br/>and are red-capable?"}
-    H7 -->|"No"| H8["Fix, bounded retry,<br/>or report a truthful blocker"]
-    H8 --> H5
-    H7 -->|"Yes"| H9["Evidence Ledger + developer handoff"]
-    H9 --> H10["External CI authority<br/>and main-branch reviewer"]
-
-    H5 -. "provider/account interruption" .-> C1["Persist chat, task, plan,<br/>work state and evidence"]
-    C1 --> C2["Activate replacement account"]
-    C2 --> C3["User explicitly enters Continue"]
-    C3 --> H5
-
-    H5 -. "bounded independent work" .-> D1["Optional subagent dispatch"]
-    D1 --> D2["Main Agent reviews result"]
-    D2 --> H6
+    A[启动 picode] --> B[原版 Pi TUI + Picode Extension]
+    B --> C{选择 Harness 档位}
+    C -->|simple| D[原生 Pi 对话与基础工具]
+    C -->|standard| E[权限、沙箱、Todo、Subagent、Slice]
+    C -->|tdd| F[RED → GREEN → Reviewer → Integration → Confirm]
+    D --> G[修改代码 / 运行测试]
+    E --> G
+    F --> G
+    G --> H{上下文或范围接近边界?}
+    H -->|否| I[继续当前 Slice]
+    H -->|是| J[生成 Capsule，校验快照]
+    J --> K[新 Pi 会话继续任务]
+    K --> G
+    G --> L[GateRunner 产生 Evidence]
+    L --> M{完成条件满足?}
+    M -->|否| N[修复、Review 或 QA handoff]
+    N --> G
+    M -->|是| O[用户确认 Git 发布动作]
 ```
 
-### What the workflow guarantees
+## 四个核心模块
 
-- A Simple Task never claims Harness verification.
-- A Harness Task cannot execute against an imported or restored workspace until the path is rebound on the current machine.
-- Optional Git worktrees, write leases, LSP, DAP, MCP, browser automation, and professional modules activate only when selected by task policy or the user.
-- Subagents receive bounded delegation contracts and cannot enlarge the authority assigned by the main Agent.
-- Local Gate evidence supports developer handoff; it does not impersonate CI or merge approval.
+| 模块 | 责任 |
+|---|---|
+| **Store** | 文件权威、账号 Vault、导入编译、Task/Capsule/Todo 持久化、锁和原子写入 |
+| **Engine** | Pi 生命周期、能力激活、Subagent、Execution Epoch、Worktree 和沙箱调用侧 |
+| **Guard** | allow/ask/deny、Grant、权限策略、MCP 仲裁、能力目录与信任摘要 |
+| **Devloop** | Task、Slice/Capsule、上下文桥接、TDD 状态机、Gate、Evidence、Completion Label |
 
-## Current capabilities
+领域模块在 Pi 进程内通过接口和事件总线协作；Picode 不运行独立 Core 服务。
 
-### Providers, accounts, and models
+## 三种 Harness 档位
 
-- Manual import of supported local Codex, Claude, and Cursor configurations.
-- Reviewed JSON credential import; no automatic credential harvesting.
-- Codex official OAuth and OpenAI-compatible reverse-proxy channels.
-- Custom OpenAI-compatible and Anthropic-compatible providers.
-- Provider-aware model selection, including identical model names from different providers.
-- Multiple stored accounts, with at most one active account per provider.
-- Explicit task continuation after account replacement.
-- Separate official Cursor SDK API-key and experimental Cursor Desktop/CLI OAuth channels.
+| 档位 | 适用场景 | 默认行为 |
+|---|---|---|
+| `simple` | 小改动、实验、简单页面 | 保留 Pi 原生提示词和基础工具，零工程治理注入 |
+| `standard` | 日常中型开发 | 权限、沙箱、Todo、Subagent、Worktree、Slice、可发现扩展 |
+| `tdd` | 需要明确验收的功能 | 先证明 RED，再允许生产代码写入；Target Gate、独立 Reviewer、Integration Smoke、同快照确认后才能完成 |
 
-Secrets are normalized into the protected Account Vault. Picode does not retain imported source JSON as a live credential store.
+在 TUI 中输入：
 
-### Chats, migration, and recovery
-
-- Selective Codex, Cursor, and Claude history scanning and import.
-- Human-readable title, recent-message preview, time, size, source, archive, and sorting filters.
-- Deduplication, reasoning filtering, full-context viewing, and optional full reasoning import.
-- Mandatory Workspace Binding before imported chats may execute tools.
-- Cross-platform workspace identity and Windows/Linux/macOS path normalization.
-- Lossless chat backups with encryption enabled by default.
-- Compressed context packages for long-project transfer.
-- Archive state, soft deletion, confirmation-protected purge, and non-destructive rewind foundations.
-
-Chat backups do not package project files.
-
-### Harness and runtime
-
-- Explicit Simple Task and Harness Task creation.
-- Durable Task Runs, account execution epochs, plans, work state, and evidence.
-- Managed shell jobs, persistent code execution, browser runtime, code-intelligence and debugger adapters.
-- User-configurable subagent model policy and integrated [pi-subagents](https://github.com/nicobailon/pi-subagents).
-- Runtime Monitor for Agent/subagent relationships, CPU, memory, usage, wait states, and suspected stalls.
-- Completion coordination with Gate results, red probes, retry state, and evidence.
-- Unified ExtensionManager and WorkManager ownership for Skills, Hooks, MCP, LSP, DAP, Firstmate, and native extension processes.
-
-### Extension governance
-
-Extension Manifest v2 records source, pinned version or commit, content hash, license, platform support, permissions, components, health checks, and resource limits. Heavy processes run through a common adapter with task/run ownership, timeout, cancellation, crash reporting, and bounded output.
-
-The Professional Extensions GUI shows actual lifecycle state, provenance, version, permissions, recent errors, processes, and task bindings. Skill collections such as `mattpocock/skills` are presented as one expandable package rather than dozens of unrelated entries.
-
-## Architecture
-
-```mermaid
-flowchart LR
-    UI["Tauri WebView GUI"] --> TE["Task Experience"]
-    TE --> PI["Embedded Pi<br/>--mode rpc"]
-    PI <--> BR["Local RPC / WebSocket bridge"]
-    BR <--> WM["Rust control plane"]
-
-    WM --> TK["Task & Session Kernel"]
-    WM --> RL["Runtime Lifecycle"]
-    WM --> EX["ExtensionManager"]
-    WM --> WK["WorkManager"]
-    WM --> CE["Completion & Evidence"]
-
-    EX --> CAT["Lazy Capability Catalog"]
-    WK --> PROC["Shell · MCP · LSP · DAP<br/>browser · subagents · extensions"]
+```text
+/harness simple
+/harness standard
+/harness tdd
 ```
 
-The GUI and future headless/remote clients use the same task and chat control boundaries. Agent execution remains local to the computer running Picode.
+Pi 原生工具不会被隐藏。长尾能力由 `search_tools` 发现，需要时才激活，避免所有
+工具 Schema 常驻上下文。
 
-## Project status
+## 运行
 
-The P0–P4 production paths described in [Harness V2](./docs/P0-P5-HARNESS-V2.md) are connected and covered by local Gates. P5 remote and experimental capabilities remain planned and disabled by default.
-
-Picode's desktop governance, multi-account continuity, extension lifecycle, and verification model are ahead of its execution depth in some advanced areas. LSP, DAP, long-lived MCP, browser automation, subagent recovery, and context compaction are usable but still being deepened. See the candid [Picode vs. oh-my-pi pipeline review](./docs/research/picode-vs-oh-my-pi-pipeline-2026-08-01.md).
-
-Linux and macOS portability is an architectural requirement, but Windows currently receives the most hands-on validation.
-
-## Build from source
-
-Requirements:
-
-- [Rust](https://www.rust-lang.org/tools/install)
-- [Bun](https://bun.sh/)
-- [Tauri 2 platform prerequisites](https://v2.tauri.app/start/prerequisites/)
-- Git
-
-```bash
-git clone https://github.com/awangs1986/picode.git
-cd picode
-bun install --frozen-lockfile
-bun run dev
+```powershell
+cd D:\otherproject\picode\v3
+npm ci
+npm link
+picode
 ```
 
-Build a release:
+如果尚未执行 `npm link`，也可以直接运行：
 
-```bash
-bun run build
+```powershell
+node .\bin\picode.mjs
 ```
 
-Run the main local checks:
+Picode 固定携带 vendored Pi 0.84.0，数据默认写入 `~/.picode/`，与系统 Pi 数据
+目录隔离。
 
-```bash
-bun run check
-bun run test
-bun run check:rust
+## CLI-first 自动化
+
+CLI 是 P0–P4 唯一公开自动化入口，不解析 TUI 输出，也不要求先启动 TUI 或 Core：
+
+```powershell
+picode run --prompt "检查当前项目" --cwd D:\repo --jsonl --non-interactive
+picode session create --cwd D:\repo --json
+picode session send --session <id> --message "继续" --jsonl
+picode task status --task <id>
+picode task wait --task <id> --timeout-ms 60000
+picode gate status --task <id>
+picode gate evidence --task <id>
+picode harness get --session <id>
+picode harness set --session <id> --tier tdd
+picode account import
+picode doctor --json
 ```
 
-## Design and implementation documents
+stdout 是版本化 JSON/JSONL，stderr 只输出诊断；非交互模式遇到需要用户授权的操作
+会 fail-closed 并返回稳定退出码。HTTP/SSE 仅在 `PICODE_DEBUG_API=1` 时作为内部
+诊断传输启动，不是公共兼容接口。
 
-- [Harness V2: P0–P5](./docs/P0-P5-HARNESS-V2.md)
-- [Implementation roadmap](./ROADMAP.md)
-- [Domain model](./CONTEXT.md)
-- [Architecture Decision Records](./docs/adr/)
-- [Picode vs. oh-my-pi pipeline review](./docs/research/picode-vs-oh-my-pi-pipeline-2026-08-01.md)
+## 已引用和学习的项目
 
-## Upstream and acknowledgements
+Picode 不是把这些项目整体复制进来，而是按稳定接口、许可证和适用范围选择性吸收：
 
-Picode is a fork and derivative work of [Picot](https://github.com/shixin-guo/picot). Picot provided the desktop interaction model, Tauri foundation, session UI, and much of the original integration work that made this project possible. We sincerely thank its maintainers and contributors.
+- **earendil-works/pi**：Pi Agent Runtime、原版 TUI、会话格式和 Extension API 的基础。
+- **pi-subagents**：Subagent 委派、异步任务、生命周期工件、Worktree 隔离和 Watchdog Review。
+- **pi-landstrip**：跨平台沙箱 Provider 的调用侧；策略仍由 Picode Guard 决定。
+- **pi-mcp-adapter**：外部 MCP 的搜索、描述、调用和审批仲裁。
+- **pi-plan-mode / pi-goal**：只读计划与有边界的目标推进能力。
+- **pi-web-access**：Simple 档可用的 Web 搜索/抓取扩展。
+- **pi-cache-optimizer**：Provider 缓存兼容与命中率诊断；Picode 禁止其改写提示词。
+- **pi-lens**：LSP 诊断和影响范围辅助。
+- **mattpocock/skills**：可选的软件工程 Skills 集合，采用按需加载思路。
+- **Herdr**：可选的多任务终端编排 Runtime；不替代 Pi Subagent 底座。
+- **Codebase Memory MCP**：可选的代码库结构索引和长期记忆 Provider。
+- **Grok Build**：项目上下文发现、工具面、权限审批和任务状态呈现的参考对象。
 
-Picode is powered by the [Pi coding agent](https://github.com/earendil-works/pi). Pi provides the compact agent runtime, RPC mode, session format, model/provider integration, and extension ecosystem at the center of Picode. We equally thank Pi's maintainers and contributors.
+详细决策、来源、版本和取舍见 [PICODE-V3-DESIGN.md](PICODE-V3-DESIGN.md)、
+[MODULES.md](docs/design/MODULES.md)、[CONTEXT.md](CONTEXT.md) 和
+[ADR 目录](docs/adr)。
 
-Advanced subagent orchestration uses [pi-subagents](https://github.com/nicobailon/pi-subagents). Optional capabilities retain their respective upstream licenses and notices. Picode follows a capability-source ladder: prefer a compatible Pi package, then study Oh My Pi and comparable open-source agents, and write a Picode-specific implementation only when earlier options do not fit.
+## 当前验证结果
 
-Picode is an independent community project and is not affiliated with or endorsed by OpenAI, Anthropic, Cursor, xAI, or their respective products.
+```powershell
+npm run check
+npm run smoke:pi-rpc
+npm run smoke:package
+```
 
-## License
+当前基线：68 个测试文件、413 项测试通过；TypeScript、模块边界、锁定依赖、真实
+Pi RPC、npm 打包安装和 CLI doctor smoke 均已验证。详细证据见
+[P0-P4-ACCEPTANCE.md](docs/verification/P0-P4-ACCEPTANCE.md)。
 
-Picode is distributed under the [MIT License](./LICENSE), consistent with Picot's license. Third-party components and bundled dependencies retain their respective licenses and notices; see [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md).
+## 未来计划
+
+### P5：延后能力
+
+- Linux/macOS/Windows 的完整实机验证和更强的 Windows 沙箱探针；
+- `/pi-compress`、`/pi-correct` 显式上下文压缩与纠偏模块；
+- 真实 Provider 缓存命中率和中型项目 Slice 漂移实验；
+- 手机/桌面远程控制，复用同一 Control Interface；
+- 仅在 CLI 无法覆盖目标宿主时增加无状态 Picode Control MCP Adapter；
+- 可验证的第三方组件安装、更新、回滚和平台兼容矩阵；
+- 游戏领域验证适配器（无头运行、确定性回放、黄金快照）。
+
+### 未来产品方向
+
+GUI、远程协作和更丰富的扩展市场会在核心 Pi Workflow 稳定后单独评估；它们不能
+反过来迫使 Simple 模式变重，也不能创建第二套会话、任务或权限权威。
+
+## 贡献和当前限制
+
+当前仓库处于重构开发阶段。欢迎提交测试、跨平台验证、Pi 上游兼容性报告和扩展
+适配建议；涉及核心架构、权限、Gate 或文件权威的修改，请先阅读设计文档和 ADR。
+
+<span style="color:red"><strong>请勿把当前自动化测试全绿理解为产品已经完成。</strong> 真实 Provider、第三方可选组件、跨平台沙箱和中型项目漂移仍需要单独验收。</span>
+
+## 许可证和致谢
+
+Picode 以 MIT 许可证发布。感谢 Pi Agent 及其生态项目提供可组合的 Runtime、TUI
+和扩展接口；Picode 是围绕 Pi 的独立 folk/衍生开发路线。

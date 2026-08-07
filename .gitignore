@@ -1,27 +1,10 @@
 node_modules/
-.tools/
-.npm-cache/
-.worktrees/
+dist/
+coverage/
+*.log
+.env
+.env.*
+!.env.example
 .DS_Store
+Thumbs.db
 
-# Tauri build artifacts
-src-tauri/target/
-src-tauri/gen/
-/picode.exe
-/picode-tui.exe
-
-# Local portable runtime resources placed beside the release executables
-/extensions/embedded-server.mjs
-/extensions/pi-chat.mjs
-/extensions/picot-bridge.mjs
-/pi/
-
-# Pi extension bundles (produced by scripts/build-extensions.js)
-extensions/dist/
-
-# Embedded pi binary tree (produced by scripts/fetch-pi-binary.js)
-src-tauri/resources/pi/
-.cache/pi-binaries/
-
-# Pi session exports
-pi-session-*.html

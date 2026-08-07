@@ -1,61 +1,56 @@
 {
   "name": "picode",
-  "version": "0.3.0",
-  "description": "Local Codex-style desktop GUI for the Pi coding agent",
-  "keywords": [
-    "picode",
-    "picot-compatibility",
-    "pi",
-    "coding-agent",
-    "desktop",
-    "multi-agent",
-    "tauri"
-  ],
-  "author": "deflating",
+  "version": "0.0.1",
+  "description": "Picode V3 — pi distribution: harness suite for software development governance",
+  "type": "module",
   "license": "MIT",
-  "scripts": {
-    "tauri": "tauri",
-    "dev": "bun run fetch:pi && PATH=\"$HOME/.cargo/bin:$PATH\" tauri dev",
-    "fetch:pi": "bun run scripts/fetch-pi-binary.js",
-    "smoke:pi-rpc": "bun run scripts/smoke-pi-rpc.js",
-    "build:extensions": "bun run scripts/build-extensions.js",
-    "i18n:extract": "bun run scripts/extract-i18n-source.mjs",
-    "build": "PATH=\"$HOME/.cargo/bin:$PATH\" tauri build",
-    "prebuild": "bun run fetch:pi && bun run build:extensions",
-    "release": "bash scripts/release.sh",
-    "release:mac:dmg": "bash scripts/release-macos-dmg.sh",
-    "test": "vitest run && bun run scripts/check-tauri-permissions.js",
-    "test:watch": "vitest",
-    "lint": "biome lint .",
-    "lint:fix": "biome lint --write . --unsafe",
-    "format": "biome format .",
-    "format:fix": "biome format --write .",
-    "check": "biome check . && bun run check:design",
-    "check:fix": "biome check --write . --unsafe --formatter-enabled=false --linter-enabled=false && bun run check:design:fix",
-    "check:design": "bun scripts/check-design-css.mjs",
-    "check:design:fix": "bun scripts/check-design-css.mjs --fix",
-    "check:permissions": "bun run scripts/check-tauri-permissions.js",
-    "gate:performance": "node scripts/performance-gate.mjs",
-    "check:rust": "bash scripts/check-rust.sh"
+  "engines": {
+    "node": ">=22.19.0"
   },
-  "dependencies": {
-    "@tauri-apps/api": "^2",
-    "@tauri-apps/plugin-dialog": "^2.7.1",
-    "@tauri-apps/plugin-fs": "^2.5.1",
-    "@tauri-apps/plugin-process": "^2.3.1",
-    "@tauri-apps/plugin-shell": "^2.3.5",
-    "@tauri-apps/plugin-updater": "^2.10.1",
-    "pi-subagents": "0.37.2",
-    "qrcode": "^1.5.0",
-    "remend": "^1.3.0",
-    "ws": "^8.16.0"
+  "bin": {
+    "picode": "./bin/picode.mjs",
+    "picode-ctl": "./bin/picode-ctl.mjs"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "prompts/",
+    "README.md",
+    "README.en.md"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/extension/pi-entry.ts"
+    ]
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "check:boundaries": "node scripts/check-boundaries.mjs",
+    "check:package-metadata": "node scripts/package-metadata-contract.mjs",
+    "smoke:pi-rpc": "node scripts/pi-rpc-smoke.mjs",
+    "smoke:package": "node scripts/package-smoke.mjs",
+    "check": "npm run typecheck && npm run check:boundaries && npm run check:package-metadata && npm run test"
   },
   "devDependencies": {
-    "@biomejs/biome": "latest",
-    "@earendil-works/pi-coding-agent": "0.83.0",
-    "@tauri-apps/cli": "^2.11.2",
-    "esbuild": "^0.28.0",
-    "jsdom": "^26.1.0",
-    "vitest": "^3.2.4"
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  },
+  "dependencies": {
+    "@earendil-works/pi-ai": "0.84.0",
+    "@earendil-works/pi-coding-agent": "0.84.0",
+    "@narumitw/pi-goal": "0.49.5",
+    "@narumitw/pi-plan-mode": "0.49.3",
+    "open": "10.2.0",
+    "pi-cache-optimizer": "2.8.0",
+    "pi-landstrip": "0.18.26",
+    "pi-lens": "3.8.74",
+    "pi-mcp-adapter": "2.21.0",
+    "pi-subagents": "0.42.1",
+    "pi-web-access": "0.18.0",
+    "tsx": "4.23.11",
+    "typebox": "1.3.7"
   }
 }
