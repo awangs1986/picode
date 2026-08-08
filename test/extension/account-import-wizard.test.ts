@@ -130,4 +130,21 @@ describe("account import Web Wizard", () => {
       await expect(fetch(wizard.url)).rejects.toThrow();
     });
   });
+
+  it("publishes the fallback URL without waiting for a stalled desktop browser launcher", async () => {
+    await withTempPicodeDir(async () => {
+      const startedAt = Date.now();
+      const wizard = await startAccountImportWizard({
+        accounts: new AccountsManager(() => {}),
+        openBrowser: async () => new Promise<void>(() => {}),
+        discoverAccounts: async () => [],
+        timeoutMs: 5_000,
+      });
+
+      expect(Date.now() - startedAt).toBeLessThan(500);
+      expect(wizard.url.hostname).toBe("127.0.0.1");
+      wizard.cancel();
+      expect(await wizard.completion).toEqual({ status: "cancelled" });
+    });
+  });
 });

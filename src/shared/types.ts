@@ -37,6 +37,7 @@ export type IntentCategory =
   | "fs-write"
   | "exec"
   | "network"
+  | "capability-read"
   | "git-read"
   | "git-mutate" // commit/merge/push/删分支/重写历史——永远需要用户确认
   | "mcp-tool";

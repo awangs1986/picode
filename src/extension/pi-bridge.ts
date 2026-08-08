@@ -280,6 +280,10 @@ function intentFor(event: ToolCallEvent, cwd: string): OperationIntent {
       return { category: "fs-read", targets: path === undefined ? [] : [path], cwd };
     case "git":
       return StructuredGit.intent({ ...(input as GitRequest), cwd, action: String(input.action) as GitAction });
+    case "search_tools":
+      return input.action === "search"
+        ? { category: "capability-read", targets: [String(input.query ?? "")], cwd }
+        : { category: "mcp-tool", targets: [`search_tools:${String(input.action ?? "unknown")}`], cwd };
     default:
       return { category: "mcp-tool", targets: [event.toolName], cwd };
   }
@@ -355,10 +359,10 @@ export function registerPicodeBridge(
         return { block: true, reason: "TDD requires a recorded RED before shell commands may mutate files" };
       }
     }
-    if (
-      runtime.harness.current() !== "simple" &&
-      intent.category !== "fs-read" && intent.category !== "git-read" && intent.category !== "network"
-    ) {
+    const needsWriter = runtime.harness.current() !== "simple" &&
+      intent.category !== "fs-read" && intent.category !== "git-read" && intent.category !== "network";
+    const claimWriterAfterApproval = async (): Promise<ToolCallEventResult | undefined> => {
+      if (!needsWriter) return undefined;
       const taskId = slices.currentTaskId();
       if (taskId === undefined) {
         return { block: true, reason: "task binding unavailable; reload the session before writing" };
@@ -366,10 +370,11 @@ export function registerPicodeBridge(
       const claimed = await worktrees.claimWriter(ctx.cwd, taskId);
       if (!claimed.ok) return { block: true, reason: claimed.error.message };
       claimedWriter = { workspace: ctx.cwd, taskId };
-    }
+      return undefined;
+    };
     const decision = runtime.guard.decide(intent);
     toolIntentLatencyMs.push(Math.max(0, now() - started));
-    if (decision.verdict === "allow") return undefined;
+    if (decision.verdict === "allow") return claimWriterAfterApproval();
     if (decision.verdict === "deny") return { block: true, reason: decision.reason };
     let allowed: boolean;
     if (typeof ctx.ui.select === "function") {
@@ -382,7 +387,8 @@ export function registerPicodeBridge(
     } else {
       allowed = await ctx.ui.confirm("Picode permission", decision.reason);
     }
-    return allowed ? undefined : { block: true, reason: "user declined" };
+    if (!allowed) return { block: true, reason: "user declined" };
+    return claimWriterAfterApproval();
   });
 
   pi.on("session_compact", () => {
@@ -469,7 +475,7 @@ export function registerPicodeBridge(
       // The pending marker is consumed before the turn starts. If a reload
       // occurs while the session is idle, this prevents duplicate /plan runs.
       pi.appendEntry(PLAN_PENDING_ENTRY_TYPE, { state: "consumed" });
-      const prompt = planCommandResult(pendingPlan, { installed: true, roots: [] });
+      const prompt = planCommandResult(pendingPlan, findMattPocockSkills(ctx.cwd));
       const delivery = typeof ctx.isIdle === "function" && !ctx.isIdle()
         ? { deliverAs: "followUp" as const }
         : undefined;

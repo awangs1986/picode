@@ -13,6 +13,7 @@ import {
   registerPicodeBridge,
 } from "../../src/extension/pi-bridge.ts";
 import { withTempPicodeDir } from "../helpers/temp-dir.ts";
+import { WorktreeRegistry } from "../../src/engine/worktree.ts";
 
 type Handler = (event: never, ctx: ExtensionContext) => unknown;
 
@@ -200,6 +201,43 @@ describe("Pi 0.84 Bridge feasibility seam", () => {
 
     expect(result).toEqual({ block: true, reason: "user declined" });
     expect(select).toHaveBeenCalledOnce();
+  });
+
+  it("does not acquire the workspace writer lease before a mutation is approved", async () => {
+    await withTempPicodeDir(async () => {
+      const pi = fakePi();
+      const runtime = createRuntime();
+      registerPicodeBridge(pi.api, runtime);
+      const ctx = {
+        ...fakeContext(true),
+        sessionManager: {
+          getSessionId: () => "lease-after-approval",
+          getBranch: () => [{
+            type: "custom",
+            customType: "picode.harness-tier",
+            data: { tier: "standard" },
+          }],
+        },
+      } as unknown as ExtensionContext;
+      await pi.handlers.get("session_start")?.(
+        { type: "session_start", reason: "startup" } as never,
+        ctx,
+      );
+      let answer!: (value: string) => void;
+      const select = vi.fn(() => new Promise<string>((resolve) => { answer = resolve; }));
+      const pending = pi.handlers.get("tool_call")?.({
+        type: "tool_call",
+        toolCallId: "pending-shell-mutation",
+        toolName: "bash",
+        input: { command: "npm test" },
+      } as never, { ...ctx, ui: { select } } as unknown as ExtensionContext) as Promise<unknown>;
+
+      await vi.waitFor(() => expect(select).toHaveBeenCalledOnce());
+      expect(new WorktreeRegistry().list().writers).toEqual([]);
+      answer("Deny");
+      await expect(pending).resolves.toEqual({ block: true, reason: "user declined" });
+      expect(new WorktreeRegistry().list().writers).toEqual([]);
+    });
   });
 
   it("keeps /plan as a mattpocock compatibility entry without auto-installing", async () => {
@@ -720,6 +758,23 @@ describe("Pi 0.84 Bridge feasibility seam", () => {
     expect(result?.content).toEqual([
       { type: "text", text: expect.stringContaining("pi-web-access") },
     ]);
+  });
+
+  it("does not ask for approval when auto mode only searches the capability catalog", async () => {
+    const pi = fakePi();
+    const runtime = createRuntime();
+    registerPicodeBridge(pi.api, runtime);
+    const ctx = fakeContext(true);
+
+    const result = await pi.handlers.get("tool_call")?.({
+      type: "tool_call",
+      toolCallId: "search-readonly",
+      toolName: "search_tools",
+      input: { action: "search", query: "web" },
+    } as never, ctx);
+
+    expect(result).toBeUndefined();
+    expect(ctx.ui.confirm).not.toHaveBeenCalled();
   });
 
   it("injects the stable TDD core prompt and blocks production writes before recorded RED", async () => {

@@ -217,10 +217,16 @@ ${candidateRows}
   const url = new URL(`http://127.0.0.1:${address.port}/${bootstrapToken}/`);
   timer = setTimeout(() => finish({ status: "timed_out" }), options.timeoutMs ?? 120_000);
   let browserOpened = true;
-  try {
-    await options.openBrowser(url.toString());
-  } catch {
+  const browserAttempt = options.openBrowser(url.toString()).catch(() => {
     browserOpened = false;
-  }
+  });
+  // Desktop URL handlers can remain pending even though the browser has already
+  // been handed the URL.  The loopback URL is the headless contract, so never
+  // hold it hostage to the platform launcher.  One event-loop turn still lets
+  // an immediate launch failure update the fallback diagnostic.
+  await Promise.race([
+    browserAttempt,
+    new Promise<void>((resolve) => setImmediate(resolve)),
+  ]);
   return { url, completion, browserOpened, cancel: () => finish({ status: "cancelled" }) };
 }

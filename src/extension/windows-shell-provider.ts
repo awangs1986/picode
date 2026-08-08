@@ -1,6 +1,6 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
-import { join } from "node:path";
+import { join, win32 } from "node:path";
 import { tmpdir } from "node:os";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
@@ -62,7 +62,7 @@ export function createWindowsPowerShellProvider(
   if (systemRoot === undefined || systemRoot.trim() === "") {
     throw new Error("SystemRoot is required for the Windows PowerShell sandbox provider");
   }
-  const executable = join(
+  const executable = win32.join(
     systemRoot,
     "System32",
     "WindowsPowerShell",
@@ -78,8 +78,12 @@ export function createWindowsPowerShellProvider(
       const environmentPath = join(directory, "environment.json");
       const commandPath = join(directory, "command.ps1");
       const bootstrap = [
+        "$picodeUtf8 = New-Object System.Text.UTF8Encoding($false)",
+        "[Console]::InputEncoding = $picodeUtf8",
+        "[Console]::OutputEncoding = $picodeUtf8",
+        "$OutputEncoding = $picodeUtf8",
         "$ErrorActionPreference = 'Stop'",
-        `$picodeEnvironment = Get-Content -Raw -LiteralPath ${quotePowerShellLiteral(environmentPath)} | ConvertFrom-Json`,
+        `$picodeEnvironment = Get-Content -Encoding UTF8 -Raw -LiteralPath ${quotePowerShellLiteral(environmentPath)} | ConvertFrom-Json`,
         "foreach ($picodeProperty in $picodeEnvironment.PSObject.Properties) {",
         "  [Environment]::SetEnvironmentVariable($picodeProperty.Name, [string]$picodeProperty.Value, 'Process')",
         "}",
@@ -92,7 +96,10 @@ export function createWindowsPowerShellProvider(
         encoding: "utf8",
         mode: 0o600,
       });
-      writeFileSync(commandPath, bootstrap, { encoding: "utf8", mode: 0o600 });
+      // Windows PowerShell 5.1 interprets BOM-less scripts using the active
+      // ANSI code page. A BOM is therefore required for non-ASCII commands,
+      // paths and literals. PowerShell 7 also accepts this encoding.
+      writeFileSync(commandPath, `\uFEFF${bootstrap}`, { encoding: "utf8", mode: 0o600 });
       let disposed = false;
       return {
         executable,
@@ -123,7 +130,14 @@ export function registerWindowsPowerShellProvider(
   platform = process.platform,
 ): () => void {
   if (platform !== "win32") return () => undefined;
-  return provideLandstripShell(pi, createWindowsPowerShellProvider());
+  const provider = createWindowsPowerShellProvider();
+  const operations = createWindowsPowerShellOperations(provider);
+  // Pi's RPC `bash` command is a user_bash lifecycle event, not a model tool
+  // invocation. Registering only the tool definition therefore leaves the
+  // headless/public RPC path on upstream's default shell. Keep both seams on
+  // the same provider so TUI, agent tools and headless automation agree.
+  pi.on("user_bash", () => ({ operations }));
+  return provideLandstripShell(pi, provider);
 }
 
 /**
@@ -188,7 +202,16 @@ export function registerWindowsPowerShellTool(
   platform = process.platform,
 ): void {
   if (platform !== "win32") return;
-  pi.registerTool(createBashToolDefinition(cwd, {
+  const tool = createBashToolDefinition(cwd, {
     operations: createWindowsPowerShellOperations(),
-  }));
+  });
+  pi.registerTool({
+    ...tool,
+    description: [
+      "Execute a Windows PowerShell 5.1 command in the current working directory.",
+      "Use PowerShell syntax and cmdlets such as Get-ChildItem, Get-Content, Select-String, and Get-Location.",
+      "Do not use POSIX shell operators or commands such as pwd, ls -la, grep, or &&.",
+      "Returns UTF-8 stdout and stderr.",
+    ].join(" "),
+  });
 }

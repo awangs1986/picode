@@ -145,4 +145,16 @@ describe("Capsule v1 lifecycle", () => {
     expect(md).toContain("ENOENT on /tmp/x");
     expect(md).toContain("[evidence:ev-42]");
   });
+
+  it("preserves Unicode intent and narrative byte-for-byte", () => {
+    const cap = sealedCapsule({
+      intent: "继续下一阶段：验证缓存模块",
+      nextSteps: ["检查中文、emoji 与路径：你好 🎮 /tmp/项目"],
+      narrative: "不要把用户文本按系统代码页重新解码。",
+    });
+    const rendered = renderCapsule(cap);
+    expect(rendered).toContain("继续下一阶段：验证缓存模块");
+    expect(rendered).toContain("检查中文、emoji 与路径：你好 🎮 /tmp/项目");
+    expect(rendered).toContain("不要把用户文本按系统代码页重新解码。");
+  });
 });

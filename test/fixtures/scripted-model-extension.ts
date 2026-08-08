@@ -13,10 +13,22 @@ export default function scriptedModel(pi: ExtensionAPI): void {
       const base: AssistantMessage = { role: "assistant", content: [], api: model.api, provider: model.provider, model: model.id, usage: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 3, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "pending", timestamp: Date.now() };
       queueMicrotask(() => {
         stream.push({ type: "start", partial: base });
-        const requestedTool = context.messages.some((message) => message.role === "user" && JSON.stringify(message.content).includes("TOOL:"));
-        const hasToolResult = context.messages.some((message) => message.role === "toolResult");
-        if (requestedTool && !hasToolResult) {
-          const toolCall = { type: "toolCall" as const, id: "scripted-call-1", name: "bash", arguments: { command: "node --version" } };
+        const latestUser = context.messages.filter((message) =>
+          message.role === "user" && !JSON.stringify(message.content).includes("<picode_"),
+        ).at(-1);
+        const userText = latestUser === undefined ? "" : JSON.stringify(latestUser.content);
+        const requestedTool = userText.includes("TOOL:");
+        const toolResultCount = context.messages.filter((message) => message.role === "toolResult").length;
+        const requestedCalls = userText.includes("TOOL:TWICE") || userText.includes("TOOL:MUTATE") ? 2 : 1;
+        if (requestedTool && toolResultCount < requestedCalls) {
+          const command = userText.includes("TOOL:WRITE")
+            ? `node -e "require('node:fs').writeFileSync('approval-effect.txt','created')"`
+            : userText.includes("TOOL:HANG")
+              ? `node -e "setInterval(() => {}, 1000)"`
+            : userText.includes("TOOL:MUTATE") && toolResultCount === 1
+              ? `node -p "process.platform"`
+              : "node --version";
+          const toolCall = { type: "toolCall" as const, id: `scripted-call-${toolResultCount + 1}`, name: "bash", arguments: { command } };
           const partial = { ...base, content: [toolCall] };
           stream.push({ type: "toolcall_start", contentIndex: 0, partial: base });
           stream.push({ type: "toolcall_end", contentIndex: 0, toolCall, partial });

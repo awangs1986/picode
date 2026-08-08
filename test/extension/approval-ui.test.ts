@@ -19,11 +19,21 @@ describe("requestIntentApproval", () => {
     expect(guard.grants.all()).toHaveLength(0);
   });
 
+  it("denies without changing grants or permission tier", async () => {
+    const guard = new Guard("auto");
+    const ui = { select: vi.fn(async () => "Deny") } as unknown as ExtensionUIContext;
+    expect(await requestIntentApproval(ui, guard, intent, "confirm")).toBe(false);
+    expect(guard.grants.all()).toHaveLength(0);
+    expect(guard.permissionTier()).toBe("auto");
+  });
+
   it("supports an exact command grant for the current process session", async () => {
     const guard = new Guard("auto");
     const ui = { select: vi.fn(async () => "Allow exact command for this session") } as unknown as ExtensionUIContext;
     expect(await requestIntentApproval(ui, guard, intent, "confirm")).toBe(true);
     expect(guard.decide(intent).verdict).toBe("allow");
+    expect(guard.decide({ ...intent, command: "npm test -- --watch", targets: ["npm test -- --watch"] }).verdict)
+      .toBe("ask");
   });
 
   it("supports allowing all routine operations for the current session", async () => {

@@ -1,9 +1,10 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   createWindowsPowerShellOperations,
   createWindowsPowerShellProvider,
+  registerWindowsPowerShellTool,
 } from "../../src/extension/windows-shell-provider.ts";
 import { withTempPicodeDir } from "../helpers/temp-dir.ts";
 
@@ -47,12 +48,25 @@ describe("Windows Landstrip PowerShell provider", () => {
         NORMAL: "value",
       });
       expect(readFileSync(commandFile!, "utf8")).toContain("Get-ChildItem -Name");
+      expect([...readFileSync(commandFile!).subarray(0, 3)]).toEqual([0xef, 0xbb, 0xbf]);
       expect(readFileSync(commandFile!, "utf8")).toContain("Set-Location -LiteralPath 'C:\\repo'");
 
       await invocation.dispose?.();
       expect(existsSync(join(dir, "environment.json"))).toBe(false);
       expect(existsSync(environmentFile!)).toBe(false);
     });
+  });
+
+  it("describes the native bash slot as Windows PowerShell", () => {
+    const tools: Array<{ name: string; description?: string }> = [];
+    registerWindowsPowerShellTool({
+      registerTool(tool: { name: string; description?: string }) { tools.push(tool); },
+    } as never, "C:\\repo", "win32");
+
+    expect(tools).toHaveLength(1);
+    expect(tools[0]?.name).toBe("bash");
+    expect(tools[0]?.description).toContain("Windows PowerShell 5.1");
+    expect(tools[0]?.description).toContain("Get-ChildItem");
   });
 });
 
@@ -68,5 +82,22 @@ describe.runIf(process.platform === "win32")("Windows PowerShell operations", ()
     expect(result.exitCode).toBe(0);
     expect(output).toContain(process.cwd());
     expect(output).toMatch(/v\d+\.\d+\.\d+/);
+  });
+
+  it("preserves a Chinese working directory and Chinese command text", async () => {
+    await withTempPicodeDir(async (dir) => {
+      const cwd = join(dir, "中文工作区");
+      mkdirSync(cwd);
+      const chunks: Buffer[] = [];
+      const result = await createWindowsPowerShellOperations().exec(
+        "$PWD.Path; Write-Output '中文输出'",
+        cwd,
+        { onData: (chunk) => chunks.push(chunk), timeout: 10 },
+      );
+      const output = Buffer.concat(chunks).toString("utf8");
+      expect(result.exitCode).toBe(0);
+      expect(output).toContain(cwd);
+      expect(output).toContain("中文输出");
+    });
   });
 });

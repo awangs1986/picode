@@ -1,4 +1,5 @@
 import { readFileSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { renderForeignResumeCapsule } from "../devloop/index.ts";
 import type { Result } from "../shared/types.ts";
@@ -12,6 +13,11 @@ const MAX_IMPORT_BYTES = 128 * 1024 * 1024;
 
 export interface ForeignChatPreview {
   importId: string;
+  title: string;
+  lastMessage: string;
+  lastTimestamp?: string;
+  bytes: number;
+  archived: false;
   report: CompatReport;
   reportText: string;
   resumeCapsule: string;
@@ -38,8 +44,6 @@ export class ForeignChatImportService {
     const parsed = adapter.parse(raw);
     if (!parsed.ok) return parsed;
     const compiled = this.runtime.store.compileImport(parsed.value);
-    const persisted = await this.runtime.store.persistImport(sourceAgent, raw, parsed.value, compiled);
-    if (!persisted.ok) return persisted;
     const report = buildCompatReport(parsed.value, compiled);
     const dialog = compiled.events
       .filter((event): event is Extract<typeof event, { kind: "message" }> => event.kind === "message")
@@ -48,6 +52,8 @@ export class ForeignChatImportService {
     const lastUser = [...compiled.events].reverse().find(
       (event) => event.kind === "message" && event.role === "user" && event.text.trim() !== "",
     );
+    const lastMessage = [...compiled.events].reverse().find((event) => event.kind === "message");
+    const lastTimestamp = [...parsed.value.events].reverse().find((event) => event.timestamp !== undefined)?.timestamp;
     const losses = [
       ...(report.counts.adaptedLossy > 0 ? [`${report.counts.adaptedLossy} lossy tool mappings`] : []),
       ...(report.counts.unsupported > 0 ? [`${report.counts.unsupported} unsupported tool mappings`] : []),
@@ -65,11 +71,30 @@ export class ForeignChatImportService {
       workspaceState: "Bound to the current local workspace; imported claims remain unverified.",
     });
     return ok({
-      importId: persisted.value.importId,
+      importId: createHash("sha256").update(`${sourceAgent}\0${raw}`).digest("hex").slice(0, 24),
+      title: parsed.value.sessionTitle ?? (lastUser?.kind === "message" ? lastUser.text.slice(0, 120) : `Imported ${sourceAgent} chat`),
+      lastMessage: lastMessage?.kind === "message" ? lastMessage.text.slice(0, 280) : "",
+      ...(lastTimestamp === undefined ? {} : { lastTimestamp }),
+      bytes: Buffer.byteLength(raw, "utf8"),
+      archived: false,
       report,
       reportText: renderCompatReport(report),
       resumeCapsule,
     });
+  }
+
+  async persist(sourceAgent: string, file: string): Promise<Result<ForeignChatPreview>> {
+    const preview = await this.preview(sourceAgent, file);
+    if (!preview.ok) return preview;
+    const adapter = adapterFor(sourceAgent);
+    if (adapter === undefined) return err("import/source-unsupported", `unsupported source agent: ${sourceAgent}`);
+    const raw = readFileSync(file, "utf8");
+    const parsed = adapter.parse(raw);
+    if (!parsed.ok) return parsed;
+    const compiled = this.runtime.store.compileImport(parsed.value);
+    const persisted = await this.runtime.store.persistImport(sourceAgent, raw, parsed.value, compiled);
+    if (!persisted.ok) return persisted;
+    return ok(preview.value);
   }
 
   async continue(
@@ -84,6 +109,8 @@ export class ForeignChatImportService {
       `Continue this ${sourceAgent} history in the current workspace?\n${ctx.cwd}\n\n${preview.value.reportText}`,
     );
     if (!confirmed) return err("import/cancelled", "workspace binding cancelled");
+    const persisted = await this.persist(sourceAgent, file);
+    if (!persisted.ok) return persisted;
     const task = await this.runtime.taskIngress.accept({
       source: `import:${sourceAgent}`,
       externalId: preview.value.importId,

@@ -7,11 +7,28 @@ type Probe = CapabilityReadiness & { capabilityId: string };
 const report = (capabilityId: string, status: ReadinessReport["status"], summary: string, missing: string[] = [], nextSteps: string[] = []): ReadinessReport => ({ capabilityId, status, summary, missing, nextSteps, inspectedAt: new Date().toISOString() });
 const plan = (capabilityId: string, steps: string[]): SetupPlan => ({ capabilityId, steps, requiresApproval: true });
 
+function environmentValue(env: NodeJS.ProcessEnv, name: string): string | undefined {
+  const direct = env[name];
+  if (direct !== undefined || process.platform !== "win32") return direct;
+  const entry = Object.entries(env).find(([key]) => key.toLowerCase() === name.toLowerCase());
+  return entry?.[1];
+}
+
 export class CapabilityReadinessRegistry {
   constructor(private readonly probes: Probe[]) {}
   static defaults(overrides: Partial<ProbeDeps> = {}): CapabilityReadinessRegistry {
     const env = overrides.env ?? process.env;
-    const commandExists = overrides.commandExists ?? ((command: string) => (env.PATH ?? "").split(delimiter).some((dir) => existsSync(join(dir, process.platform === "win32" ? `${command}.exe` : command)) || existsSync(join(dir, command))));
+    const commandExists = overrides.commandExists ?? ((command: string) => {
+      const packageRoot = environmentValue(env, "PICODE_PACKAGE_ROOT");
+      const packageBin = packageRoot === undefined
+        ? []
+        : [join(packageRoot, "node_modules", ".bin")];
+      const directories = [...(environmentValue(env, "PATH") ?? "").split(delimiter), ...packageBin].filter(Boolean);
+      const names = process.platform === "win32"
+        ? [command, `${command}.cmd`, `${command}.exe`]
+        : [command];
+      return directories.some((dir) => names.some((name) => existsSync(join(dir, name))));
+    });
     return new CapabilityReadinessRegistry(defaultProbes({ env, commandExists }));
   }
   inspectAll(context: ReadinessContext, signal?: AbortSignal): Promise<ReadinessReport[]> { return Promise.all(this.probes.map((probe) => probe.inspect(context, signal))); }
@@ -35,11 +52,29 @@ function defaultProbes(deps: ProbeDeps): Probe[] {
   const staticProbe = (capabilityId: string, value: ReadinessReport, steps: string[]): Probe => ({ capabilityId, inspect: async () => value, prepare: async () => plan(capabilityId, steps) });
   return [
     { capabilityId: "git", inspect: async (ctx) => deps.commandExists("git") ? (existsSync(join(ctx.cwd, ".git")) ? report("git", "Ready", "Git executable and repository are available") : report("git", "NeedsSetup", "Directory is not a Git repository", ["repository"], ["Initialize or select a Git repository"])) : report("git", "Unavailable", "Git executable was not found", ["git"]), prepare: async () => plan("git", ["Install Git", "Open a Git repository"]) },
-    { capabilityId: "pi-lens", inspect: async (ctx) => ctx.harnessTier !== "tdd"
-      ? report("pi-lens", "NeedsSetup", "pi-lens is intentionally inactive outside the tdd harness", ["tdd-harness"], ["Switch this session to /harness tdd"])
-      : deps.commandExists("typescript-language-server") || deps.commandExists("rust-analyzer")
-        ? report("pi-lens", "Ready", "Code intelligence and a language server are available")
-        : report("pi-lens", "Degraded", "AST/index features are available; no supported language server was found", ["language-server"], ["Install the language server for this project"]), prepare: async () => plan("pi-lens", ["Switch to the tdd harness", "Choose and install a project language server"]) },
+    { capabilityId: "pi-lens", inspect: async (ctx) => {
+      if (ctx.harnessTier !== "tdd") {
+        return report("pi-lens", "NeedsSetup", "pi-lens is intentionally inactive outside the tdd harness", ["tdd-harness"], ["Switch this session to /harness tdd"]);
+      }
+      const typescriptProject = existsSync(join(ctx.cwd, "tsconfig.json")) || existsSync(join(ctx.cwd, "package.json"));
+      const rustProject = existsSync(join(ctx.cwd, "Cargo.toml"));
+      if (typescriptProject && deps.commandExists("typescript-language-server")) {
+        return report("pi-lens", "Ready", "TypeScript code intelligence and language server are available");
+      }
+      if (rustProject && deps.commandExists("rust-analyzer")) {
+        return report("pi-lens", "Ready", "Rust code intelligence and language server are available");
+      }
+      const missing = typescriptProject
+        ? ["typescript-language-server"]
+        : rustProject ? ["rust-analyzer"] : ["supported-project", "language-server"];
+      return report(
+        "pi-lens",
+        "Degraded",
+        "AST/index features are available; no matching project language server was found",
+        missing,
+        ["Install the language server matching this project"],
+      );
+    }, prepare: async () => plan("pi-lens", ["Switch to the tdd harness", "Choose and install a project language server"]) },
     { capabilityId: "mcp", inspect: async (ctx) => {
       const candidates = [
         join(deps.env.PI_CODING_AGENT_DIR ?? join(deps.env.PICODE_DIR ?? "", "agent"), "mcp.json"),

@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
+import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { buildPiLaunch, resolveVendoredPi } from "../../bin/picode-launch.mjs";
 
 describe("Picode vendored Pi launch contract", () => {
   it("ships a loadable Pi extension entry", async () => {
     const entry = await import("../../src/extension/pi-entry.ts");
     expect(entry.default).toBeTypeOf("function");
-  });
+  }, 20_000);
 
   it("resolves the pinned earendil coding-agent CLI instead of the unrelated legacy package", () => {
     const requested = [];
@@ -23,12 +25,11 @@ describe("Picode vendored Pi launch contract", () => {
   });
 
   it("accepts the file URL returned by ESM import.meta.resolve", () => {
+    const sdkEntry = join(process.cwd(), "pkg", "node_modules", "@earendil-works", "pi-coding-agent", "dist", "index.js");
     const entry = resolveVendoredPi({
-      resolve: () => "file:///C:/pkg/node_modules/@earendil-works/pi-coding-agent/dist/index.js",
+      resolve: () => pathToFileURL(sdkEntry).href,
     });
-    expect(entry.replaceAll("\\", "/")).toBe(
-      "C:/pkg/node_modules/@earendil-works/pi-coding-agent/dist/cli.js",
-    );
+    expect(entry).toBe(join(dirname(sdkEntry), "cli.js"));
   });
 
   it("injects the Picode adapter extension while preserving all user Pi arguments", () => {

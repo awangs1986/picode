@@ -98,7 +98,8 @@ Picode 固定携带 vendored Pi 0.84.0，数据默认写入 `~/.picode/`，与�
 ## CLI-first 自动化
 
 完整命令、RPC 协议、退出码和 PowerShell 示例见
-[无头模式使用手册](docs/HEADLESS-USAGE.zh.md)。
+[无头模式使用手册](docs/HEADLESS-USAGE.zh.md)。需要独立测试人员做全量黑盒验收时，使用
+[无头完整产品测试指南](docs/verification/HEADLESS-FULL-PRODUCT-TEST-GUIDE.zh.md)。
 
 CLI 是 P0–P4 唯一公开自动化入口，不解析 TUI 输出，也不要求先启动 TUI 或 Core：
 
@@ -106,6 +107,11 @@ CLI 是 P0–P4 唯一公开自动化入口，不解析 TUI 输出，也不要�
 picode run --prompt "检查当前项目" --cwd D:\repo --jsonl --non-interactive
 picode session create --cwd D:\repo --json
 picode session send --session <id> --message "继续" --jsonl
+picode session branch --session <id> --from <entry-id>
+picode slice create --session <id> --intent "下一阶段"
+picode subagent status --session <id>
+picode capability status
+picode chat preview --source codex --path D:\history
 picode task status --task <id>
 picode task wait --task <id> --timeout-ms 60000
 picode gate status --task <id>

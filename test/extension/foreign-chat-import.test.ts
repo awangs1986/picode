@@ -1,10 +1,11 @@
-import { writeFileSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { createRuntime } from "../../src/extension/index.ts";
 import { ForeignChatImportService } from "../../src/extension/foreign-chat-import.ts";
 import { withTempPicodeDir } from "../helpers/temp-dir.ts";
+import { dataPaths } from "../../src/shared/paths.ts";
 
 describe("ForeignChatImportService", () => {
   it("previews and continues a Codex transcript in a fresh Pi session", async () => {
@@ -33,6 +34,7 @@ describe("ForeignChatImportService", () => {
       } as unknown as ExtensionCommandContext;
 
       const preview = await service.preview("codex", file);
+      expect(existsSync(dataPaths.imports())).toBe(false);
       const continued = await service.continue("codex", file, ctx);
 
       expect(preview.ok).toBe(true);

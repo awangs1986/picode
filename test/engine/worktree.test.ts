@@ -69,6 +69,21 @@ describe("WorktreeRegistry", () => {
     });
   });
 
+  it("keeps an explicit CLI lease authoritative after its claimant process is gone", async () => {
+    await withTempPicodeDir(async () => {
+      const registry = new WorktreeRegistry();
+      expect((await registry.claimWriter("ws-1", "task-a", { persistent: true })).ok).toBe(true);
+      const saved = JSON.parse(JSON.stringify(registry.list())) as { writers: Array<{ pid: number; persistent?: boolean }> };
+      saved.writers[0]!.pid = 999999;
+      writeFileSync(join(dataPaths.tasks(), "worktrees.json"), JSON.stringify(saved), "utf8");
+
+      const conflict = await registry.claimWriter("ws-1", "task-b", { persistent: true });
+      expect(conflict.ok).toBe(false);
+      expect((await registry.releaseWriter("ws-1", "task-a")).ok).toBe(true);
+      expect((await registry.claimWriter("ws-1", "task-b", { persistent: true })).ok).toBe(true);
+    });
+  });
+
   it("allows another task to claim after releaseWriter", async () => {
     await withTempPicodeDir(async () => {
       const registry = new WorktreeRegistry();

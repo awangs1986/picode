@@ -11,10 +11,11 @@
 | TypeScript | `npm run typecheck` | passed |
 | 四模块边界 | `npm run check:boundaries` | passed |
 | 固定依赖与摘要 | `npm run check:package-metadata`；所有 runtime dependency 精确版本且 lock integrity 存在 | passed |
-| 全量自动测试 | `npm run check`：75 files / 443 tests | passed |
+| 全量自动测试 | `bun run check`：76 files / 465 tests | passed |
 | Pi 开发态启动 | `npm run smoke:pi-rpc`；真实 vendored Pi 0.84.0，加载 Picode Extension，执行 `get_state/get_commands/new_session` | passed |
 | 安装产物 | `npm run smoke:package`；真实 `npm pack`、临时安装、CLI doctor、启动 vendored Pi、RPC 新会话 | passed (Windows) |
 | CLI/RPC Control Interface | 产品帮助、一次性 CLI、版本化 NDJSON RPC、审批响应、取消/超时、Session/Harness/Permission/Account/Gate/Tools；正常启动零调试端口 | passed (Windows) |
+| CLI 产品缺口收尾 | 实测 Session switch/branch、pi-subagents status、Slice→sealed Capsule→fresh session、Worktree 并发拒绝/释放、Tier-3 状态持久化、Codex 预览/选择导入 | passed (Windows) |
 | 无密钥真实 Agent Loop | 测试 Provider 经 vendored Pi + Picode Extension 触发 Tool Call、Guard 审批、结果回灌与完成；发布包断言 Provider 不可见 | passed |
 | Headless Conformance | `npm run gate:headless`：帮助、稳定退出码、协议版本拒绝、4 并发诊断 | passed (Windows) |
 | 结构化 Git/Readiness | 固定 Git actions、Worktree 管理入口、Ownership 始终 ask；Git/LSP/MCP/Web 分项 readiness 与 Tool Schema 过滤 | passed (Windows) |

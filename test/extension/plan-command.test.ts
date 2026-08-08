@@ -1,5 +1,5 @@
 import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, parse, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   findMattPocockSkills,
@@ -13,18 +13,30 @@ function installMarker(root: string): void {
   mkdirSync(markerDir, { recursive: true });
   writeFileSync(join(markerDir, "SKILL.md"), "# Setup Matt Pocock's Skills\n", "utf8");
   mkdirSync(join(root, "grill-with-docs"), { recursive: true });
+  writeFileSync(join(root, "grill-with-docs", "SKILL.md"), [
+    "---",
+    "name: grill-with-docs",
+    "description: Align a design through questions.",
+    "---",
+    "# Grill With Docs",
+    "Read the design documents before asking one question at a time.",
+  ].join("\n"), "utf8");
 }
 
 describe("mattpocock /plan compatibility", () => {
   it("searches project roots from cwd upward and user roots", () => {
-    const roots = skillRootsFor("C:/repo/packages/game", {
-      home: "C:/Users/dev",
-      piAgent: "C:/Users/dev/.picode/agent",
+    const cwd = resolve("repo", "packages", "game");
+    const home = resolve("home", "dev");
+    const piAgent = join(home, ".picode", "agent");
+    const roots = skillRootsFor(cwd, {
+      home,
+      piAgent,
     });
-    expect(roots).toContain("C:\\repo\\packages\\game\\.agents\\skills");
-    expect(roots).toContain("C:\\repo\\.pi\\skills");
-    expect(roots).toContain("C:\\Users\\dev\\.agents\\skills");
-    expect(roots).toContain("C:\\Users\\dev\\.picode\\agent\\skills");
+    expect(roots).toContain(join(cwd, ".agents", "skills"));
+    expect(roots).toContain(join(dirname(dirname(cwd)), ".pi", "skills"));
+    expect(roots).toContain(join(home, ".agents", "skills"));
+    expect(roots).toContain(join(piAgent, "skills"));
+    expect(roots).toContain(join(parse(cwd).root, ".agents", "skills"));
   });
 
   it("recognizes the explicit setup marker", async () => {
@@ -51,10 +63,16 @@ describe("mattpocock /plan compatibility", () => {
     expect(result.message).not.toContain("npx skills");
   });
 
-  it("delegates planning to the installed skill workflow", () => {
-    const result = planCommandResult("ship feature", { installed: true, roots: ["C:/skills"] });
-    expect(result.kind).toBe("ready");
-    expect(result.message).toContain("grill-with-docs");
-    expect(result.message).toContain("ship feature");
+  it("delegates planning by injecting the installed skill body directly", async () => {
+    await withTempPicodeDir(async (dir) => {
+      const skills = join(dir, "skills");
+      installMarker(skills);
+      const result = planCommandResult("ship feature", { installed: true, roots: [skills] });
+      expect(result.kind).toBe("ready");
+      expect(result.message).toContain('<skill name="grill-with-docs"');
+      expect(result.message).toContain("# Grill With Docs");
+      expect(result.message).not.toContain("description: Align");
+      expect(result.message).toContain("ship feature");
+    });
   });
 });

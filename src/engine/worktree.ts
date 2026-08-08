@@ -21,6 +21,8 @@ interface WriterRecord {
   taskId: string;
   pid: number;
   claimedAt: string;
+  /** Explicit CLI leases survive the short-lived claimant process until release. */
+  persistent?: boolean;
 }
 
 interface ManagedWorktreeRecord {
@@ -77,14 +79,14 @@ export class WorktreeRegistry {
   }
 
   /** 单写手：同一 workspace 已有活跃写手（且进程存活）则拒绝 */
-  async claimWriter(workspaceId: string, taskId: string): Promise<Result<void>> {
+  async claimWriter(workspaceId: string, taskId: string, options: { persistent?: boolean } = {}): Promise<Result<void>> {
     return this.mutate((file) => {
       const existing = file.writers.find(
         (w) => normalizeWorkspaceId(w.workspaceId) === normalizeWorkspaceId(workspaceId),
       );
       if (existing !== undefined) {
         if (existing.taskId === taskId) return ok(undefined);
-        if (isProcessAlive(existing.pid)) {
+        if (existing.persistent === true || isProcessAlive(existing.pid)) {
           return err(
             "engine/workspace-has-writer",
             `workspace ${workspaceId} is being written by task ${existing.taskId}; ` +
@@ -101,6 +103,7 @@ export class WorktreeRegistry {
         taskId,
         pid: process.pid,
         claimedAt: new Date().toISOString(),
+        ...(options.persistent === true ? { persistent: true } : {}),
       });
       return ok(undefined);
     });

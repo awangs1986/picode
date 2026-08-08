@@ -22,8 +22,8 @@ describe("decide()", () => {
   });
 
   describe("readonly tier", () => {
-    it("allows fs-read and git-read", () => {
-      for (const category of ["fs-read", "git-read"] as const) {
+    it("allows filesystem, Git, and capability metadata reads", () => {
+      for (const category of ["fs-read", "git-read", "capability-read"] as const) {
         const d = decide({ tier: "readonly", intent: makeIntent({ category }), grants: [] });
         expect(d.verdict).toBe("allow");
       }

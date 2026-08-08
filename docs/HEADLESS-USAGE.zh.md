@@ -11,7 +11,12 @@ picode doctor
 picode doctor tools
 ```
 
-`doctor tools` 会分别报告 Git、pi-lens/LSP、MCP、Web Fetch 和 Web Search：
+`doctor tools` 会分别报告 Git、pi-lens/LSP、MCP、Web Fetch 和 Web Search。默认按
+当前目录与 Standard 检查；验证 pi-lens 时必须显式传入真实项目目录和 `--harness tdd`：
+
+```powershell
+picode tools doctor --cwd D:\repo --harness tdd
+```
 
 - `Ready`：当前工作区可以使用。
 - `Degraded`：部分功能可用，输出会说明缺失部分。
@@ -124,6 +129,18 @@ picode session list
 picode session resume --session <session-id>
 ```
 
+无状态切换（校验并返回后续命令应使用的 Pi 会话身份）：
+
+```powershell
+picode session switch --session <session-id>
+```
+
+从某条用户消息创建独立 Pi 分支会话：
+
+```powershell
+picode session branch --session <session-id> --from <entry-id>
+```
+
 继续对话：
 
 ```powershell
@@ -152,7 +169,31 @@ picode permissions set --session <session-id> --tier full
 这些设置写入同一个 Pi Session append-only 日志，TUI 与 CLI 恢复时读取同一事实，
 不会创建独立的无头配置副本。
 
-## 6. Task、Gate 与 Evidence
+## 6. Slice、Capsule 与并发写入权
+
+```powershell
+picode slice create --session <session-id> --intent "继续实现下一模块"
+picode capsule list --task <task-id>
+picode capsule read --task <task-id> --capsule <capsule-id>
+
+picode worktree status
+picode worktree claim --workspace D:\repo --task <task-id>
+picode worktree release --workspace D:\repo --task <task-id>
+```
+
+`slice create` 直接执行 Picode `/slice`，封存 Capsule 并创建新的上游 Pi 会话，不调用模型。
+显式 CLI claim 是持久写入租约，必须显式 release；第二个 Task 不能抢占仍有效的租约。
+
+三级能力由用户控制，模型不可自行启用或信任：
+
+```powershell
+picode capability status
+picode capability set --id herdr --state enabled
+picode capability set --id herdr --state trusted
+picode capability set --id herdr --state disabled
+```
+
+## 7. Task、Gate 与 Evidence
 
 ```powershell
 picode task status --task <task-id>
@@ -166,7 +207,7 @@ picode gate evidence --task <task-id>
 `task cancel` 写入取消请求；运行时通过受控事件进入终态。取消后的迟到 Tool Result
 不能重新进入 Observer 或 Evidence。
 
-## 7. 账号管理
+## 8. 账号管理
 
 列出账号：
 
@@ -189,7 +230,29 @@ picode account import
 Wizard 只绑定 loopback，并使用一次性认证 URL。浏览器负责交互，账号事实仍写入
 Picode Account Vault；它不是常驻 Web 后端。
 
-## 8. 工具搜索与诊断
+## 9. Subagent 控制
+
+```powershell
+picode subagent status --session <session-id>
+picode subagent status --session <session-id> --run <run-id>
+picode subagent stop --session <session-id> --run <run-id>
+picode subagent resume --session <session-id> --run <run-id> --message "继续"
+```
+
+这些命令通过 `pi-subagents` 的版本化控制协议执行，不要求模型代为调用工具。
+
+## 10. 外部聊天预览与选择导入
+
+```powershell
+picode chat preview --source codex --path D:\history
+picode chat import --source codex --path D:\history --select <selection-id>[,<selection-id>] --workspace D:\repo
+```
+
+`--source` 支持 `claude-code`（也接受 `claude`）、`codex`、`cursor`。目录预览只读直接子文件，
+返回标题、最后一条对话截取、时间（来源具备时）、文件大小和 `selectionId`；预览不会落导入副本。
+只有 `--select` 明确列出的聊天才会持久化、按当前工作区绑定并创建新的 Pi 会话；默认非归档。
+
+## 11. 工具搜索与诊断
 
 ```powershell
 picode tools search
@@ -197,19 +260,22 @@ picode tools search --query mcp
 picode tools doctor
 # 同义入口
 picode doctor tools
+# 按真实 TDD 工作区检查匹配的 LSP
+picode tools doctor --cwd D:\repo --harness tdd
 ```
 
 当前约定：
 
 - Git：必须存在 Git；非 Git 目录显示 `NeedsSetup`。
-- pi-lens：缺少项目语言服务器时显示 `Degraded`，探针不会自动安装。
+- pi-lens：按项目语言匹配 Server；只有 TypeScript+typescript-language-server 或
+  Rust+rust-analyzer 等匹配组合才是 `Ready`，不匹配或缺失时显示 `Degraded`。
 - MCP：没有任何 Server 配置时显示 `NeedsSetup`，建议在 TUI 运行 `/mcp setup`。
 - Web Fetch：可独立工作。
 - Web Search：pi-web-access 带零配置 Exa fallback；配置其他 Provider 是可选增强。
 
 探针不会安装程序、执行 OAuth、发起真实搜索或消费付费 API。
 
-## 9. 长生命周期 NDJSON RPC
+## 12. 长生命周期 NDJSON RPC
 
 启动：
 
@@ -274,7 +340,7 @@ RPC 客户端必须持续读取 stdout，并在收到 `approval.required` 后再
 无法预先知道动态 `requestId`，因此需要 Node、Python、C# 或其他能够双向保持子进程
 stdin/stdout 的程序。
 
-## 10. 稳定退出码
+## 13. 稳定退出码
 
 | 退出码 | 含义 |
 |---:|---|

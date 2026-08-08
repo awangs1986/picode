@@ -83,6 +83,11 @@ export class CapabilityCatalog {
     return this.records.get(capabilityId);
   }
 
+  /** User-facing settings projection; never exposes runtime leases or secrets. */
+  list(): CapabilityRecord[] {
+    return [...this.records.values()].map((record) => structuredClone(record));
+  }
+
   removeByOrigin(origin: CapabilityManifest["origin"]): void {
     for (const [id, record] of this.records) {
       if (record.manifest.origin === origin) this.records.delete(id);

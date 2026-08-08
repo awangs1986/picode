@@ -109,6 +109,7 @@ describe("AccountsManager", () => {
 
     it("demotes prior active on same provider and keeps single-active invariant", async () => {
       await withTempPicodeDir(async () => {
+        const now = vi.spyOn(Date, "now").mockReturnValue(1_786_000_000_000);
         const mgr = new AccountsManager(() => {});
         const a = await mgr.addFromOAuth(
           fakeOAuth("github", ok({ label: "A", credentials: { accessToken: "a" } })),
@@ -128,6 +129,7 @@ describe("AccountsManager", () => {
         const byId = Object.fromEntries(list.value.map((x) => [x.id, x.status]));
         expect(byId[a.value.id]).toBe("stored");
         expect(byId[b.value.id]).toBe("active");
+        now.mockRestore();
       });
     });
 

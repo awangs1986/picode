@@ -11,6 +11,21 @@ const scratch = mkdtempSync(join(tmpdir(), "picode-scripted-"));
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
 
 describe("no-key real Agent Loop", () => {
+  it("uses the user-owned Capability Catalog as the tools search visibility authority", async () => {
+    const driver = new RpcControlDriver({
+      packageRoot: root,
+      piEntry: join(root, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "cli.js"),
+      cwd: scratch,
+      env: { ...process.env, PICODE_DIR: join(scratch, "catalog-search-data") },
+    });
+
+    expect((await driver.searchTools("pi-lens")) as unknown[]).toHaveLength(1);
+    await driver.setCapabilityState("pi-lens", "disabled");
+    expect(await driver.searchTools("pi-lens")).toEqual([]);
+    await driver.setCapabilityState("pi-lens", "trusted");
+    expect((await driver.searchTools("pi-lens")) as unknown[]).toHaveLength(1);
+  });
+
   it("persists a session created through the control interface", async () => {
     const driver = new RpcControlDriver({
       packageRoot: root,
@@ -46,6 +61,36 @@ describe("no-key real Agent Loop", () => {
     const sessionFile = (started?.payload as { sessionFile?: string } | undefined)?.sessionFile;
     expect(sessionFile).toBeTypeOf("string");
     expect(await driver.harnessTier(sessionFile as string)).toBe(harnessTier);
+  }, 30_000);
+
+  it("applies requested harness and permission tiers when reusing an existing session", async () => {
+    const driver = new RpcControlDriver({
+      packageRoot: root,
+      piEntry: join(root, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "cli.js"),
+      cwd: scratch,
+      env: { ...process.env, PICODE_DIR: join(scratch, "existing-session-tier-data") },
+      extraExtensions: [join(root, "test", "fixtures", "scripted-model-extension.ts")],
+    });
+    const identity = await driver.createSession({ cwd: scratch });
+    expect(identity.sessionFile).toBeTypeOf("string");
+    await driver.setHarnessTier(identity.sessionFile as string, "simple");
+    await driver.setPermissionTier(identity.sessionFile as string, "auto");
+
+    const events = [];
+    for await (const event of driver.run({
+      session: identity.sessionFile as string,
+      prompt: "/compact",
+      harnessTier: "tdd",
+      permissionTier: "full",
+      nonInteractive: true,
+      timeoutMs: 20_000,
+    })) events.push(event);
+
+    expect(await driver.harnessTier(identity.sessionFile as string)).toBe("tdd");
+    expect(await driver.permissionTier(identity.sessionFile as string)).toBe("full");
+    expect(events.find((event) => event.kind === "run.started")).toMatchObject({
+      payload: { effectiveHarnessTier: "tdd", effectivePermissionTier: "full" },
+    });
   }, 30_000);
 
   it("creates a pre-seeded headless session below the configured PICODE_DIR", async () => {
@@ -95,6 +140,11 @@ describe("no-key real Agent Loop", () => {
     for await (const event of driver.send({ session: sessionFile as string, message: "/compact", nonInteractive: true })) compactEvents.push(event);
 
     expect(compactEvents.some((event) => event.kind === "pi.compaction_start")).toBe(true);
+    expect(compactEvents.some((event) => event.kind === "run.error")).toBe(false);
+    expect(compactEvents.at(-1)).toMatchObject({
+      kind: "run.completed",
+      payload: { text: "Nothing to compact" },
+    });
     expect(compactEvents.some((event) => event.kind === "run.completed" && (event.payload as { text?: string }).text === "scripted-ok")).toBe(false);
   }, 30_000);
 
@@ -110,5 +160,59 @@ describe("no-key real Agent Loop", () => {
     await server.receive({ version: 1, id: "allow", method: "approval.respond", params: { requestId: approval?.id, action: "once" } });
     await server.settle();
     expect(output.some((item) => item.event === "run.completed"), JSON.stringify(output)).toBe(true);
+  }, 30_000);
+
+  it.each([
+    { action: "once" as const, expectedApprovals: 2 },
+    { action: "session" as const, expectedApprovals: 1 },
+    { action: "session-full" as const, expectedApprovals: 1 },
+  ])("enforces $action approval scope across two exact commands", async ({ action, expectedApprovals }) => {
+    const driver = new RpcControlDriver({ packageRoot: root, piEntry: join(root, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "cli.js"), cwd: scratch, env: { ...process.env, PICODE_DIR: join(scratch, `approval-${action}`) }, extraExtensions: [join(root, "test", "fixtures", "scripted-model-extension.ts")] });
+    const output: Array<{ id: string; event?: string; payload?: unknown }> = [];
+    const server = new ControlRpcServer(driver, (message) => output.push(message as typeof output[number]));
+    await server.receive({ version: 1, id: "run", method: "run.start", params: { prompt: "TOOL:TWICE", provider: "picode-scripted-test", model: "fixture", timeoutMs: 20_000 } });
+    let answered = 0;
+    const deadline = Date.now() + 20_000;
+    while (!output.some((item) => item.event === "run.completed") && Date.now() < deadline) {
+      const approvals = output.filter((item) => item.event === "approval.required");
+      while (answered < approvals.length) {
+        const requestId = (approvals[answered]?.payload as { id?: string } | undefined)?.id;
+        expect(requestId).toBeTypeOf("string");
+        answered += 1;
+        await server.receive({ version: 1, id: `allow-${answered}`, method: "approval.respond", params: { requestId, action } });
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    await server.settle();
+    expect(output.some((item) => item.event === "run.completed"), JSON.stringify(output)).toBe(true);
+    expect(answered).toBe(expectedApprovals);
+  }, 30_000);
+
+  it("deny prevents the requested shell side effect", async () => {
+    const effect = join(scratch, "approval-effect.txt");
+    rmSync(effect, { force: true });
+    const driver = new RpcControlDriver({ packageRoot: root, piEntry: join(root, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "cli.js"), cwd: scratch, env: { ...process.env, PICODE_DIR: join(scratch, "approval-deny") }, extraExtensions: [join(root, "test", "fixtures", "scripted-model-extension.ts")] });
+    const output: Array<{ id: string; event?: string; payload?: unknown }> = [];
+    const server = new ControlRpcServer(driver, (message) => output.push(message as typeof output[number]));
+    await server.receive({ version: 1, id: "run", method: "run.start", params: { prompt: "TOOL:WRITE", provider: "picode-scripted-test", model: "fixture", timeoutMs: 20_000 } });
+    const deadline = Date.now() + 10_000;
+    while (!output.some((item) => item.event === "approval.required") && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
+    const approval = output.find((item) => item.event === "approval.required")?.payload as { id?: string } | undefined;
+    expect(approval?.id).toBeTypeOf("string");
+    await server.receive({ version: 1, id: "deny", method: "approval.respond", params: { requestId: approval?.id, action: "deny" } });
+    await server.settle();
+    expect(existsSync(effect)).toBe(false);
+  }, 30_000);
+
+  it("TDD host blocks a production side effect before RED even with full permission", async () => {
+    const effect = join(scratch, "approval-effect.txt");
+    rmSync(effect, { force: true });
+    const driver = new RpcControlDriver({ packageRoot: root, piEntry: join(root, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "cli.js"), cwd: scratch, env: { ...process.env, PICODE_DIR: join(scratch, "tdd-pre-red") }, extraExtensions: [join(root, "test", "fixtures", "scripted-model-extension.ts")] });
+    const events = [];
+    for await (const event of driver.run({ prompt: "TOOL:WRITE", provider: "picode-scripted-test", model: "fixture", harnessTier: "tdd", permissionTier: "full", nonInteractive: true, timeoutMs: 20_000 })) events.push(event);
+    expect(existsSync(effect)).toBe(false);
+    expect(events.some((event) => event.kind === "approval.required")).toBe(false);
+    expect(JSON.stringify(events)).toContain("recorded RED");
+    expect(events.at(-1)?.kind).toBe("run.completed");
   }, 30_000);
 });

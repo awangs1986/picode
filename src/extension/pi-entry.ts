@@ -24,9 +24,12 @@ import {
   registerWindowsPowerShellTool,
 } from "./windows-shell-provider.ts";
 import { CapabilityReadinessRegistry, filterToolNamesForReadiness } from "../engine/readiness.ts";
+import { ensureTunSsrfCompatibility } from "./web-ssrf-config.ts";
+import { registerSubagentControlCommand } from "./subagent-control-command.ts";
 
 /** Real Pi extension entry. Keep this file as a thin composition adapter. */
 export default function picodeExtension(pi: ExtensionAPI): void {
+  registerSubagentControlCommand(pi);
   const disposeWindowsShellProvider = registerWindowsPowerShellProvider(pi);
   pi.on("session_shutdown", () => { disposeWindowsShellProvider(); });
   const toolAdapter = new PiActiveToolAdapter(pi);
@@ -43,8 +46,26 @@ export default function picodeExtension(pi: ExtensionAPI): void {
   registerMcpApprovalBridge(pi.events, runtime, () => activeContext);
   registerSubagentEnvelopeBridge(pi.events, runtime);
   let capabilitySettingsRestored = false;
+  let webSsrfPrepared = false;
   registerPicodeBridge(pi, runtime, {
     onTierReady: async (tier, ctx) => {
+      if (!webSsrfPrepared) {
+        try {
+          const compatibility = await ensureTunSsrfCompatibility();
+          if (compatibility.changed) {
+            ctx.ui.notify(
+              `Detected TUN/fake-IP DNS; enabled pi-web-access SSRF compatibility for ${compatibility.range}`,
+              "warning",
+            );
+          }
+        } catch (cause) {
+          ctx.ui.notify(
+            `Could not reconcile pi-web-access network settings: ${cause instanceof Error ? cause.message : String(cause)}`,
+            "warning",
+          );
+        }
+        webSsrfPrepared = true;
+      }
       const configured = await configureLandstripForSession({
         harnessTier: tier,
         permissionTier: runtime.guard.permissionTier(),

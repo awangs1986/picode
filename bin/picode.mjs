@@ -55,7 +55,7 @@ const launch = buildPiLaunch({
   parentEnv: process.env,
 });
 
-const controlSubjects = new Set(["run", "rpc", "session", "task", "gate", "harness", "permissions", "account", "tools", "doctor", "help"]);
+const controlSubjects = new Set(["run", "rpc", "session", "subagent", "slice", "capsule", "worktree", "capability", "chat", "task", "gate", "harness", "permissions", "account", "tools", "doctor", "help"]);
 let userArgs = process.argv.slice(2);
 if (userArgs[0] === "tui") userArgs = userArgs.slice(1);
 const productHelp = userArgs.length === 1 && (userArgs[0] === "--help" || userArgs[0] === "-h");

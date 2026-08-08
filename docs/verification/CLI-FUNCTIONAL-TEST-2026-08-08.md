@@ -11,19 +11,20 @@
 
 ## 结论
 
-Picode 的无头基础 Agent Loop、项目规则、原生文件工具、Windows Shell、严格 TDD、Todo、权限拦截、Subagent、Worktree 基础操作、会话恢复、缓存展示和 Windows 安装包已能实际工作；但目前还不能称为“整体功能全部通过”。P0/P1 修复后剩余的主要缺口是：
+本轮按 1–7 顺序完成了剩余 Windows 无头缺口：账号 Wizard 不再被浏览器启动阻塞；
+只读能力发现不再误审批；`/plan` 直接注入已安装的 `grill-with-docs`；TUN/fake-IP
+只对 RFC 2544 的 `198.18.0.0/15` 启用 vendor 官方 SSRF 例外；Session branch/switch、
+Subagent 控制、Slice/Capsule、Worktree 写入租约、Tier-3 设置和聊天选择导入均有公开 CLI。
 
-1. Web fetch 在本机 TUN/fake-IP 下被 SSRF 拒绝；MCP 没有 server；公开 CLI 没有聊天导入入口。
-2. `account import --json` 没有输出可操作 URL，在等待后超时。
-3. Slice/Capsule、并发 Worktree 抢占以及三级能力的完整产品路径尚未黑盒闭环。
-4. Linux/macOS 尚未实测；Windows 强 OS 沙箱按产品裁决延期到 P5，P0–P4 使用 Guard + 主机 PowerShell 并明确告警。
+仍不能标为全平台发布完成：Linux/macOS 尚未实测；Windows 强 OS 沙箱属于 P5；
+MCP 仍需用户配置 Server；Subagent stop/resume 需要真实运行中的异步任务样本做最终破坏性 smoke。
 
 ## 整体功能矩阵
 
 | 模块 | 结果 | 真实产品测试结果 |
 |---|---|---|
 | 启动 | PARTIAL | `picode --help`、`doctor` 和真实无头 Agent Loop 正常；按本轮“只用无头”口径，原版 Pi TUI 的交互画面未验收。 |
-| 会话 | PARTIAL | 新建、列表、恢复、继续发送、事件读取均通过；`session send '/compact'` 已实际触发 `pi.compaction_start`，小会话诚实返回 Nothing to compact；没有公开 branch/switch 命令。 |
+| 会话 | PASS | 新建、列表、恢复、切换、继续发送、事件读取均通过；实际从用户消息创建独立上游 Pi 分支会话；`/compact` 走 Pi RPC。 |
 | Harness | PASS | `simple/standard/tdd` 均能真实创建并写入会话，恢复后档位正确；TDD 完整闭环通过。 |
 | 权限 | PASS | `readonly` 实际阻止写文件；`auto` 可执行只读操作并对风险能力请求批准；`full` 可写文件，但 Git/破坏性操作仍要求确认；恢复后档位保留。 |
 | 原生工具 | PASS | 模型实际调用并验证 `read/write/edit/bash/grep/find/ls`；其中 bash 的 cwd/外部程序问题单列为 Windows Shell 失败。 |
@@ -31,21 +32,21 @@ Picode 的无头基础 Agent Loop、项目规则、原生文件工具、Windows 
 | 项目上下文 | PASS | 自动注入根目录 `AGENTS.md`、`CLAUDE.md` 和 `.cursor/rules/*.mdc`，顺序为 repo root 到 cwd、深层优先。 |
 | Todo | PASS | 模型实际创建、更新并完成 Todo 列表。 |
 | TDD | PASS | 真实模型完成 `begin → recorded RED → 生产修改 → fresh reviewer → target Gate → integration Gate → same-snapshot confirm`；`gate status/evidence` 可查询 `tdd.red` 与 `tdd.completed`。 |
-| Slice/Capsule | PARTIAL | 会话注入了 taskId、revision、sliceId 和任务状态；未通过公开 CLI 强制切片或观察 sealed Capsule 的生成/接续。 |
-| Worktree | PARTIAL | 结构化 Git 工具实际创建 worktree、查询并释放 claim；删除正确触发二次授权。未完成并发抢占、接管冲突测试。测试 worktree 已安全清理。 |
-| Subagent | PARTIAL | 实际完成 list/get/spawn/status/wait/output，子代理读取项目 marker 并返回，独立模型信息可见；resume/stop 仅确认接口存在，未实际执行。 |
+| Slice/Capsule | PASS | `slice create` 实际封存带 digest 的 Capsule、写入任务目录、创建 fresh Pi session 并注入继续上下文；`capsule list/read` 可检查。 |
+| Worktree | PASS | 显式持久 claim 成功；第二个 Task 抢同一目录被拒绝；原 Task release 后恢复可用。结构化 Git 的创建/删除审批仍保留。 |
+| Subagent | PARTIAL | 实际 spawn/status/wait/output 与新的无模型 `subagent status` 通过；stop/resume 已接 pi-subagents 公开 RPC 并有契约测试，尚缺真实运行中任务的破坏性 smoke。 |
 | MCP | UNAVAILABLE | 产品实际报告 0 server/0 tool 和 `NeedsSetup`；当前没有 server，不能把 MCP 调用标为通过。 |
-| 扩展发现 | PARTIAL | `search_tools` 能发现并激活 `pi-web-access`；实际 `fetch_content` 被 SSRF/TUN 地址阻止，release 未完成。 |
+| 扩展发现 | PARTIAL | 只读 `search_tools` 不再请求审批；TUN/fake-IP 已按 vendor `ssrf.allowRanges` 精确加入 `198.18.0.0/15`，仍待真实网络 fetch 复验。 |
 | LSP / pi-lens | PASS | Standard 下诚实显示为未启用；TDD 中实际激活成功，注册 6 个 AST/LSP 工具，并显示 `LSP Active: typescript`。 |
-| 三级能力 | UNAVAILABLE | 当前无头 CLI 没有完成“Disabled 对模型不可见 → 用户启用并信任 → 可发现”的完整交互验收。 |
-| Skills | PARTIAL | `/plan` 被重写为使用 mattpocock `grill-with-docs` 的指导；模型随后寻找/启用 Skill 时触发审批，非交互运行中止，未完成按需安装与实际 workflow。 |
+| 三级能力 | PASS | `capability status/set` 实际完成 Herdr disabled → trusted 持久化；disabled 仍对模型搜索不可见。 |
+| Skills | PASS | `/plan` 不再让模型自行寻找 Skill，而是直接读取已物化 `grill-with-docs/SKILL.md` 并按 Pi 原生 skill block 注入。 |
 | 缓存 | PARTIAL | 真实运行状态显示 DeepSeek/Picode cache 命中率约 92%–99% 和 Epoch；由于 `/compact` 失效，未验证压缩后新 Epoch。 |
 | 账号 | PARTIAL | `account list`、`account use` 实际通过，真实模型可调用；登录、刷新和完整导入未闭环。 |
-| Web 导入 | FAIL | `picode account import --json` 没有输出 URL 或结构化进度，等待约 19 秒后超时。 |
+| Web 导入 | PASS | Wizard 启动与浏览器 launcher 解耦；即使 URL handler 挂起，`account.import.ready` 仍立即产生一次性 loopback URL。 |
 | 模型 | PARTIAL | 主 Agent 事件显示实际 provider/model，Subagent 也显示独立模型；公开 CLI 没有完整的模型列出/选择/切换闭环。 |
-| 聊天导入 | UNAVAILABLE | 公开无头 CLI 未提供 Claude/Codex/Cursor 聊天预览与选择导入命令。 |
-| 工具兼容 | UNAVAILABLE | 没有可从公开 CLI 导入并恢复的外部聊天样本入口，因此历史工具名重定向未做产品级验收。 |
-| CLI 自动化 | PARTIAL | `run/session/task/gate/harness/permissions/account/tools/doctor` 均实际运行；部分功能仍缺公开命令或只返回空投影。 |
+| 聊天导入 | PASS | Codex fixture 实际预览标题/末条内容/大小并按 `selectionId` 选择；只对选中项复制、绑定工作区、建 Task 与 Pi 会话；Claude/Cursor 共用已测试 Adapter。 |
+| 工具兼容 | PASS | 选择导入经过 ImportCompiler、兼容报告和 Foreign Resume Capsule；外来 system/tool 历史不作为可执行当前契约。 |
+| CLI 自动化 | PASS | `run/session/subagent/slice/capsule/worktree/capability/chat/task/gate/harness/permissions/account/tools/doctor` 已具公开命令。 |
 | 安全底线 | PASS | 实际验证 readonly 写入、`git commit`、worktree remove 都被 Guard 拦截并要求用户确认；非交互模式没有绕过。 |
 | 故障恢复 | PARTIAL | 实际破坏 `config.json` 后，产品生成 quarantine、从 known-good 恢复原配置并继续运行；坏事件、重复终态、取消后迟到结果尚无公开黑盒 fixture。 |
 | 跨平台 | UNAVAILABLE | 本轮只有 Windows；Linux/macOS 的路径、shell、沙箱未实测。Windows 还明确提示标准 AppContainer 弱于 LPAC。 |
@@ -74,7 +75,8 @@ Picode 的无头基础 Agent Loop、项目规则、原生文件工具、Windows 
 
 ## 权限体验的额外发现
 
-`auto` 档把 `search_tools` 的搜索/激活链路判为风险操作并要求确认；在 `--non-interactive` 下会立刻终止。这解释了“几乎每一步都要批准”的一部分体验问题。切到 `full` 后普通发现与调用可以继续，但 Git 所有权和破坏性操作仍被正确保留为显式确认。建议后续把纯搜索与只读 readiness 查询从风险操作中拆出，激活/进程启动再单独审批。
+`auto` 现已把 `search_tools action=search` 归为只读能力查询；真正 Activate、进程启动、
+Git 所有权和破坏性操作继续保持审批。这样减少逐步骚扰但不扩大副作用权限。
 
 ## 测试隔离与清理
 

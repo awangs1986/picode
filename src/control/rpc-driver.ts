@@ -1,6 +1,6 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   RpcClient,
   SessionManager,
@@ -16,6 +16,13 @@ import { HARNESS_ENTRY_TYPE, restoreHarnessTier } from "../extension/harness.ts"
 import { PERMISSION_ENTRY_TYPE, restorePermissionTier } from "../extension/permissions.ts";
 import { startAccountImportWizard } from "../extension/account-import-wizard.ts";
 import { CapabilityReadinessRegistry } from "../engine/readiness.ts";
+import { PICODE_SUBAGENT_RESULT_PREFIX } from "../extension/subagent-control-command.ts";
+import { WorktreeRegistry } from "../engine/worktree.ts";
+import { bootRuntime } from "../extension/index.ts";
+import { loadCapabilitySettings, saveCapabilitySettings } from "../store/capabilities.ts";
+import { ForeignChatImportService } from "../extension/foreign-chat-import.ts";
+import { TASK_BINDING_ENTRY_TYPE } from "../extension/slice-session.ts";
+import { adapterFor } from "../store/import-adapters.ts";
 
 function controlTasks(): TaskIngress {
   return new TaskIngress({
@@ -152,11 +159,24 @@ export class RpcControlDriver implements ControlDriver {
     harnessTier?: "simple" | "standard" | "tdd";
   }): AsyncIterable<ControlEvent> {
     let session = input.session;
+    let effectiveHarnessTier: "simple" | "standard" | "tdd" = "simple";
+    let effectivePermissionTier: "readonly" | "auto" | "full" = "auto";
     if (session === undefined && (input.permissionTier !== undefined || input.harnessTier !== undefined)) {
       const manager = SessionManager.create(input.cwd ?? this.options.cwd ?? process.cwd(), this.sessionsRoot());
       if (input.harnessTier !== undefined) manager.appendCustomEntry(HARNESS_ENTRY_TYPE, { tier: input.harnessTier });
       if (input.permissionTier !== undefined) manager.appendCustomEntry(PERMISSION_ENTRY_TYPE, { tier: input.permissionTier });
       session = persistSessionSeed(manager);
+      effectiveHarnessTier = restoreHarnessTier(manager.getBranch());
+      effectivePermissionTier = restorePermissionTier(manager.getBranch());
+    } else if (session !== undefined) {
+      const identity = await resolveSession(session, this.sessionsRoot());
+      if (identity.sessionFile === undefined) throw new Error(`session has no persistent file: ${session}`);
+      const manager = SessionManager.open(identity.sessionFile, this.sessionsRoot());
+      if (input.harnessTier !== undefined) manager.appendCustomEntry(HARNESS_ENTRY_TYPE, { tier: input.harnessTier });
+      if (input.permissionTier !== undefined) manager.appendCustomEntry(PERMISSION_ENTRY_TYPE, { tier: input.permissionTier });
+      session = identity.sessionFile;
+      effectiveHarnessTier = restoreHarnessTier(manager.getBranch());
+      effectivePermissionTier = restorePermissionTier(manager.getBranch());
     }
     const client = this.client({ ...input, ...(session === undefined ? {} : { session }) });
     const queue = new EventQueue();
@@ -178,10 +198,24 @@ export class RpcControlDriver implements ControlDriver {
         await client.start();
         const initialState = await client.getState();
         this.activeRuns.set(runId, { client, queue });
-        queue.push(asEvent("run.started", { runId, executionEpoch: 1, sessionId: initialState.sessionId, sessionFile: initialState.sessionFile }));
+        queue.push(asEvent("run.started", {
+          runId,
+          executionEpoch: 1,
+          sessionId: initialState.sessionId,
+          sessionFile: initialState.sessionFile,
+          effectiveHarnessTier,
+          effectivePermissionTier,
+        }));
         const compact = input.prompt.match(/^\/compact(?:\s+([\s\S]+))?\s*$/i);
+        let compactResult = "Session compacted";
         if (compact !== null) {
-          await client.compact(compact[1]?.trim() || undefined);
+          try {
+            await client.compact(compact[1]?.trim() || undefined);
+          } catch (cause) {
+            const message = cause instanceof Error ? cause.message : String(cause);
+            if (!/nothing to compact/i.test(message)) throw cause;
+            compactResult = "Nothing to compact";
+          }
         } else {
           await client.prompt(input.prompt);
         }
@@ -206,7 +240,7 @@ export class RpcControlDriver implements ControlDriver {
             executionEpoch: 1,
             sessionId: state.sessionId,
             sessionFile: state.sessionFile,
-            text: compact === null ? await client.getLastAssistantText() : "Session compacted",
+            text: compact === null ? await client.getLastAssistantText() : compactResult,
           }));
         }
       } catch (cause) {
@@ -272,6 +306,299 @@ export class RpcControlDriver implements ControlDriver {
 
   resumeSession(session: string): Promise<SessionIdentity> {
     return resolveSession(session, this.sessionsRoot());
+  }
+
+  switchSession(session: string): Promise<SessionIdentity> {
+    // The CLI is intentionally stateless: this validates and returns the Pi
+    // identity that the caller passes to its next command; no second active-session authority.
+    return resolveSession(session, this.sessionsRoot());
+  }
+
+  async branchSession(session: string, from: string): Promise<SessionIdentity & { from: string }> {
+    const identity = await resolveSession(session, this.sessionsRoot());
+    if (identity.sessionFile === undefined) throw new Error(`session has no persistent file: ${session}`);
+    const client = this.client({ session: identity.sessionFile });
+    try {
+      await client.start();
+      const available = await client.getForkMessages();
+      if (!available.some((entry) => entry.entryId === from)) throw new Error(`fork entry not found or is not a user message: ${from}`);
+      const result = await client.fork(from);
+      if (result.cancelled) throw new Error("session branch was cancelled by an extension");
+      const state = await client.getState();
+      if (state.sessionFile === undefined || !existsSync(state.sessionFile)) {
+        // Forking before the first user message produces an intentionally empty
+        // Pi session that upstream defers writing. A one-shot CLI would otherwise
+        // return a path that vanishes when the RPC child exits, so persist its
+        // upstream SessionManager header before returning the identity.
+        const source = SessionManager.open(identity.sessionFile, this.sessionsRoot());
+        const emptyBranch = SessionManager.create(source.getCwd(), this.sessionsRoot(), {
+          id: state.sessionId,
+          parentSession: identity.sessionFile,
+        });
+        persistSessionSeed(emptyBranch);
+        return { ...sessionIdentity(emptyBranch), from };
+      }
+      return {
+        sessionId: state.sessionId,
+        ...(state.sessionFile === undefined ? {} : { sessionFile: state.sessionFile }),
+        from,
+      };
+    } finally {
+      await client.stop().catch(() => undefined);
+    }
+  }
+
+  private async subagentRpc(session: string, method: "status" | "stop" | "resume", params?: Record<string, unknown>): Promise<unknown> {
+    const identity = await resolveSession(session, this.sessionsRoot());
+    if (identity.sessionFile === undefined) throw new Error(`session has no persistent file: ${session}`);
+    const client = this.client({ session: identity.sessionFile });
+    let settle: ((value: unknown) => void) | undefined;
+    const result = new Promise<unknown>((resolveResult) => { settle = resolveResult; });
+    const unsubscribe = client.onEvent((raw) => {
+      const row = raw as { type?: unknown; method?: unknown; message?: unknown };
+      if (row.type !== "extension_ui_request" || row.method !== "notify" || typeof row.message !== "string") return;
+      if (!row.message.startsWith(PICODE_SUBAGENT_RESULT_PREFIX)) return;
+      settle?.(JSON.parse(row.message.slice(PICODE_SUBAGENT_RESULT_PREFIX.length)));
+    });
+    try {
+      await client.start();
+      const encoded = Buffer.from(JSON.stringify({ method, ...(params === undefined ? {} : { params }) }), "utf8").toString("base64url");
+      await client.prompt(`/picode-subagent-rpc ${encoded}`);
+      const reply = await Promise.race([
+        result,
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Timeout waiting for pi-subagents control reply")), 12_000)),
+      ]) as { success?: boolean; data?: unknown; error?: { message?: string } };
+      if (reply.success !== true) throw new Error(reply.error?.message ?? "pi-subagents control request failed");
+      return reply.data;
+    } finally {
+      unsubscribe();
+      await client.stop().catch(() => undefined);
+    }
+  }
+
+  subagentStatus(session: string, runId?: string): Promise<unknown> {
+    return this.subagentRpc(session, "status", runId === undefined ? {} : { runId });
+  }
+
+  stopSubagent(session: string, runId: string): Promise<unknown> {
+    return this.subagentRpc(session, "stop", { runId });
+  }
+
+  resumeSubagent(session: string, runId: string, message: string): Promise<unknown> {
+    return this.subagentRpc(session, "resume", { runId, message });
+  }
+
+  sliceSession(session: string, intent: string): AsyncIterable<ControlEvent> {
+    return this.run({ prompt: `/slice ${intent}`, session, nonInteractive: true });
+  }
+
+  async listCapsules(taskId: string): Promise<unknown> {
+    const root = join(dataPaths.tasks(), taskId, "capsules");
+    if (!existsSync(root)) return [];
+    return readdirSync(root).filter((name) => name.endsWith(".json")).sort().map((name) => {
+      const capsule = JSON.parse(readFileSync(join(root, name), "utf8")) as { capsuleId?: string; status?: string; createdAt?: string; intent?: string; digest?: string };
+      return {
+        capsuleId: capsule.capsuleId ?? name.slice(0, -5),
+        status: capsule.status,
+        createdAt: capsule.createdAt,
+        intent: capsule.intent,
+        digest: capsule.digest,
+      };
+    });
+  }
+
+  async readCapsule(taskId: string, capsuleId: string): Promise<unknown> {
+    if (!/^[A-Za-z0-9._-]+$/.test(taskId) || !/^[A-Za-z0-9._-]+$/.test(capsuleId)) throw new Error("invalid task or capsule id");
+    const path = join(dataPaths.tasks(), taskId, "capsules", `${capsuleId}.json`);
+    if (!existsSync(path)) throw new Error(`capsule not found: ${capsuleId}`);
+    return JSON.parse(readFileSync(path, "utf8")) as unknown;
+  }
+
+  worktreeStatus(): Promise<unknown> {
+    return Promise.resolve(new WorktreeRegistry().list());
+  }
+
+  async claimWorktree(workspace: string, taskId: string): Promise<unknown> {
+    const result = await new WorktreeRegistry().claimWriter(workspace, taskId, { persistent: true });
+    if (!result.ok) throw new Error(result.error.message);
+    return { workspace: resolve(workspace), taskId, claimed: true };
+  }
+
+  async releaseWorktree(workspace: string, taskId: string): Promise<unknown> {
+    const result = await new WorktreeRegistry().releaseWriter(workspace, taskId);
+    if (!result.ok) throw new Error(result.error.message);
+    return { workspace: resolve(workspace), taskId, released: true };
+  }
+
+  private async capabilityRuntime() {
+    const runtime = bootRuntime();
+    const saved = await loadCapabilitySettings();
+    if (saved.ok) runtime.guard.catalog.restoreSettings(saved.value);
+    else if (saved.error.code !== "store/state-missing") throw new Error(saved.error.message);
+    return runtime;
+  }
+
+  async capabilityStatus(): Promise<unknown> {
+    const runtime = await this.capabilityRuntime();
+    return runtime.guard.catalog.list().map((record) => ({
+      id: record.manifest.id,
+      title: record.manifest.title,
+      origin: record.manifest.origin,
+      state: record.setting,
+      manifestDigest: record.manifestDigest,
+    }));
+  }
+
+  async setCapabilityState(capabilityId: string, state: "disabled" | "enabled" | "trusted"): Promise<unknown> {
+    const runtime = await this.capabilityRuntime();
+    const changed = runtime.guard.catalog.userSetState(capabilityId, state);
+    if (!changed.ok) throw new Error(changed.error.message);
+    const saved = await saveCapabilitySettings(runtime.guard.catalog.toJSON());
+    if (!saved.ok) throw new Error(saved.error.message);
+    return { capabilityId, state };
+  }
+
+  private importFiles(path: string): string[] {
+    const absolute = resolve(path);
+    if (!existsSync(absolute)) throw new Error(`import path not found: ${path}`);
+    if (statSync(absolute).isFile()) return [absolute];
+    const files: string[] = [];
+    const pending: Array<{ path: string; depth: number }> = [{ path: absolute, depth: 0 }];
+    while (pending.length > 0 && files.length < 1_000) {
+      const current = pending.pop();
+      if (current === undefined) break;
+      for (const entry of readdirSync(current.path, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+        if (entry.isSymbolicLink()) continue;
+        const child = join(current.path, entry.name);
+        if (entry.isDirectory() && current.depth < 12) pending.push({ path: child, depth: current.depth + 1 });
+        else if (entry.isFile() && /\.jsonl?$/i.test(entry.name)) files.push(child);
+        if (files.length >= 1_000) break;
+      }
+    }
+    return files.sort();
+  }
+
+  private normalizedImportSource(source: string): string {
+    return source === "claude" ? "claude-code" : source;
+  }
+
+  private previewCandidate(source: string, file: string): {
+    selectionId: string; file: string; source: string; title: string; lastMessage: string;
+    lastTimestamp?: string; bytes: number; archived: false;
+  } {
+    const stat = statSync(file);
+    const headBytes = Math.min(stat.size, 128 * 1024);
+    const tailBytes = Math.min(Math.max(0, stat.size - headBytes), 512 * 1024);
+    const descriptor = openSync(file, "r");
+    try {
+      const head = Buffer.alloc(headBytes);
+      if (headBytes > 0) readSync(descriptor, head, 0, headBytes, 0);
+      const tail = Buffer.alloc(tailBytes);
+      if (tailBytes > 0) readSync(descriptor, tail, 0, tailBytes, stat.size - tailBytes);
+      const sampled = tailBytes === 0 ? head.toString("utf8") : `${head.toString("utf8")}\n${tail.toString("utf8")}`;
+      const parsed = adapterFor(source)?.parse(sampled);
+      const events = parsed?.ok ? parsed.value.events : [];
+      const firstUser = events.find((event) => event.kind === "user" && event.text?.trim());
+      const lastDialog = [...events].reverse().find((event) =>
+        (event.kind === "user" || event.kind === "assistant") && event.text?.trim()
+      );
+      const lastTimestamp = [...events].reverse().find((event) => event.timestamp !== undefined)?.timestamp;
+      return {
+        selectionId: createHash("sha256")
+          .update(`${source}\0${resolve(file)}\0${stat.size}\0${stat.mtimeMs}`)
+          .digest("hex").slice(0, 24),
+        file: resolve(file),
+        source,
+        title: parsed?.ok
+          ? parsed.value.sessionTitle ?? firstUser?.text?.slice(0, 120) ?? file.split(/[\\/]/).at(-1) ?? file
+          : file.split(/[\\/]/).at(-1) ?? file,
+        lastMessage: lastDialog?.text?.slice(0, 280) ?? "",
+        ...(lastTimestamp === undefined ? {} : { lastTimestamp }),
+        bytes: stat.size,
+        archived: false,
+      };
+    } finally {
+      closeSync(descriptor);
+    }
+  }
+
+  async previewChats(source: string, path: string): Promise<unknown> {
+    const normalized = this.normalizedImportSource(source);
+    const candidates: unknown[] = [];
+    const errors: Array<{ file: string; message: string }> = [];
+    for (const file of this.importFiles(path)) {
+      try { candidates.push(this.previewCandidate(normalized, file)); }
+      catch (cause) { errors.push({ file, message: cause instanceof Error ? cause.message : String(cause) }); }
+    }
+    return { candidates, errors, archivedDefault: false };
+  }
+
+  async importChats(source: string, path: string, selectionIds: string[], workspace: string): Promise<unknown> {
+    const normalized = this.normalizedImportSource(source);
+    const runtime = bootRuntime();
+    const service = new ForeignChatImportService(runtime);
+    const selected = new Set(selectionIds);
+    const imported: unknown[] = [];
+    for (const file of this.importFiles(path)) {
+      const candidate = this.previewCandidate(normalized, file);
+      if (!selected.has(candidate.selectionId)) continue;
+      const persisted = await service.persist(normalized, file);
+      if (!persisted.ok) throw new Error(persisted.error.message);
+      const task = await runtime.taskIngress.accept({
+        source: `import:${normalized}`,
+        externalId: persisted.value.importId,
+        title: candidate.title,
+        harnessTier: "simple",
+        workspace: resolve(workspace),
+      });
+      if (!task.ok) throw new Error(task.error.message);
+      const taskRecord = await runtime.taskIngress.read(task.value.taskId);
+      if (!taskRecord.ok) throw new Error(taskRecord.error.message);
+      if (taskRecord.value.workspace !== resolve(workspace)) {
+        throw new Error(`import ${persisted.value.importId} is already bound to workspace ${taskRecord.value.workspace ?? "(none)"}`);
+      }
+      const existingSession = (await SessionManager.listAll(this.sessionsRoot())).find((session) => {
+        if (resolve(session.cwd) !== resolve(workspace)) return false;
+        return SessionManager.open(session.path, this.sessionsRoot()).getEntries().some((entry) => {
+          if (entry.type !== "custom" || entry.customType !== "picode.foreign-import") return false;
+          return (entry.data as { importId?: unknown } | undefined)?.importId === persisted.value.importId;
+        });
+      });
+      if (existingSession !== undefined) {
+        imported.push({
+          importId: persisted.value.importId,
+          selectionId: candidate.selectionId,
+          taskId: task.value.taskId,
+          sessionId: existingSession.id,
+          sessionFile: existingSession.path,
+          archived: false,
+          reused: true,
+        });
+        continue;
+      }
+      const manager = SessionManager.create(resolve(workspace), this.sessionsRoot());
+      manager.appendCustomEntry(TASK_BINDING_ENTRY_TYPE, { taskId: task.value.taskId, taskRevision: 1 });
+      manager.appendCustomEntry("picode.foreign-import", { importId: persisted.value.importId, sourceAgent: normalized });
+      manager.appendMessage({
+        role: "custom",
+        customType: "picode.foreign-resume",
+        content: persisted.value.resumeCapsule,
+        display: true,
+        details: { importId: persisted.value.importId, sourceAgent: normalized },
+        timestamp: Date.now(),
+      });
+      persistSessionSeed(manager);
+      imported.push({
+        importId: persisted.value.importId,
+        selectionId: candidate.selectionId,
+        taskId: task.value.taskId,
+        ...sessionIdentity(manager),
+        archived: false,
+      });
+    }
+    const missing = [...selected].filter((id) => !imported.some((row) => (row as { selectionId?: string }).selectionId === id));
+    if (missing.length > 0) throw new Error(`selected chat not found or invalid: ${missing.join(", ")}`);
+    return imported;
   }
 
   async *send(input: { session: string; message: string; nonInteractive: boolean }): AsyncIterable<ControlEvent> {
@@ -414,9 +741,16 @@ export class RpcControlDriver implements ControlDriver {
     return { healthy: checks.every((check) => check.ok), checks };
   }
 
-  async doctorTools(): Promise<unknown> {
-    const capabilities = await CapabilityReadinessRegistry.defaults({ env: this.options.env ?? process.env })
-      .inspectAll({ cwd: this.options.cwd ?? process.cwd(), harnessTier: "standard" });
+  async doctorTools(input: { cwd?: string; harnessTier?: "simple" | "standard" | "tdd" } = {}): Promise<unknown> {
+    const env = {
+      ...(this.options.env ?? process.env),
+      PICODE_PACKAGE_ROOT: this.options.packageRoot,
+    };
+    const capabilities = await CapabilityReadinessRegistry.defaults({ env })
+      .inspectAll({
+        cwd: input.cwd ?? this.options.cwd ?? process.cwd(),
+        harnessTier: input.harnessTier ?? "standard",
+      });
     return {
       healthy: capabilities.every((item) => item.status !== "Unavailable"),
       needsSetup: capabilities.filter((item) => item.status === "NeedsSetup").map((item) => item.capabilityId),
@@ -425,9 +759,23 @@ export class RpcControlDriver implements ControlDriver {
   }
 
   async searchTools(query = ""): Promise<unknown> {
-    const rows = await CapabilityReadinessRegistry.defaults({ env: this.options.env ?? process.env })
-      .inspectAll({ cwd: this.options.cwd ?? process.cwd(), harnessTier: "standard" });
-    const normalized = query.trim().toLowerCase();
-    return rows.filter((row) => normalized === "" || `${row.capabilityId} ${row.summary}`.toLowerCase().includes(normalized));
+    const runtime = await this.capabilityRuntime();
+    const manifests = runtime.guard.catalog.search(query);
+    const readiness = CapabilityReadinessRegistry.defaults({ env: this.options.env ?? process.env });
+    const readinessId = (id: string): string => {
+      if (id === "pi-mcp-adapter") return "mcp";
+      if (id === "pi-web-access") return "web.search";
+      return id;
+    };
+    return Promise.all(manifests.map(async (manifest) => ({
+      capabilityId: manifest.id,
+      title: manifest.title,
+      summary: manifest.summary,
+      origin: manifest.origin,
+      readiness: await readiness.inspect(readinessId(manifest.id), {
+        cwd: this.options.cwd ?? process.cwd(),
+        harnessTier: "standard",
+      }),
+    })));
   }
 }

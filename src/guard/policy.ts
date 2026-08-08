@@ -51,7 +51,8 @@ export function decide({ tier, intent, grants }: PolicyInput): Decision {
 }
 
 function isReadOnly(intent: OperationIntent): boolean {
-  return intent.category === "fs-read" || intent.category === "git-read";
+  return intent.category === "fs-read" || intent.category === "git-read" ||
+    intent.category === "capability-read";
 }
 
 function isRisky(intent: OperationIntent): boolean {

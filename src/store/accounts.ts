@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { atomicWriteFile, withFileLock } from "../shared/fs.ts";
 import { dataPaths } from "../shared/paths.ts";
 import type { AccountRef, Result } from "../shared/types.ts";
@@ -49,6 +50,10 @@ export class AccountsManager {
     private readonly onActiveChanged: (provider: string, accountId: string) => void,
   ) {}
 
+  private accountId(provider: string): string {
+    return `${provider}:${randomUUID()}`;
+  }
+
   private load(): Result<VaultFile> {
     const path = dataPaths.accounts();
     if (!existsSync(path)) return ok({ version: 1, accounts: [] });
@@ -87,7 +92,7 @@ export class AccountsManager {
     if (!vault.ok) return vault;
 
     const account: StoredAccount = {
-      id: `${flow.provider}:${Date.now().toString(36)}`,
+      id: this.accountId(flow.provider),
       provider: flow.provider,
       label: login.value.label,
       status: "stored",
@@ -109,7 +114,7 @@ export class AccountsManager {
     const vault = this.load();
     if (!vault.ok) return vault;
     const account: StoredAccount = {
-      id: `${input.provider}:${Date.now().toString(36)}`,
+      id: this.accountId(input.provider),
       provider: input.provider,
       label: input.label,
       status: "stored",

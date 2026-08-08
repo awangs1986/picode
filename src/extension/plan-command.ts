@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { piAgentDir } from "../shared/paths.ts";
@@ -94,6 +94,13 @@ export type PlanCommandResult =
   | { kind: "missing"; message: string }
   | { kind: "ready"; message: string };
 
+function stripFrontmatter(content: string): string {
+  if (!content.startsWith("---\n") && !content.startsWith("---\r\n")) return content.trim();
+  const normalized = content.replaceAll("\r\n", "\n");
+  const end = normalized.indexOf("\n---\n", 4);
+  return end === -1 ? normalized.trim() : normalized.slice(end + 5).trim();
+}
+
 export function planCommandResult(args: string, detection: MattPocockDetection): PlanCommandResult {
   if (!detection.installed) {
     return {
@@ -105,12 +112,25 @@ export function planCommandResult(args: string, detection: MattPocockDetection):
     };
   }
   const objective = args.trim();
+  const skillPath = detection.roots
+    .map((root) => join(root, "grill-with-docs", "SKILL.md"))
+    .find(existsSync);
+  if (skillPath === undefined) {
+    return {
+      kind: "missing",
+      message: "grill-with-docs is not present in the detected mattpocock skill collection; run /plan again to repair the bundled skill",
+    };
+  }
+  const body = stripFrontmatter(readFileSync(skillPath, "utf8"));
   return {
     kind: "ready",
     message: [
-      "Use the installed mattpocock/skills workflow for this plan.",
-      "Start with the grill-with-docs flow to align the design, terminology, and ADRs before implementation.",
-      ...(objective === "" ? [] : [`Planning objective: ${objective}`]),
+      `<skill name="grill-with-docs" location="${skillPath}">`,
+      `References are relative to ${dirname(skillPath)}.`,
+      "",
+      body,
+      "</skill>",
+      ...(objective === "" ? [] : ["", objective]),
     ].join("\n"),
   };
 }

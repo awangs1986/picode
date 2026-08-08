@@ -15,7 +15,13 @@ Usage:
   picode tui [pi options]        Start Pi explicitly
   picode run [options]           Run one headless turn
   picode rpc                     Serve versioned NDJSON on stdin/stdout
-  picode session <action>        List, create, resume, send, or read events
+  picode session <action>        List, create, resume, switch, branch, send, or read events
+  picode subagent <action>       Inspect, stop, or resume pi-subagents runs
+  picode slice create            Seal a Capsule and continue in a fresh session
+  picode capsule <action>        List or read sealed task Capsules
+  picode worktree <action>       Inspect, claim, or release workspace write ownership
+  picode capability <action>     Inspect or change user-owned capability state
+  picode chat preview|import     Preview and selectively import foreign chats
   picode task <action>           Inspect, wait for, or cancel a task
   picode gate <action>           Inspect gate status or evidence
   picode harness get|set         Read or change the session harness tier
@@ -55,6 +61,21 @@ export interface ControlDriver {
   createSession(input: { id?: string; cwd?: string }): Promise<SessionIdentity>;
   listSessions(): Promise<unknown>;
   resumeSession(session: string): Promise<SessionIdentity>;
+  switchSession(session: string): Promise<SessionIdentity>;
+  branchSession(session: string, from: string): Promise<SessionIdentity & { from: string }>;
+  subagentStatus(session: string, runId?: string): Promise<unknown>;
+  stopSubagent(session: string, runId: string): Promise<unknown>;
+  resumeSubagent(session: string, runId: string, message: string): Promise<unknown>;
+  sliceSession(session: string, intent: string): AsyncIterable<ControlEvent>;
+  listCapsules(taskId: string): Promise<unknown>;
+  readCapsule(taskId: string, capsuleId: string): Promise<unknown>;
+  worktreeStatus(): Promise<unknown>;
+  claimWorktree(workspace: string, taskId: string): Promise<unknown>;
+  releaseWorktree(workspace: string, taskId: string): Promise<unknown>;
+  capabilityStatus(): Promise<unknown>;
+  setCapabilityState(capabilityId: string, state: "disabled" | "enabled" | "trusted"): Promise<unknown>;
+  previewChats(source: string, path: string): Promise<unknown>;
+  importChats(source: string, path: string, selectionIds: string[], workspace: string): Promise<unknown>;
   send(input: {
     session: string;
     message: string;
@@ -75,7 +96,7 @@ export interface ControlDriver {
   evidence(taskId: string): Promise<unknown>;
   doctor(): Promise<unknown>;
   searchTools(query?: string): Promise<unknown>;
-  doctorTools(): Promise<unknown>;
+  doctorTools(input?: { cwd?: string; harnessTier?: "simple" | "standard" | "tdd" }): Promise<unknown>;
 }
 
 export interface ControlIo {
@@ -88,6 +109,14 @@ interface ParsedArgs {
   positionals: string[];
   flags: Map<string, string | true>;
 }
+
+const CONTROL_OPTIONS = new Set([
+  "--account", "--capsule", "--cwd", "--from", "--harness", "--help", "--id",
+  "--intent", "--json", "--jsonl", "--message", "--model", "--non-interactive",
+  "--path", "--permissions", "--prompt", "--provider", "--query", "--run", "--select",
+  "--session", "--since", "--source", "--state", "--task", "--tier", "--timeout-ms",
+  "--workspace",
+]);
 
 function parseArgs(argv: readonly string[]): ParsedArgs {
   const positionals: string[] = [];
@@ -152,13 +181,19 @@ function required(value: string | undefined, label: string): string {
 
 const SUBJECT_HELP: Record<string, string> = {
   run: "Usage: picode run --prompt <text> [--cwd <dir>] [--session <id>] [--harness simple|standard|tdd] [--permissions readonly|auto|full] [--non-interactive]",
-  session: "Usage: picode session list|create|resume|send|events [options]",
+  session: "Usage: picode session list|create|resume|switch|branch|send|events [options]",
+  subagent: "Usage: picode subagent status|stop|resume --session <id> [--run <id>] [--message <text>]",
+  slice: "Usage: picode slice create --session <id> --intent <text>",
+  capsule: "Usage: picode capsule list|read --task <id> [--capsule <id>]",
+  worktree: "Usage: picode worktree status|claim|release [--workspace <path> --task <id>]",
+  capability: "Usage: picode capability status|set [--id <id> --state disabled|enabled|trusted]",
+  chat: "Usage: picode chat preview|import --source claude-code|codex|cursor --path <file-or-directory> [--select <id,id> --workspace <path>]",
   task: "Usage: picode task status|wait|cancel --task <id> [options]",
   gate: "Usage: picode gate status|evidence --task <id>",
   harness: "Usage: picode harness get|set --session <id> [--tier simple|standard|tdd]",
   permissions: "Usage: picode permissions get|set --session <id> [--tier readonly|auto|full]",
   account: "Usage: picode account list|use|import [options]",
-  tools: "Usage: picode tools doctor|search [--query <text>]",
+  tools: "Usage: picode tools doctor [--cwd <dir>] [--harness simple|standard|tdd] | picode tools search [--query <text>]",
   doctor: "Usage: picode doctor [tools]",
 };
 
@@ -170,6 +205,8 @@ export async function executeControlCommand(
   const parsed = parseArgs(argv);
   const [subject, action] = parsed.positionals;
   try {
+    const unknownOption = [...parsed.flags.keys()].find((name) => !CONTROL_OPTIONS.has(name));
+    if (unknownOption !== undefined) throw new Error(`unknown option: ${unknownOption}`);
     if (subject === "help" || parsed.flags.has("--help") || action === "-h") {
       io.stdout(subject !== undefined && SUBJECT_HELP[subject] !== undefined
         ? SUBJECT_HELP[subject]
@@ -221,6 +258,100 @@ export async function executeControlCommand(
     if (subject === "session" && action === "resume") {
       const identity = await io.driver.resumeSession(required(stringFlag(parsed, "--session"), "--session"));
       emitJson(io, event("session.resumed", identity));
+      return CONTROL_EXIT.completed;
+    }
+
+    if (subject === "session" && action === "switch") {
+      const identity = await io.driver.switchSession(required(stringFlag(parsed, "--session"), "--session"));
+      emitJson(io, event("session.switched", identity));
+      return CONTROL_EXIT.completed;
+    }
+
+    if (subject === "session" && action === "branch") {
+      const identity = await io.driver.branchSession(
+        required(stringFlag(parsed, "--session"), "--session"),
+        required(stringFlag(parsed, "--from"), "--from"),
+      );
+      emitJson(io, event("session.branched", identity));
+      return CONTROL_EXIT.completed;
+    }
+
+    if (subject === "subagent" && action === "status") {
+      const session = required(stringFlag(parsed, "--session"), "--session");
+      emitJson(io, event("subagent.status", await io.driver.subagentStatus(session, stringFlag(parsed, "--run"))));
+      return CONTROL_EXIT.completed;
+    }
+    if (subject === "subagent" && action === "stop") {
+      const session = required(stringFlag(parsed, "--session"), "--session");
+      const runId = required(stringFlag(parsed, "--run"), "--run");
+      emitJson(io, event("subagent.stopping", await io.driver.stopSubagent(session, runId)));
+      return CONTROL_EXIT.completed;
+    }
+    if (subject === "subagent" && action === "resume") {
+      const session = required(stringFlag(parsed, "--session"), "--session");
+      const runId = required(stringFlag(parsed, "--run"), "--run");
+      const message = required(stringFlag(parsed, "--message"), "--message");
+      emitJson(io, event("subagent.resumed", await io.driver.resumeSubagent(session, runId, message)));
+      return CONTROL_EXIT.completed;
+    }
+
+    if (subject === "slice" && action === "create") {
+      return emitStream(io.driver.sliceSession(
+        required(stringFlag(parsed, "--session"), "--session"),
+        required(stringFlag(parsed, "--intent"), "--intent"),
+      ), io);
+    }
+    if (subject === "capsule" && action === "list") {
+      emitJson(io, event("capsule.list", await io.driver.listCapsules(required(stringFlag(parsed, "--task"), "--task"))));
+      return CONTROL_EXIT.completed;
+    }
+    if (subject === "capsule" && action === "read") {
+      emitJson(io, event("capsule.read", await io.driver.readCapsule(
+        required(stringFlag(parsed, "--task"), "--task"),
+        required(stringFlag(parsed, "--capsule"), "--capsule"),
+      )));
+      return CONTROL_EXIT.completed;
+    }
+    if (subject === "worktree" && action === "status") {
+      emitJson(io, event("worktree.status", await io.driver.worktreeStatus()));
+      return CONTROL_EXIT.completed;
+    }
+    if (subject === "worktree" && (action === "claim" || action === "release")) {
+      const workspace = required(stringFlag(parsed, "--workspace"), "--workspace");
+      const taskId = required(stringFlag(parsed, "--task"), "--task");
+      const payload = action === "claim"
+        ? await io.driver.claimWorktree(workspace, taskId)
+        : await io.driver.releaseWorktree(workspace, taskId);
+      emitJson(io, event(action === "claim" ? "worktree.claimed" : "worktree.released", payload));
+      return CONTROL_EXIT.completed;
+    }
+    if (subject === "capability" && action === "status") {
+      emitJson(io, event("capability.status", await io.driver.capabilityStatus()));
+      return CONTROL_EXIT.completed;
+    }
+    if (subject === "capability" && action === "set") {
+      const id = required(stringFlag(parsed, "--id"), "--id");
+      const state = required(stringFlag(parsed, "--state"), "--state");
+      if (state !== "disabled" && state !== "enabled" && state !== "trusted") throw new Error(`invalid capability state: ${state}`);
+      emitJson(io, event("capability.changed", await io.driver.setCapabilityState(id, state)));
+      return CONTROL_EXIT.completed;
+    }
+    if (subject === "chat" && action === "preview") {
+      emitJson(io, event("chat.preview", await io.driver.previewChats(
+        required(stringFlag(parsed, "--source"), "--source"),
+        required(stringFlag(parsed, "--path"), "--path"),
+      )));
+      return CONTROL_EXIT.completed;
+    }
+    if (subject === "chat" && action === "import") {
+      const selected = required(stringFlag(parsed, "--select"), "--select").split(",").map((id) => id.trim()).filter(Boolean);
+      if (selected.length === 0) throw new Error("invalid --select");
+      emitJson(io, event("chat.imported", await io.driver.importChats(
+        required(stringFlag(parsed, "--source"), "--source"),
+        required(stringFlag(parsed, "--path"), "--path"),
+        selected,
+        required(stringFlag(parsed, "--workspace"), "--workspace"),
+      )));
       return CONTROL_EXIT.completed;
     }
 
@@ -315,7 +446,15 @@ export async function executeControlCommand(
       return CONTROL_EXIT.completed;
     }
     if ((subject === "tools" && action === "doctor") || (subject === "doctor" && action === "tools")) {
-      emitJson(io, event("tools.doctor", await io.driver.doctorTools()));
+      const cwd = stringFlag(parsed, "--cwd");
+      const harnessTier = stringFlag(parsed, "--harness");
+      if (harnessTier !== undefined && harnessTier !== "simple" && harnessTier !== "standard" && harnessTier !== "tdd") {
+        throw new Error(`invalid harness tier: ${harnessTier}`);
+      }
+      emitJson(io, event("tools.doctor", await io.driver.doctorTools({
+        ...(cwd === undefined ? {} : { cwd }),
+        ...(harnessTier === undefined ? {} : { harnessTier }),
+      })));
       return CONTROL_EXIT.completed;
     }
     if (subject === "doctor" && action === undefined) {
@@ -328,7 +467,7 @@ export async function executeControlCommand(
   } catch (cause) {
     const message = cause instanceof Error ? cause.message : String(cause);
     io.stderr(message);
-    return message.startsWith("missing ") || message.startsWith("invalid ")
+    return message.startsWith("missing ") || message.startsWith("invalid ") || message.startsWith("unknown option:")
       ? CONTROL_EXIT.usage
       : CONTROL_EXIT.internal;
   }
