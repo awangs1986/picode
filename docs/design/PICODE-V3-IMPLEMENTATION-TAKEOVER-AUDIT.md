@@ -78,9 +78,9 @@
    Harness Tier；如果 `search_tools` 暴露给 Simple，可能看到并激活本档不该
    出现的能力。需要由组合根提供当前档位可见集合，不能只靠 suite 表测试。
 5. **首次引导登记**  
-   onboarding 测试会手动注册 mattpocock/skills、Herdr 和
-   CodebaseMemoryProvider；生产 `createRuntime()` 没注册这三个 manifest，
-   `applyOnboarding()` 又忽略 `userSetState()` 的错误，所以实际回答 Y 可能无效。
+   onboarding 只登记 Herdr 和 CodebaseMemoryProvider 两个运行时组件；
+   mattpocock/skills 改为随包固定快照，由显式 `/plan` 按需物化，不进入首次引导。
+   生产 `createRuntime()` 必须确保这两个 manifest 与持久化设置一致，且回答 Y 的错误可见。
 6. **文件状态纪律**  
    当前是 temp + rename 与 30 秒 stale lock。旧 V2 已实现 fsync、known-good、
    quarantine、schema 校验和损坏降级。应把这些行为移植成 Store 内一个
@@ -91,8 +91,8 @@
 - vendored Pi 包与版本锁；
 - Picode Adapter Extension 的真实 Pi 入口；
 - Active Tool Adapter 注册/停用；
-- pi-landstrip、pi-mcp-adapter、pi-subagents、pi-plan-mode、pi-goal、
-  pi-cache-optimizer、pi-lens 的真实加载；
+- pi-landstrip、pi-mcp-adapter、pi-subagents、pi-cache-optimizer、pi-lens 的真实加载；
+- Picode `/plan` 对随包 mattpocock/skills 的按需物化、会话重载和规划委托；
 - Pi usage → CacheMeter；
 - Pi compaction / rewind / fork / resume 事件；
 - `/v1/sessions/:id/messages` → Pi steer；

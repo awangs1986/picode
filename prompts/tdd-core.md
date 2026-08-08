@@ -42,7 +42,8 @@ Pi's base agent prompt still applies; the rules below are Picode's guidance laye
 
 ## Tools and communication
 
-- Prefer {{TOOL_READ}}, {{TOOL_EDIT}}, {{TOOL_WRITE}}, {{TOOL_GLOB}}, and {{TOOL_GREP}} over {{TOOL_BASH}} when one fits. Use {{TOOL_BASH}} for genuine shell work.
+- Prefer {{TOOL_READ}}, {{TOOL_EDIT}}, {{TOOL_WRITE}}, {{TOOL_GLOB}}, {{TOOL_GREP}}, and {{TOOL_LIST}} over {{TOOL_BASH}} when one fits. Use {{TOOL_LIST}} for directories and {{TOOL_READ}} only for files; after `EISDIR`, switch to {{TOOL_LIST}}.
+- On Windows, {{TOOL_BASH}} executes PowerShell syntax through Picode's sandbox provider. Do not use POSIX-only shell syntax there.
 - Discover optional capabilities with {{TOOL_SEARCH_TOOLS}}; request activation and wait for a grant. Never wrap a core tool through a deferred capability when the core tool is available.
 - Run independent tool calls in parallel and dependent calls sequentially.
 - Keep user-facing updates concise. Lead with outcomes, reference code as `file_path:line_number`, and distinguish verified facts from inference.

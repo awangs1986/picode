@@ -69,6 +69,11 @@ flowchart TD
 /harness tdd
 ```
 
+Standard/TDD 会话可用 `/permissions readonly|auto|full` 调整授权密度。默认
+`auto`；`full` 会在当前会话放行常规命令，仍会询问破坏性操作以及
+commit/merge/push 等 Git 所有权操作，并且不会关闭 OS 沙箱。第一次审批时也
+可以直接选择“Allow routine operations for this session”。
+
 Pi 原生工具不会被隐藏。长尾能力由 `search_tools` 发现，需要时才激活，避免所有
 工具 Schema 常驻上下文。
 
@@ -91,6 +96,9 @@ Picode 固定携带 vendored Pi 0.84.0，数据默认写入 `~/.picode/`，与�
 目录隔离。
 
 ## CLI-first 自动化
+
+完整命令、RPC 协议、退出码和 PowerShell 示例见
+[无头模式使用手册](docs/HEADLESS-USAGE.zh.md)。
 
 CLI 是 P0–P4 唯一公开自动化入口，不解析 TUI 输出，也不要求先启动 TUI 或 Core：
 
@@ -118,13 +126,13 @@ Picode 不是把这些项目整体复制进来，而是按稳定接口、许可�
 
 - **earendil-works/pi**：Pi Agent Runtime、原版 TUI、会话格式和 Extension API 的基础。
 - **pi-subagents**：Subagent 委派、异步任务、生命周期工件、Worktree 隔离和 Watchdog Review。
-- **pi-landstrip**：跨平台沙箱 Provider 的调用侧；策略仍由 Picode Guard 决定。
+- **pi-landstrip**：跨平台沙箱 Provider 的调用侧；策略仍由 Picode Guard 决定。Windows Harness 在同一沙箱边界内使用系统 PowerShell，避免 Git Bash/AppContainer 启动失败。
 - **pi-mcp-adapter**：外部 MCP 的搜索、描述、调用和审批仲裁。
-- **pi-plan-mode / pi-goal**：只读计划与有边界的目标推进能力。
+- **mattpocock/skills + Picode `/plan`**：随包携带固定快照；首次显式 `/plan` 时按需物化 `grill-with-docs` 依赖闭包并重载会话，Picode 不再维护独立的 Plan/Goal 插件，也不弹外部安装提示。
 - **pi-web-access**：Simple 档可用的 Web 搜索/抓取扩展。
 - **pi-cache-optimizer**：Provider 缓存兼容与命中率诊断；Picode 禁止其改写提示词。
 - **pi-lens**：LSP 诊断和影响范围辅助。
-- **mattpocock/skills**：可选的软件工程 Skills 集合，采用按需加载思路。
+- **mattpocock/skills**：固定版本的软件工程 Skills 快照；不在启动时整体加载，按用户显式指令物化对应技能。
 - **Herdr**：可选的多任务终端编排 Runtime；不替代 Pi Subagent 底座。
 - **Codebase Memory MCP**：可选的代码库结构索引和长期记忆 Provider。
 - **Grok Build**：项目上下文发现、工具面、权限审批和任务状态呈现的参考对象。

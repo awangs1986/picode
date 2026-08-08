@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
@@ -124,6 +124,23 @@ describe("saveConfig + loadConfig", () => {
       expect(loaded.ok).toBe(true);
       if (!loaded.ok) return;
       expect(loaded.value).toEqual(config);
+    });
+  });
+
+  it("quarantines a corrupt current config and restores the last known-good config", async () => {
+    await withTempPicodeDir(async (dir) => {
+      const config = {
+        ...structuredClone(DEFAULT_CONFIG),
+        locale: "en" as const,
+        onboarding: { completed: true },
+      };
+      expect((await saveConfig(config)).ok).toBe(true);
+      writeFileSync(dataPaths.config(), "{ broken", "utf8");
+
+      const loaded = loadConfig();
+
+      expect(loaded).toEqual({ ok: true, value: config });
+      expect(readdirSync(dir).some((name) => name.startsWith("config.json.quarantine-"))).toBe(true);
     });
   });
 });

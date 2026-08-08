@@ -8,12 +8,12 @@
     "node": ">=22.19.0"
   },
   "bin": {
-    "picode": "./bin/picode.mjs",
-    "picode-ctl": "./bin/picode-ctl.mjs"
+    "picode": "./bin/picode.mjs"
   },
   "files": [
     "bin/",
     "src/",
+    "vendor/",
     "prompts/",
     "README.md",
     "README.en.md"
@@ -30,7 +30,9 @@
     "check:boundaries": "node scripts/check-boundaries.mjs",
     "check:package-metadata": "node scripts/package-metadata-contract.mjs",
     "smoke:pi-rpc": "node scripts/pi-rpc-smoke.mjs",
+    "smoke:windows-shell": "node scripts/windows-standard-shell-smoke.mjs",
     "smoke:package": "node scripts/package-smoke.mjs",
+    "gate:headless": "node scripts/headless-conformance.mjs",
     "check": "npm run typecheck && npm run check:boundaries && npm run check:package-metadata && npm run test"
   },
   "devDependencies": {
@@ -41,8 +43,6 @@
   "dependencies": {
     "@earendil-works/pi-ai": "0.84.0",
     "@earendil-works/pi-coding-agent": "0.84.0",
-    "@narumitw/pi-goal": "0.49.5",
-    "@narumitw/pi-plan-mode": "0.49.3",
     "open": "10.2.0",
     "pi-cache-optimizer": "2.8.0",
     "pi-landstrip": "0.18.26",

@@ -55,9 +55,11 @@ const launch = buildPiLaunch({
   parentEnv: process.env,
 });
 
-const controlSubjects = new Set(["run", "session", "task", "gate", "harness", "account", "doctor"]);
-const userArgs = process.argv.slice(2);
-if (userArgs[0] !== undefined && controlSubjects.has(userArgs[0])) {
+const controlSubjects = new Set(["run", "rpc", "session", "task", "gate", "harness", "permissions", "account", "tools", "doctor", "help"]);
+let userArgs = process.argv.slice(2);
+if (userArgs[0] === "tui") userArgs = userArgs.slice(1);
+const productHelp = userArgs.length === 1 && (userArgs[0] === "--help" || userArgs[0] === "-h");
+if (productHelp || (userArgs[0] !== undefined && controlSubjects.has(userArgs[0]))) {
   try {
     const { register } = await import("tsx/esm/api");
     const unregister = register();

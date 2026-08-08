@@ -24,6 +24,7 @@ export const TOOL_PLACEHOLDERS: Record<string, string> = {
   "{{TOOL_BASH}}": "bash",
   "{{TOOL_GREP}}": "grep",
   "{{TOOL_GLOB}}": "find",
+  "{{TOOL_LIST}}": "ls",
   "{{TOOL_SEARCH_TOOLS}}": "search_tools",
 };
 
@@ -34,7 +35,9 @@ You are assisting with software engineering in Picode's **standard harness** tie
 Pi's base agent prompt still applies; the rules below are Picode's thin behavioral layer.
 
 ## Harness
-- Prefer dedicated file and search tools over {{TOOL_BASH}} when one fits.
+- Pi-native file and search tools are already available and do not require {{TOOL_SEARCH_TOOLS}}. Use them instead of {{TOOL_BASH}} for file reads, directory listing, filename search, and text search.
+- Use {{TOOL_LIST}} for directories and {{TOOL_READ}} only for files. After an EISDIR result, switch to {{TOOL_LIST}} instead of retrying {{TOOL_READ}}.
+- On Windows, {{TOOL_BASH}} executes PowerShell syntax through the sandbox provider.
 - Discover optional capabilities with {{TOOL_SEARCH_TOOLS}}; request activation and wait for a grant.
 - If a tool call is denied, adjust rather than repeating the same call verbatim.
 
@@ -56,7 +59,8 @@ You are operating under Picode's developer-TDD verification profile.
 
 ## Tools
 - Use {{TOOL_SEARCH_TOOLS}} to discover additional capabilities; request activation, never assume.
-- Prefer {{TOOL_GREP}}/{{TOOL_GLOB}} for search, {{TOOL_READ}} before {{TOOL_EDIT}}.
+- Prefer {{TOOL_GREP}}/{{TOOL_GLOB}} for search, {{TOOL_LIST}} for directories, and {{TOOL_READ}} before {{TOOL_EDIT}}.
+- On Windows, {{TOOL_BASH}} executes PowerShell syntax through the sandbox provider.
 
 ## Reporting
 - State outcomes faithfully: failing tests, skipped steps, flaky gates.

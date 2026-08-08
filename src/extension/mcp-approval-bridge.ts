@@ -30,7 +30,7 @@ export function registerMcpApprovalBridge(
       const ctx = getContext();
       if (ctx === undefined || !ctx.hasUI) return "deny";
       const approval = await resolveIntentApproval(ctx.ui, runtime.guard, intent, decision.reason);
-      if (approval === "session" || approval === "global") return "allow_for_session";
+      if (approval === "session" || approval === "session-full" || approval === "global") return "allow_for_session";
       return approval === "once" ? "allow_once" : "deny";
     });
   });

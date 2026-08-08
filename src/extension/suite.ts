@@ -5,7 +5,8 @@ import type { TierPolicy } from "./harness.ts";
 /**
  * 扩展套件登记与档位装载（PICODE-V3-DESIGN.md §1/§2 + MODULES.md §4）。
  * Simple 档接近原生 pi：不加载沙箱/MCP/扩展工具，唯一默认工具 = pi-web-access。
- * /plan //goal 二档起；pi-lens 三档默认。
+ * 计划通过 Picode 自有 /plan 兼容入口交给 mattpocock/skills；不再加载
+ * 独立的第三方 Plan/Goal 插件不再加载；pi-lens 三档默认。
  */
 
 export interface SuiteEntry {
@@ -76,28 +77,6 @@ export const SUITE_ENTRIES: readonly SuiteEntry[] = [
     ),
     tiers: ["standard", "tdd"],
     packageName: "pi-subagents",
-  },
-  {
-    manifest: suiteManifest(
-      "pi-plan-mode",
-      "/plan",
-      "read-only planning mode with fresh implement handoff",
-      ["plan", "planning"],
-      false,
-    ),
-    tiers: ["standard", "tdd"],
-    packageName: "@narumitw/pi-plan-mode",
-  },
-  {
-    manifest: suiteManifest(
-      "pi-goal",
-      "/goal",
-      "settled-boundary goal tracking with circuit breakers and audited completion",
-      ["goal", "tracking"],
-      false,
-    ),
-    tiers: ["standard", "tdd"],
-    packageName: "@narumitw/pi-goal",
   },
   {
     manifest: suiteManifest(

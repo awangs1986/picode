@@ -32,6 +32,16 @@
 
 **Task Run** — 一项用户工作及其目标、计划、证据、风险和终态。
 
+**Task Objective** — Task Run 要解决的问题和验收方向；它是任务事实，不等于可自动续跑的 Goal 模式。
+
+**Planning Workflow** — 用户请求规划时采用的协作流程。Picode 的 `/plan` 首次使用会从随包固定快照按需物化 `grill-with-docs` 及其依赖到私有 Pi skill root，重载会话后把请求交给该工作流；不联网、不提供外部安装命令，也不自动续跑。
+
+**Bundled Skill** — 随 Picode 分发、由来源 Commit/许可证/摘要固定的 Skills 快照。它不在启动时整体加载，只有用户显式使用某个指令时才物化对应依赖闭包。
+
+**Skill Materialization** — 将随包 Skill 的一个依赖闭包原子复制到 Picode 私有 Pi skill root 的一次性操作；不覆盖已有用户目录，完成后由 Pi 重载发现，不等于启动后台进程。
+
+**Goal Mode** — 被 Picode 明确废弃的独立自动推进插件语义；任务仍可拥有 Objective、Next Steps 和 Capsule，但不得因为存在目标字段而自动继续执行。
+
 **Task Slice** — Task Run 中目标单一、范围明确、可以独立验证的一段工作。
 
 **Task Capsule** — Slice 之间传递的有界事实包；生命周期与事实内容由 Devloop/task 唯一拥有，Devloop/context 只负责校验后渲染。包含不可摘要覆盖的 Verbatim Facts 和允许有来源摘要的 Narrative。v1 外壳带 `schemaVersion`，绑定 taskRevision 与 workspaceSnapshot（版本不符不得注入），事实使用可带 sourceDigest 的通用 SourceRef，并关联 verificationRefs；sealed 内容带 digest，生命周期 `draft → sealed → superseded`，通过 supersedes 串联替代关系，sealed 后不可变。
@@ -82,6 +92,10 @@
 
 **ActiveCapabilityLease** — `activate(capabilityId, taskContext)` 返回的会话内能力租约；调用路径（代理调用 / 临时进 Tool Schema / 常驻）由 Engine 确定性选择，调用者不感知注册细节与缓存重置。
 
+**Capability Readiness** — Engine 对某项能力在当前 Task Context 下实际可工作的唯一运行时投影：`Ready`、`Degraded`、`NeedsSetup` 或 `Unavailable`。它与 Enabled/Trusted 设置轴、Stopped/Running 运行轴正交；探测必须只读，不得安装、认证、联网试消费或发起付费请求。
+
+**Structured Git Tool** — Standard/TDD 的一级深工具；用固定 action 和参数数组承接 Inspect、本地修改、Managed Worktree 与 Git 所有权操作。Simple 不注册；commit/merge/rebase/push/删分支始终需要用户确认。
+
 **search_tools** — Picode 自有的二级能力发现工具；查询 Guard 能力目录的 manifest 索引，搜索结果按设置轴过滤（三级不可见的执行点）；MCP 类二级走 pi-mcp-adapter 代理，不经此入口。
 
 **ImportCompiler** — Store 内部、仅导入时懒加载的语义映射编译器；历史工具签名到 Tool Semantic Operation 的唯一权威，执行归一化投影、叙述降级与映射清单入库；外部导入器只负责来源格式解析。
@@ -93,6 +107,10 @@
 ## Execution and verification
 
 **Operation Intent** — 一次文件、Shell、网络、Git 或外部副作用的结构化请求。
+
+**Permission Tier** — 当前 Pi 会话的 Guard 授权预设：`readonly`、`auto`、`full`。通过 `/permissions` 查看或切换，并作为 Pi 自定义会话条目恢复；`full` 只放行常规操作，破坏性操作与 Git commit/merge/push/重写历史仍须逐次确认。它不关闭 OS 沙箱。
+
+**Permission Authority** — P0–P4 唯一事前工具授权权威是 Guard。pi-landstrip 的 agent permission 固定为 allow，只保留运行时 OS 沙箱与访问升级职责，避免同一工具先后弹出两套批准框。
 
 **Work** — 有状态、取消、预算、资源和产物的受监督执行。
 

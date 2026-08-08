@@ -126,6 +126,9 @@ export interface RuntimeOptions {
 /** 真实 pi 扩展入口用：读磁盘配置 + 开 Evidence 落盘 + 载入持久 Grant */
 export function bootRuntime(opts: Omit<RuntimeOptions, "config" | "persistEvidence"> = {}): PicodeRuntime {
   const loaded = loadConfig();
+  if (!loaded.ok) {
+    console.error(`[picode] ${loaded.error.message}; the unreadable file was quarantined and safe defaults are active`);
+  }
   return createRuntime({
     ...opts,
     config: loaded.ok ? loaded.value : structuredClone(DEFAULT_CONFIG),
@@ -140,8 +143,8 @@ export function createRuntime(opts: RuntimeOptions = {}): PicodeRuntime {
   const envelopes = new RuntimeEnvelopeIngress();
   let remoteMessageSender: ((sessionId: string, message: string) => Promise<Result<void>>) | undefined;
 
-  const record = (kind: string, payload: unknown): void => {
-    const event = makeEvent(kind, payload);
+  const record = (kind: string, payload: unknown, opts: { taskId?: string; sliceId?: string } = {}): void => {
+    const event = makeEvent(kind, payload, opts);
     bus.publish(event);
     if (persistEvidence) void appendEvidence(event);
   };
@@ -203,7 +206,10 @@ export function createRuntime(opts: RuntimeOptions = {}): PicodeRuntime {
     envelopes,
     admitRuntime(raw, identity) {
       const admission = envelopes.dispatch(raw, identity, (event, admittedIdentity) => {
-        record(event.kind, { identity: admittedIdentity, payload: event.payload });
+        record(event.kind, { identity: admittedIdentity, payload: event.payload }, {
+          ...(event.taskId === undefined ? {} : { taskId: event.taskId }),
+          ...(event.sliceId === undefined ? {} : { sliceId: event.sliceId }),
+        });
       });
       if (!admission.admitted && admission.reason === "malformed" && persistEvidence) {
         const path = dataPaths.runtimeDiagnostics();

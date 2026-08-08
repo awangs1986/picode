@@ -4,6 +4,7 @@ import type {
   GuardPort,
   Result,
   TaskContext,
+  ReadinessReport,
 } from "../shared/types.ts";
 
 /**
@@ -34,6 +35,7 @@ export const SEARCH_TOOLS_DEFINITION = {
 export interface SearchToolsDeps {
   guard: GuardPort;
   activate(capabilityId: string, ctx: TaskContext): Promise<Result<ActiveCapabilityLease>>;
+  readiness?(capabilityId: string, ctx: TaskContext): Promise<ReadinessReport>;
 }
 
 export type SearchToolsInput =
@@ -41,10 +43,13 @@ export type SearchToolsInput =
   | { action: "activate"; capabilityId?: string };
 
 /** 轻量条目渲染：id + 一句话；完整 schema 不在此出现（懒加载纪律） */
-export function formatSearchResults(manifests: CapabilityManifest[]): string {
+export function formatSearchResults(manifests: CapabilityManifest[], readiness: ReadonlyMap<string, ReadinessReport> = new Map()): string {
   if (manifests.length === 0) return "no matching capabilities";
   return manifests
-    .map((m) => `${m.id} — ${m.title}: ${m.summary}`)
+    .map((m) => {
+      const current = readiness.get(m.id);
+      return `${m.id} — ${m.title}: ${m.summary}${current === undefined ? "" : ` [${current.status}: ${current.summary}]`}`;
+    })
     .join("\n");
 }
 
@@ -54,7 +59,9 @@ export async function handleSearchTools(
   ctx: TaskContext,
 ): Promise<string> {
   if (input.action === "search") {
-    return formatSearchResults(deps.guard.searchCapabilities(input.query ?? ""));
+    const manifests = deps.guard.searchCapabilities(input.query ?? "");
+    const reports = deps.readiness === undefined ? [] : await Promise.all(manifests.map(async (manifest) => [manifest.id, await deps.readiness!(manifest.id, ctx)] as const));
+    return formatSearchResults(manifests, new Map(reports));
   }
 
   if (input.capabilityId === undefined || input.capabilityId.trim() === "") {

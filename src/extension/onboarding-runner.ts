@@ -9,15 +9,6 @@ import { applyOnboarding, onboardingQuestions } from "./onboarding.ts";
 
 export const ONBOARDING_MANIFESTS: readonly CapabilityManifest[] = [
   {
-    id: "mattpocock-skills",
-    kind: "skill",
-    title: "mattpocock/skills",
-    summary: "Curated software-development skills loaded on demand",
-    keywords: ["skills", "typescript", "development"],
-    supportsProxyCall: true,
-    origin: "suite",
-  },
-  {
     id: "herdr",
     kind: "pi-extension",
     title: "Herdr",

@@ -1,18 +1,21 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import { randomUUID } from "node:crypto";
 import {
   RpcClient,
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
 import type { JsonAgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import open from "open";
-import { dataPaths, piAgentDir, piSessionsDir, picodeDir } from "../shared/paths.ts";
+import { dataPaths, picodeDir } from "../shared/paths.ts";
 import type { ControlDriver, ControlEvent, SessionIdentity } from "./index.ts";
 import { TaskIngress } from "../devloop/index.ts";
 import { StateFile } from "../store/state-file.ts";
 import { AccountsManager } from "../store/accounts.ts";
 import { HARNESS_ENTRY_TYPE, restoreHarnessTier } from "../extension/harness.ts";
+import { PERMISSION_ENTRY_TYPE, restorePermissionTier } from "../extension/permissions.ts";
 import { startAccountImportWizard } from "../extension/account-import-wizard.ts";
+import { CapabilityReadinessRegistry } from "../engine/readiness.ts";
 
 function controlTasks(): TaskIngress {
   return new TaskIngress({
@@ -69,10 +72,18 @@ function sessionIdentity(manager: SessionManager): SessionIdentity {
   };
 }
 
-async function resolveSession(value: string): Promise<SessionIdentity> {
+function persistSessionSeed(manager: SessionManager): string {
+  const sessionFile = manager.getSessionFile();
+  if (sessionFile === undefined) throw new Error("new session has no persistent file");
+  const entries = [manager.getHeader(), ...manager.getEntries()];
+  writeFileSync(sessionFile, `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`, { flag: "wx" });
+  return sessionFile;
+}
+
+async function resolveSession(value: string, sessionDir: string): Promise<SessionIdentity> {
   const direct = isAbsolute(value) ? value : resolve(value);
-  if (existsSync(direct)) return sessionIdentity(SessionManager.open(direct, piSessionsDir()));
-  const all = await SessionManager.listAll(piSessionsDir());
+  if (existsSync(direct)) return sessionIdentity(SessionManager.open(direct, sessionDir));
+  const all = await SessionManager.listAll(sessionDir);
   const matches = all.filter((session) => session.id === value || session.id.startsWith(value));
   if (matches.length !== 1) {
     throw new Error(matches.length === 0 ? `session not found: ${value}` : `session id is ambiguous: ${value}`);
@@ -82,28 +93,45 @@ async function resolveSession(value: string): Promise<SessionIdentity> {
   return { sessionId: match.id, sessionFile: match.path };
 }
 
-interface DriverOptions {
+export interface DriverOptions {
   packageRoot: string;
   piEntry: string;
   cwd?: string;
   env?: NodeJS.ProcessEnv;
+  extraExtensions?: string[];
 }
 
 export class RpcControlDriver implements ControlDriver {
+  private readonly approvalClients = new Map<string, RpcClient>();
+  private readonly activeRuns = new Map<string, { client: RpcClient; queue: EventQueue }>();
+  private readonly cancelledRuns = new Set<string>();
   constructor(private readonly options: DriverOptions) {}
+
+  private picodeRoot(): string {
+    return this.options.env?.["PICODE_DIR"] ?? picodeDir();
+  }
+
+  private agentRoot(): string {
+    return this.options.env?.["PI_CODING_AGENT_DIR"] ?? join(this.picodeRoot(), "agent");
+  }
+
+  private sessionsRoot(): string {
+    return join(this.agentRoot(), "sessions");
+  }
 
   private client(input: { cwd?: string; session?: string; provider?: string; model?: string } = {}): RpcClient {
     const extension = join(this.options.packageRoot, "src", "extension", "pi-entry.ts");
-    const args = ["--extension", extension, "--session-dir", piSessionsDir()];
+    const args = ["--extension", extension, "--session-dir", this.sessionsRoot()];
+    for (const extra of this.options.extraExtensions ?? []) args.push("--extension", extra);
     if (input.session !== undefined) args.push("--session", input.session);
     return new RpcClient({
       cliPath: this.options.piEntry,
       cwd: input.cwd ?? this.options.cwd ?? process.cwd(),
       env: {
         ...this.options.env,
-        PICODE_DIR: picodeDir(),
+        PICODE_DIR: this.picodeRoot(),
         PICODE_PACKAGE_ROOT: this.options.packageRoot,
-        PI_CODING_AGENT_DIR: piAgentDir(),
+        PI_CODING_AGENT_DIR: this.agentRoot(),
         PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE: "1",
       },
       ...(input.provider === undefined ? {} : { provider: input.provider }),
@@ -119,13 +147,27 @@ export class RpcControlDriver implements ControlDriver {
     provider?: string;
     model?: string;
     nonInteractive: boolean;
+    timeoutMs?: number;
+    permissionTier?: "readonly" | "auto" | "full";
+    harnessTier?: "simple" | "standard" | "tdd";
   }): AsyncIterable<ControlEvent> {
-    const client = this.client(input);
+    let session = input.session;
+    if (session === undefined && (input.permissionTier !== undefined || input.harnessTier !== undefined)) {
+      const manager = SessionManager.create(input.cwd ?? this.options.cwd ?? process.cwd(), this.sessionsRoot());
+      if (input.harnessTier !== undefined) manager.appendCustomEntry(HARNESS_ENTRY_TYPE, { tier: input.harnessTier });
+      if (input.permissionTier !== undefined) manager.appendCustomEntry(PERMISSION_ENTRY_TYPE, { tier: input.permissionTier });
+      session = persistSessionSeed(manager);
+    }
+    const client = this.client({ ...input, ...(session === undefined ? {} : { session }) });
     const queue = new EventQueue();
     let approvalRequired = false;
+    const runId = randomUUID();
     const unsubscribe = client.onEvent((raw) => {
+      if (this.cancelledRuns.has(runId)) return;
       if (isUiApproval(raw)) {
         approvalRequired = true;
+        const requestId = (raw as { id?: unknown }).id;
+        if (typeof requestId === "string") this.approvalClients.set(requestId, client);
         queue.push(asEvent("approval.required", raw));
       } else {
         queue.push(asEvent(eventKind(raw), raw));
@@ -134,31 +176,46 @@ export class RpcControlDriver implements ControlDriver {
     const execute = (async () => {
       try {
         await client.start();
-        await client.prompt(input.prompt);
+        const initialState = await client.getState();
+        this.activeRuns.set(runId, { client, queue });
+        queue.push(asEvent("run.started", { runId, executionEpoch: 1, sessionId: initialState.sessionId, sessionFile: initialState.sessionFile }));
+        const compact = input.prompt.match(/^\/compact(?:\s+([\s\S]+))?\s*$/i);
+        if (compact !== null) {
+          await client.compact(compact[1]?.trim() || undefined);
+        } else {
+          await client.prompt(input.prompt);
+        }
         if (input.nonInteractive) {
           const started = Date.now();
           while (!approvalRequired) {
             const state = await client.getState();
             if (!state.isStreaming && state.pendingMessageCount === 0) break;
-            if (Date.now() - started > 600_000) throw new Error("Timeout waiting for headless run");
+            if (Date.now() - started > (input.timeoutMs ?? 600_000)) throw new Error("Timeout waiting for headless run");
             await new Promise((resolveWait) => setTimeout(resolveWait, 25));
           }
           if (approvalRequired) await client.abort().catch(() => undefined);
         } else {
-          await client.waitForIdle(600_000);
+          await client.waitForIdle(input.timeoutMs ?? 600_000);
         }
-        if (!approvalRequired) {
+        if (this.cancelledRuns.has(runId)) {
+          // cancelRun already emitted the single terminal event.
+        } else if (!approvalRequired || !input.nonInteractive) {
           const state = await client.getState();
           queue.push(asEvent("run.completed", {
+            runId,
+            executionEpoch: 1,
             sessionId: state.sessionId,
             sessionFile: state.sessionFile,
-            text: await client.getLastAssistantText(),
+            text: compact === null ? await client.getLastAssistantText() : "Session compacted",
           }));
         }
       } catch (cause) {
         const message = cause instanceof Error ? cause.message : String(cause);
         queue.push(asEvent(/timeout/i.test(message) ? "run.timeout" : "run.error", { message }));
       } finally {
+        this.activeRuns.delete(runId);
+        this.cancelledRuns.delete(runId);
+        for (const [id, owner] of this.approvalClients) if (owner === client) this.approvalClients.delete(id);
         unsubscribe();
         await client.stop();
         queue.close();
@@ -172,19 +229,53 @@ export class RpcControlDriver implements ControlDriver {
     await execute;
   }
 
+  async respondApproval(requestId: string, action: "once" | "session" | "session-full" | "deny"): Promise<unknown> {
+    const client = this.approvalClients.get(requestId);
+    if (client === undefined) throw new Error(`approval request not found: ${requestId}`);
+    const value = action === "once" ? "Allow once"
+      : action === "session" ? "Allow exact command for this session"
+      : action === "session-full" ? "Allow routine operations for this session"
+      : "Deny";
+    // Pi 0.84 exposes extension_ui_response on the wire but RpcClient has no
+    // public responder. Keep this pinned-version compatibility access here.
+    const compatibility = client as unknown as { process?: { stdin?: { writable: boolean; write(value: string): void } } };
+    const stdin = compatibility.process?.stdin;
+    if (stdin?.writable !== true) throw new Error("Pi RPC stdin is not writable");
+    stdin.write(`${JSON.stringify({ type: "extension_ui_response", id: requestId, value })}\n`);
+    this.approvalClients.delete(requestId);
+    return { accepted: action !== "deny", action };
+  }
+
+  async cancelRun(runId: string): Promise<unknown> {
+    const active = this.activeRuns.get(runId);
+    if (active === undefined) throw new Error(`run not found: ${runId}`);
+    this.cancelledRuns.add(runId);
+    active.queue.push(asEvent("run.cancelled", { runId }));
+    await active.client.abort();
+    return { runId, cancelled: true };
+  }
+
   async createSession(input: { id?: string; cwd?: string }): Promise<SessionIdentity> {
-    mkdirSync(piSessionsDir(), { recursive: true });
-    return sessionIdentity(SessionManager.create(input.cwd ?? this.options.cwd ?? process.cwd(), piSessionsDir(), {
+    mkdirSync(this.sessionsRoot(), { recursive: true });
+    const manager = SessionManager.create(input.cwd ?? this.options.cwd ?? process.cwd(), this.sessionsRoot(), {
       ...(input.id === undefined ? {} : { id: input.id }),
+    });
+    persistSessionSeed(manager);
+    return sessionIdentity(manager);
+  }
+
+  async listSessions(): Promise<unknown> {
+    return (await SessionManager.listAll(this.sessionsRoot())).map((session) => ({
+      sessionId: session.id, sessionFile: session.path, cwd: session.cwd, modified: session.modified,
     }));
   }
 
   resumeSession(session: string): Promise<SessionIdentity> {
-    return resolveSession(session);
+    return resolveSession(session, this.sessionsRoot());
   }
 
   async *send(input: { session: string; message: string; nonInteractive: boolean }): AsyncIterable<ControlEvent> {
-    const identity = await resolveSession(input.session);
+    const identity = await resolveSession(input.session, this.sessionsRoot());
     if (identity.sessionFile === undefined) throw new Error(`session has no persistent file: ${input.session}`);
     yield* this.run({
       prompt: input.message,
@@ -194,9 +285,9 @@ export class RpcControlDriver implements ControlDriver {
   }
 
   async *events(input: { session: string; since?: string }): AsyncIterable<ControlEvent> {
-    const identity = await resolveSession(input.session);
+    const identity = await resolveSession(input.session, this.sessionsRoot());
     if (identity.sessionFile === undefined) return;
-    const manager = SessionManager.open(identity.sessionFile, piSessionsDir());
+    const manager = SessionManager.open(identity.sessionFile, this.sessionsRoot());
     let include = input.since === undefined;
     for (const entry of manager.getEntries()) {
       if (!include) {
@@ -229,9 +320,9 @@ export class RpcControlDriver implements ControlDriver {
   }
 
   private async sessionManager(session: string): Promise<SessionManager> {
-    const identity = await resolveSession(session);
+    const identity = await resolveSession(session, this.sessionsRoot());
     if (identity.sessionFile === undefined) throw new Error(`session has no persistent file: ${session}`);
-    return SessionManager.open(identity.sessionFile, piSessionsDir());
+    return SessionManager.open(identity.sessionFile, this.sessionsRoot());
   }
 
   async harnessTier(session: string): Promise<string> {
@@ -242,6 +333,17 @@ export class RpcControlDriver implements ControlDriver {
   async setHarnessTier(session: string, tier: "simple" | "standard" | "tdd"): Promise<string> {
     const manager = await this.sessionManager(session);
     manager.appendCustomEntry(HARNESS_ENTRY_TYPE, { tier });
+    return tier;
+  }
+
+  async permissionTier(session: string): Promise<string> {
+    const manager = await this.sessionManager(session);
+    return restorePermissionTier(manager.getBranch());
+  }
+
+  async setPermissionTier(session: string, tier: "readonly" | "auto" | "full"): Promise<string> {
+    const manager = await this.sessionManager(session);
+    manager.appendCustomEntry(PERMISSION_ENTRY_TYPE, { tier });
     return tier;
   }
 
@@ -259,6 +361,18 @@ export class RpcControlDriver implements ControlDriver {
     } finally {
       wizard.cancel();
     }
+  }
+
+  async listAccounts(): Promise<unknown> {
+    const accounts = new AccountsManager(() => undefined).list();
+    if (!accounts.ok) throw new Error(accounts.error.message);
+    return accounts.value;
+  }
+
+  async useAccount(accountId: string): Promise<unknown> {
+    const selected = await new AccountsManager(() => undefined).setActive(accountId);
+    if (!selected.ok) throw new Error(selected.error.message);
+    return selected.value;
   }
 
   async taskStatus(taskId: string): Promise<unknown> {
@@ -295,8 +409,25 @@ export class RpcControlDriver implements ControlDriver {
     const checks = [
       { name: "vendored-pi", ok: existsSync(this.options.piEntry), path: this.options.piEntry },
       { name: "picode-extension", ok: existsSync(join(this.options.packageRoot, "src", "extension", "pi-entry.ts")) },
-      { name: "agent-dir", ok: true, path: piAgentDir() },
+      { name: "agent-dir", ok: true, path: this.agentRoot() },
     ];
     return { healthy: checks.every((check) => check.ok), checks };
+  }
+
+  async doctorTools(): Promise<unknown> {
+    const capabilities = await CapabilityReadinessRegistry.defaults({ env: this.options.env ?? process.env })
+      .inspectAll({ cwd: this.options.cwd ?? process.cwd(), harnessTier: "standard" });
+    return {
+      healthy: capabilities.every((item) => item.status !== "Unavailable"),
+      needsSetup: capabilities.filter((item) => item.status === "NeedsSetup").map((item) => item.capabilityId),
+      capabilities,
+    };
+  }
+
+  async searchTools(query = ""): Promise<unknown> {
+    const rows = await CapabilityReadinessRegistry.defaults({ env: this.options.env ?? process.env })
+      .inspectAll({ cwd: this.options.cwd ?? process.cwd(), harnessTier: "standard" });
+    const normalized = query.trim().toLowerCase();
+    return rows.filter((row) => normalized === "" || `${row.capabilityId} ${row.summary}`.toLowerCase().includes(normalized));
   }
 }

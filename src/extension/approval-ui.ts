@@ -4,10 +4,11 @@ import type { OperationIntent } from "../shared/types.ts";
 
 const ALLOW_ONCE = "Allow once";
 const ALLOW_SESSION = "Allow exact command for this session";
+const ALLOW_SESSION_ROUTINE = "Allow routine operations for this session";
 const ALLOW_GLOBAL = "Always allow this command prefix";
 const DENY = "Deny";
 
-export type ApprovalOutcome = "once" | "session" | "global" | "denied";
+export type ApprovalOutcome = "once" | "session" | "session-full" | "global" | "denied";
 
 /** User-owned approval UX; models can trigger it but cannot choose the answer. */
 export async function requestIntentApproval(
@@ -25,7 +26,7 @@ export async function resolveIntentApproval(
   intent: OperationIntent,
   reason: string,
 ): Promise<ApprovalOutcome> {
-  const choices = [ALLOW_ONCE, ALLOW_SESSION];
+  const choices = [ALLOW_ONCE, ALLOW_SESSION, ALLOW_SESSION_ROUTINE];
   if (intent.category === "exec" && intent.command !== undefined) choices.push(ALLOW_GLOBAL);
   choices.push(DENY);
   const selected = await ui.select(`Picode permission · ${reason}`, choices);
@@ -37,6 +38,10 @@ export async function resolveIntentApproval(
       scope: "session",
     });
     return added.ok ? "session" : "denied";
+  }
+  if (selected === ALLOW_SESSION_ROUTINE) {
+    guard.setTier("full");
+    return "session-full";
   }
   if (selected === ALLOW_GLOBAL && intent.command !== undefined) {
     const added = await guard.grants.add({

@@ -13,15 +13,13 @@ const SUITE_IDS = [
   "pi-landstrip",
   "pi-mcp-adapter",
   "pi-subagents",
-  "pi-plan-mode",
-  "pi-goal",
   "pi-cache-optimizer",
   "pi-lens",
 ] as const;
 
 describe("SUITE_ENTRIES", () => {
-  it("contains exactly 8 entries with expected ids", () => {
-    expect(SUITE_ENTRIES).toHaveLength(8);
+  it("contains exactly 6 entries with expected ids", () => {
+    expect(SUITE_ENTRIES).toHaveLength(6);
     const ids = SUITE_ENTRIES.map((e) => e.manifest.id).sort();
     expect(ids).toEqual([...SUITE_IDS].sort());
   });
@@ -81,17 +79,13 @@ describe("suiteForTier", () => {
     expect(ids).toEqual(["pi-cache-optimizer", "pi-web-access"]);
   });
 
-  it("standard tier includes landstrip, mcp-adapter, subagents, plan, goal but not lens", () => {
+  it("standard tier includes landstrip, mcp-adapter, and subagents but not plan, goal, or lens", () => {
     const ids = new Set(suiteForTier("standard").map((e) => e.manifest.id));
-    for (const id of [
-      "pi-landstrip",
-      "pi-mcp-adapter",
-      "pi-subagents",
-      "pi-plan-mode",
-      "pi-goal",
-    ]) {
+    for (const id of ["pi-landstrip", "pi-mcp-adapter", "pi-subagents"]) {
       expect(ids.has(id)).toBe(true);
     }
+    expect(ids.has("pi-plan-mode")).toBe(false);
+    expect(ids.has("pi-goal")).toBe(false);
     expect(ids.has("pi-lens")).toBe(false);
   });
 

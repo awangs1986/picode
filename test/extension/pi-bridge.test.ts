@@ -1,16 +1,29 @@
 import { describe, expect, it, vi } from "vitest";
 import { join } from "node:path";
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import type {
   ExtensionAPI,
   ExtensionContext,
   ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { createRuntime } from "../../src/extension/index.ts";
-import { candidateSnapshot, registerPicodeBridge } from "../../src/extension/pi-bridge.ts";
+import {
+  buildFreshReviewTask,
+  candidateSnapshot,
+  registerPicodeBridge,
+} from "../../src/extension/pi-bridge.ts";
 import { withTempPicodeDir } from "../helpers/temp-dir.ts";
 
 type Handler = (event: never, ctx: ExtensionContext) => unknown;
+
+describe("fresh TDD review scope", () => {
+  it("keeps the reviewer on the candidate and out of Picode runtime history", () => {
+    const task = buildFreshReviewTask("node-counter");
+    expect(task).toContain("git diff");
+    expect(task).toContain(".picode-state");
+    expect(task).toContain("structured {passed, blockers}");
+  });
+});
 
 function fakePi() {
   const handlers = new Map<string, Handler>();
@@ -18,6 +31,7 @@ function fakePi() {
   const tools = new Map<string, ToolDefinition>();
   const providers = new Map<string, unknown>();
   const appended: Array<[string, unknown]> = [];
+  const sentMessages: string[] = [];
   let activeTools = ["read", "bash", "edit", "write"];
   const api = {
     on(name: string, handler: Handler) { handlers.set(name, handler); },
@@ -33,13 +47,14 @@ function fakePi() {
     getAllTools: () => [...tools.values()].map((tool) => ({ ...tool, sourceInfo: { source: "extension" } })),
     registerProvider(name: string, config: unknown) { providers.set(name, config); },
     appendEntry(type: string, data: unknown) { appended.push([type, data]); },
+    sendUserMessage(message: string) { sentMessages.push(message); },
   } as unknown as ExtensionAPI;
-  return { api, handlers, commands, tools, providers, appended, activeTools: () => [...activeTools] };
+  return { api, handlers, commands, tools, providers, appended, sentMessages, activeTools: () => [...activeTools] };
 }
 
-function fakeContext(confirm: boolean): ExtensionContext {
+function fakeContext(confirm: boolean, cwd = "C:/repo"): ExtensionContext {
   return {
-    cwd: "C:/repo",
+    cwd,
     ui: { confirm: vi.fn(async () => confirm) },
     sessionManager: { getBranch: () => [], getSessionId: () => "session-1" },
   } as unknown as ExtensionContext;
@@ -109,13 +124,110 @@ describe("Pi 0.84 Bridge feasibility seam", () => {
     expect(reload).toHaveBeenCalledOnce();
   });
 
-  it("exposes Account Vault operations through the Pi /accounts command", async () => {
+  it("restores and changes the session permission tier through /permissions", async () => {
+    const pi = fakePi();
+    const runtime = createRuntime();
+    const permissionReady = vi.fn(async () => {});
+    registerPicodeBridge(pi.api, runtime, { onPermissionTierReady: permissionReady });
+    const notify = vi.fn();
+    const ctx = { ...fakeContext(true), ui: { notify } } as unknown as ExtensionContext;
+
+    await pi.commands.get("permissions")?.handler("full", ctx);
+
+    expect(runtime.guard.permissionTier()).toBe("full");
+    expect(pi.appended).toContainEqual(["picode.permission-tier", { tier: "full" }]);
+    expect(permissionReady).toHaveBeenCalledWith("full", ctx);
+    expect(notify).toHaveBeenCalledWith(expect.stringContaining("full"), "warning");
+  });
+
+  it("restores the permission tier from the Pi session branch", async () => {
     const pi = fakePi();
     const runtime = createRuntime();
     registerPicodeBridge(pi.api, runtime);
-    const notify = vi.fn();
-    await pi.commands.get("accounts")?.handler("list", { ui: { notify } } as unknown as ExtensionContext);
-    expect(notify).toHaveBeenCalledWith(expect.stringContaining("no accounts"), "info");
+    const ctx = {
+      ...fakeContext(true),
+      sessionManager: {
+        getSessionId: () => "permission-session",
+        getBranch: () => [{
+          type: "custom",
+          customType: "picode.permission-tier",
+          data: { tier: "full" },
+        }],
+      },
+    } as unknown as ExtensionContext;
+
+    await pi.handlers.get("session_start")?.(
+      { type: "session_start", reason: "resume" } as never,
+      ctx,
+    );
+
+    expect(runtime.guard.permissionTier()).toBe("full");
+  });
+
+  it("does not ask permission for a conservatively recognized read-only shell inspection", async () => {
+    const pi = fakePi();
+    const runtime = createRuntime();
+    registerPicodeBridge(pi.api, runtime);
+    const select = vi.fn(async () => "Deny");
+    const result = await pi.handlers.get("tool_call")?.({
+      type: "tool_call",
+      toolCallId: "read-only-shell",
+      toolName: "bash",
+      input: { command: "Get-ChildItem ./src | Select-Object Name | Format-Table -AutoSize" },
+    } as never, {
+      ...fakeContext(true),
+      ui: { select },
+    } as unknown as ExtensionContext);
+
+    expect(result).toBeUndefined();
+    expect(select).not.toHaveBeenCalled();
+  });
+
+  it("keeps shell execution that is not proven read-only behind approval", async () => {
+    const pi = fakePi();
+    const runtime = createRuntime();
+    registerPicodeBridge(pi.api, runtime);
+    const select = vi.fn(async () => "Deny");
+    const result = await pi.handlers.get("tool_call")?.({
+      type: "tool_call",
+      toolCallId: "unknown-shell",
+      toolName: "bash",
+      input: { command: "npm test" },
+    } as never, {
+      ...fakeContext(true),
+      ui: { select },
+    } as unknown as ExtensionContext);
+
+    expect(result).toEqual({ block: true, reason: "user declined" });
+    expect(select).toHaveBeenCalledOnce();
+  });
+
+  it("keeps /plan as a mattpocock compatibility entry without auto-installing", async () => {
+    await withTempPicodeDir(async (dir) => {
+      const pi = fakePi();
+      registerPicodeBridge(pi.api, createRuntime());
+      const skills = join(dir, ".agents", "skills", "setup-matt-pocock-skills");
+      mkdirSync(skills, { recursive: true });
+      writeFileSync(join(skills, "SKILL.md"), "# Setup Matt Pocock's Skills\n", "utf8");
+      const readyNotify = vi.fn();
+      await pi.commands.get("plan")?.handler("ship feature", {
+        ...fakeContext(true, dir),
+        ui: { notify: readyNotify },
+      } as unknown as ExtensionContext);
+      expect(readyNotify).not.toHaveBeenCalled();
+      expect(pi.sentMessages.at(-1)).toContain("grill-with-docs");
+    });
+  });
+
+  it("exposes Account Vault operations through the Pi /accounts command", async () => {
+    await withTempPicodeDir(async () => {
+      const pi = fakePi();
+      const runtime = createRuntime();
+      registerPicodeBridge(pi.api, runtime);
+      const notify = vi.fn();
+      await pi.commands.get("accounts")?.handler("list", { ui: { notify } } as unknown as ExtensionContext);
+      expect(notify).toHaveBeenCalledWith(expect.stringContaining("no accounts"), "info");
+    });
   });
 
   it("opens the account import Web Wizard and keeps a copyable URL fallback", async () => {
@@ -400,6 +512,26 @@ describe("Pi 0.84 Bridge feasibility seam", () => {
     await pi.handlers.get("tool_result")?.(event as never, ctx);
 
     expect(observed.filter((kind) => kind === "tool.result")).toHaveLength(1);
+  });
+
+  it("turns a directory read failure into deterministic Pi-native ls guidance", async () => {
+    const pi = fakePi();
+    registerPicodeBridge(pi.api, createRuntime());
+    const result = await pi.handlers.get("tool_result")?.({
+      type: "tool_result",
+      toolCallId: "read-directory",
+      toolName: "read",
+      input: { path: "D:/repo/src" },
+      content: [{ type: "text", text: "EISDIR: illegal operation on a directory, read" }],
+      isError: true,
+    } as never, fakeContext(true));
+
+    expect(result).toMatchObject({
+      isError: true,
+      content: [
+        { type: "text", text: expect.stringContaining("Use the Pi-native ls tool") },
+      ],
+    });
   });
 
   it("observes compact and session-history lifecycle through public Pi events", async () => {

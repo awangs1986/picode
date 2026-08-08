@@ -11,7 +11,7 @@ import {
 } from "../../src/extension/onboarding.ts";
 import { makeManifest } from "../helpers/fixtures.ts";
 
-const ONBOARDING_IDS = ["mattpocock-skills", "herdr", "codebase-memory-provider"] as const;
+const ONBOARDING_IDS = ["herdr", "codebase-memory-provider"] as const;
 
 function registerOnboardingManifests(catalog: CapabilityCatalog): void {
   for (const id of ONBOARDING_IDS) {
@@ -20,8 +20,8 @@ function registerOnboardingManifests(catalog: CapabilityCatalog): void {
 }
 
 describe("ONBOARDING_ITEMS", () => {
-  it("has exactly three items with fixed ids", () => {
-    expect(ONBOARDING_ITEMS).toHaveLength(3);
+  it("has exactly two items with fixed ids", () => {
+    expect(ONBOARDING_ITEMS).toHaveLength(2);
     expect(ONBOARDING_ITEMS.map((x) => x.capabilityId)).toEqual([...ONBOARDING_IDS]);
   });
 });
@@ -29,19 +29,17 @@ describe("ONBOARDING_ITEMS", () => {
 describe("onboardingQuestions", () => {
   it("returns separate zh questions with Chinese intro text", () => {
     const qs = onboardingQuestions("zh");
-    expect(qs).toHaveLength(3);
+    expect(qs).toHaveLength(2);
     expect(qs.map((q) => q.capabilityId)).toEqual([...ONBOARDING_IDS]);
-    expect(qs[0]?.text).toContain("mattpocock/skills");
-    expect(qs[1]?.text).toContain("Herdr");
-    expect(qs[2]?.text).toContain("CodebaseMemoryProvider");
+    expect(qs[0]?.text).toContain("Herdr");
+    expect(qs[1]?.text).toContain("CodebaseMemoryProvider");
   });
 
   it("returns separate en questions with English intro text", () => {
     const qs = onboardingQuestions("en");
-    expect(qs).toHaveLength(3);
-    expect(qs[0]?.text).toContain("curated collection");
-    expect(qs[1]?.text).toContain("multi-task");
-    expect(qs[2]?.text).toContain("repository-level");
+    expect(qs).toHaveLength(2);
+    expect(qs[0]?.text).toContain("multi-task");
+    expect(qs[1]?.text).toContain("repository-level");
   });
 });
 
@@ -58,14 +56,13 @@ describe("shouldRunOnboarding", () => {
 });
 
 describe("applyOnboarding", () => {
-  it("trusts all three when all answers are true without mutating input config", () => {
+  it("trusts both when all answers are true without mutating input config", () => {
     const catalog = new CapabilityCatalog();
     registerOnboardingManifests(catalog);
     const config = structuredClone(DEFAULT_CONFIG);
 
     const next = applyOnboarding(
       {
-        "mattpocock-skills": true,
         herdr: true,
         "codebase-memory-provider": true,
       },
@@ -86,7 +83,6 @@ describe("applyOnboarding", () => {
     registerOnboardingManifests(catalog);
     const next = applyOnboarding({ herdr: true }, catalog, DEFAULT_CONFIG);
 
-    expect(catalog.get("mattpocock-skills")?.setting).toBe("disabled");
     expect(catalog.get("herdr")?.setting).toBe("trusted");
     expect(catalog.get("codebase-memory-provider")?.setting).toBe("disabled");
     expect(next.onboarding.completed).toBe(true);

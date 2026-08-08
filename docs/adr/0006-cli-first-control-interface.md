@@ -3,6 +3,14 @@
 - 状态：Accepted
 - 日期：2026-08-07
 
+## 2026-08-08 修订：无头模式成为最高实施优先级
+
+现有 Control Interface 只证明底层 seam 可行，尚未形成完整产品入口：
+`picode --help` 仍落到上游 Pi，`picode-ctl` 仍是内部 HTTP 客户端，审批也不能
+在长生命周期协议中响应。因此 P0–P2 优先完成产品级 CLI/RPC 与无密钥
+Scripted Model fixture；结构化 Git 和 Capability Readiness 排到无头 P3，
+通过同一协议验收。详见 `docs/design/HEADLESS-FIRST-PLAN.md`。
+
 ## 决策
 
 1. CLI 是 P0–P4 唯一公开自动化契约；同一 `picode` executable 提供 TUI、

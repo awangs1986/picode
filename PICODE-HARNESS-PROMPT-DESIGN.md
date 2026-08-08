@@ -698,7 +698,7 @@ Harness Core 不逐个解释所有工具。工具自身 schema/description 是�
 
 ### 15.3 Tier 3
 
-默认关闭的能力不向模型显示，也不能被 `capability_search` 找到。用户启用并信任后，它才进入 Tier 2。首次启动启用 Matt Pocock Skills、Herdr 或 CodebaseMemoryProvider 也不会污染 Simple Prompt。
+默认关闭的能力不向模型显示，也不能被 `capability_search` 找到。用户启用并信任后，它才进入 Tier 2。Matt Pocock Skills 随包提供但不在启动时整体加载，只有用户显式使用技能命令时才按需物化；Herdr 或 CodebaseMemoryProvider 的首次启用也不会污染 Simple Prompt。
 
 ### 15.4 用户 Skill 优先级
 

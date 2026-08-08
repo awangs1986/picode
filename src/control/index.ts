@@ -8,6 +8,25 @@ export const CONTROL_EXIT = {
   internal: 70,
 } as const;
 
+export const CONTROL_HELP = `Picode — lightweight Pi development harness
+
+Usage:
+  picode                         Start the upstream Pi TUI
+  picode tui [pi options]        Start Pi explicitly
+  picode run [options]           Run one headless turn
+  picode rpc                     Serve versioned NDJSON on stdin/stdout
+  picode session <action>        List, create, resume, send, or read events
+  picode task <action>           Inspect, wait for, or cancel a task
+  picode gate <action>           Inspect gate status or evidence
+  picode harness get|set         Read or change the session harness tier
+  picode permissions get|set     Read or change the session permission tier
+  picode account <action>        List, use, or import accounts
+  picode tools doctor            Inspect capability readiness
+  picode tools search            Discover available tools
+  picode doctor [tools]          Diagnose the installation
+
+Run "picode <subject> --help" for machine-command options. Output is JSON/JSONL.`;
+
 export interface ControlEvent {
   version: 1;
   kind: string;
@@ -27,8 +46,14 @@ export interface ControlDriver {
     provider?: string;
     model?: string;
     nonInteractive: boolean;
+    timeoutMs?: number;
+    permissionTier?: "readonly" | "auto" | "full";
+    harnessTier?: "simple" | "standard" | "tdd";
   }): AsyncIterable<ControlEvent>;
+  respondApproval?(requestId: string, action: "once" | "session" | "session-full" | "deny"): Promise<unknown>;
+  cancelRun?(runId: string): Promise<unknown>;
   createSession(input: { id?: string; cwd?: string }): Promise<SessionIdentity>;
+  listSessions(): Promise<unknown>;
   resumeSession(session: string): Promise<SessionIdentity>;
   send(input: {
     session: string;
@@ -41,10 +66,16 @@ export interface ControlDriver {
   taskStatus(taskId: string): Promise<unknown>;
   harnessTier(session: string): Promise<string>;
   setHarnessTier(session: string, tier: "simple" | "standard" | "tdd"): Promise<string>;
+  permissionTier(session: string): Promise<string>;
+  setPermissionTier(session: string, tier: "readonly" | "auto" | "full"): Promise<string>;
   importAccount(): AsyncIterable<ControlEvent>;
+  listAccounts(): Promise<unknown>;
+  useAccount(accountId: string): Promise<unknown>;
   gateStatus(taskId: string): Promise<unknown>;
   evidence(taskId: string): Promise<unknown>;
   doctor(): Promise<unknown>;
+  searchTools(query?: string): Promise<unknown>;
+  doctorTools(): Promise<unknown>;
 }
 
 export interface ControlIo {
@@ -119,6 +150,18 @@ function required(value: string | undefined, label: string): string {
   return value;
 }
 
+const SUBJECT_HELP: Record<string, string> = {
+  run: "Usage: picode run --prompt <text> [--cwd <dir>] [--session <id>] [--harness simple|standard|tdd] [--permissions readonly|auto|full] [--non-interactive]",
+  session: "Usage: picode session list|create|resume|send|events [options]",
+  task: "Usage: picode task status|wait|cancel --task <id> [options]",
+  gate: "Usage: picode gate status|evidence --task <id>",
+  harness: "Usage: picode harness get|set --session <id> [--tier simple|standard|tdd]",
+  permissions: "Usage: picode permissions get|set --session <id> [--tier readonly|auto|full]",
+  account: "Usage: picode account list|use|import [options]",
+  tools: "Usage: picode tools doctor|search [--query <text>]",
+  doctor: "Usage: picode doctor [tools]",
+};
+
 /** Public CLI seam. All product behavior stays behind ControlDriver. */
 export async function executeControlCommand(
   argv: readonly string[],
@@ -127,12 +170,25 @@ export async function executeControlCommand(
   const parsed = parseArgs(argv);
   const [subject, action] = parsed.positionals;
   try {
+    if (subject === "help" || parsed.flags.has("--help") || action === "-h") {
+      io.stdout(subject !== undefined && SUBJECT_HELP[subject] !== undefined
+        ? SUBJECT_HELP[subject]
+        : CONTROL_HELP);
+      return CONTROL_EXIT.completed;
+    }
     if (subject === "run") {
       const prompt = required(stringFlag(parsed, "--prompt"), "--prompt");
       const cwd = stringFlag(parsed, "--cwd");
       const session = stringFlag(parsed, "--session");
       const provider = stringFlag(parsed, "--provider");
       const model = stringFlag(parsed, "--model");
+      const rawTimeout = stringFlag(parsed, "--timeout-ms");
+      const timeoutMs = rawTimeout === undefined ? undefined : Number(rawTimeout);
+      if (timeoutMs !== undefined && (!Number.isFinite(timeoutMs) || timeoutMs <= 0)) throw new Error("invalid --timeout-ms");
+      const permissionTier = stringFlag(parsed, "--permissions");
+      if (permissionTier !== undefined && permissionTier !== "readonly" && permissionTier !== "auto" && permissionTier !== "full") throw new Error(`invalid permission tier: ${permissionTier}`);
+      const harnessTier = stringFlag(parsed, "--harness");
+      if (harnessTier !== undefined && harnessTier !== "simple" && harnessTier !== "standard" && harnessTier !== "tdd") throw new Error(`invalid harness tier: ${harnessTier}`);
       return emitStream(io.driver.run({
         prompt,
         ...(cwd === undefined ? {} : { cwd }),
@@ -140,7 +196,15 @@ export async function executeControlCommand(
         ...(provider === undefined ? {} : { provider }),
         ...(model === undefined ? {} : { model }),
         nonInteractive: parsed.flags.has("--non-interactive"),
+        ...(timeoutMs === undefined ? {} : { timeoutMs }),
+        ...(permissionTier === undefined ? {} : { permissionTier }),
+        ...(harnessTier === undefined ? {} : { harnessTier }),
       }), io);
+    }
+
+    if (subject === "session" && action === "list") {
+      emitJson(io, event("session.list", await io.driver.listSessions()));
+      return CONTROL_EXIT.completed;
     }
 
     if (subject === "session" && action === "create") {
@@ -223,19 +287,49 @@ export async function executeControlCommand(
       }));
       return CONTROL_EXIT.completed;
     }
+    if (subject === "permissions" && action === "get") {
+      const session = required(stringFlag(parsed, "--session"), "--session");
+      emitJson(io, event("permissions.tier", { session, tier: await io.driver.permissionTier(session) }));
+      return CONTROL_EXIT.completed;
+    }
+    if (subject === "permissions" && action === "set") {
+      const session = required(stringFlag(parsed, "--session"), "--session");
+      const tier = required(stringFlag(parsed, "--tier"), "--tier");
+      if (tier !== "readonly" && tier !== "auto" && tier !== "full") throw new Error(`invalid permission tier: ${tier}`);
+      emitJson(io, event("permissions.changed", { session, tier: await io.driver.setPermissionTier(session, tier) }));
+      return CONTROL_EXIT.completed;
+    }
     if (subject === "account" && action === "import") {
       return emitStream(io.driver.importAccount(), io);
     }
-    if (subject === "doctor") {
+    if (subject === "account" && action === "list") {
+      emitJson(io, event("account.list", await io.driver.listAccounts()));
+      return CONTROL_EXIT.completed;
+    }
+    if (subject === "account" && action === "use") {
+      emitJson(io, event("account.active", await io.driver.useAccount(required(stringFlag(parsed, "--account"), "--account"))));
+      return CONTROL_EXIT.completed;
+    }
+    if (subject === "tools" && action === "search") {
+      emitJson(io, event("tools.search", await io.driver.searchTools(stringFlag(parsed, "--query"))));
+      return CONTROL_EXIT.completed;
+    }
+    if ((subject === "tools" && action === "doctor") || (subject === "doctor" && action === "tools")) {
+      emitJson(io, event("tools.doctor", await io.driver.doctorTools()));
+      return CONTROL_EXIT.completed;
+    }
+    if (subject === "doctor" && action === undefined) {
       emitJson(io, event("doctor.result", await io.driver.doctor()));
       return CONTROL_EXIT.completed;
     }
 
-    io.stderr("usage: picode run|session|task|gate|harness|account|doctor [options]");
+    io.stderr(CONTROL_HELP);
     return CONTROL_EXIT.usage;
   } catch (cause) {
     const message = cause instanceof Error ? cause.message : String(cause);
     io.stderr(message);
-    return message.startsWith("missing ") ? CONTROL_EXIT.usage : CONTROL_EXIT.internal;
+    return message.startsWith("missing ") || message.startsWith("invalid ")
+      ? CONTROL_EXIT.usage
+      : CONTROL_EXIT.internal;
   }
 }

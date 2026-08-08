@@ -29,12 +29,18 @@ describe("configureLandstripForSession", () => {
       const sandbox = JSON.parse(readFileSync(`${dir}/sandbox.json`, "utf8"));
       const settings = JSON.parse(readFileSync(`${dir}/settings.json`, "utf8"));
       expect(sandbox).toMatchObject({
-        enabled: true,
+        enabled: process.platform !== "win32",
         network: { allowNetwork: false },
         filesystem: { allowWrite: ["C:/repo"] },
       });
       expect(sandbox.filesystem.denyWrite).toContain("**/.env");
+      if (process.platform === "win32") {
+        expect(sandbox.filesystem.allowRead.some((path: string) =>
+          path.toLowerCase().startsWith("c:\\program files\\nodejs"),
+        )).toBe(true);
+      }
       expect(settings.landstrip.maxSubagents).toBe(0);
+      expect(settings.landstrip.permission).toBe("allow");
     });
   });
 });

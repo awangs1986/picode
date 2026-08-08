@@ -21,6 +21,9 @@ export type {
   WatchdogLevel,
 } from "./subagents.ts";
 export { WorktreeRegistry } from "./worktree.ts";
+export { StructuredGit } from "./git.ts";
+export type { GitAction, GitRequest, GitResult } from "./git.ts";
+export { CapabilityReadinessRegistry, filterToolNamesForReadiness } from "./readiness.ts";
 
 /**
  * Engine：pi SDK/扩展 API 封装、执行生命周期、Execution Epoch、

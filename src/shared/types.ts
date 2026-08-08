@@ -129,6 +129,22 @@ export interface ActiveCapabilityLease {
   activatedAtTurn: number;
 }
 
+export type ReadinessStatus = "Ready" | "Degraded" | "NeedsSetup" | "Unavailable";
+export interface ReadinessReport {
+  capabilityId: string;
+  status: ReadinessStatus;
+  summary: string;
+  missing: string[];
+  nextSteps: string[];
+  inspectedAt: string;
+}
+export interface SetupPlan { capabilityId: string; steps: string[]; requiresApproval: true }
+export interface ReadinessContext { cwd: string; harnessTier: HarnessTier }
+export interface CapabilityReadiness {
+  inspect(context: ReadinessContext, signal?: AbortSignal): Promise<ReadinessReport>;
+  prepare(context: ReadinessContext): Promise<SetupPlan>;
+}
+
 export interface TaskContext {
   sessionId: string;
   taskId?: string;

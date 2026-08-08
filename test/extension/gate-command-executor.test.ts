@@ -33,4 +33,20 @@ describe("parseTestCounts", () => {
       failedTests: 2,
     });
   });
+
+  it("parses Node test runner TAP summaries", () => {
+    expect(parseTestCounts("# tests 1\n# pass 0\n# fail 1", 1)).toEqual({
+      matchedTests: 1,
+      passedTests: 0,
+      failedTests: 1,
+    });
+  });
+
+  it("parses the Node 24 spec reporter used in non-interactive Windows runs", () => {
+    expect(parseTestCounts("ℹ tests 1\nℹ suites 0\nℹ pass 0\nℹ fail 1", 1)).toEqual({
+      matchedTests: 1,
+      passedTests: 0,
+      failedTests: 1,
+    });
+  });
 });

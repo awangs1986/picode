@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   CONTROL_EXIT,
+  CONTROL_HELP,
   executeControlCommand,
   type ControlDriver,
   type ControlEvent,
@@ -32,6 +33,13 @@ function driver(overrides: Partial<ControlDriver> = {}): ControlDriver {
     gateStatus: vi.fn(async () => ({ taskId: "t-1", gates: [] })),
     evidence: vi.fn(async () => []),
     doctor: vi.fn(async () => ({ healthy: true, checks: [] })),
+    permissionTier: vi.fn(async () => "auto"),
+    setPermissionTier: vi.fn(async (_session, tier) => tier),
+    listSessions: vi.fn(async () => []),
+    listAccounts: vi.fn(async () => []),
+    useAccount: vi.fn(async (accountId) => ({ accountId })),
+    searchTools: vi.fn(async () => []),
+    doctorTools: vi.fn(async () => ({ healthy: true, capabilities: [] })),
     ...overrides,
   };
 }
@@ -53,6 +61,18 @@ describe("CLI-first Control Interface", () => {
       { version: 1, kind: "run.completed", payload: { sessionId: "s-1" } },
     ]);
     expect(stderr).toEqual([]);
+  });
+
+  it("publishes a stable product help contract instead of upstream Pi help", async () => {
+    const stdout: string[] = [];
+    const exitCode = await executeControlCommand(["--help"], {
+      driver: driver(), stdout: (line) => stdout.push(line), stderr: () => undefined,
+    });
+
+    expect(exitCode).toBe(CONTROL_EXIT.completed);
+    expect(stdout.join("\n")).toBe(CONTROL_HELP);
+    expect(CONTROL_HELP).toContain("picode rpc");
+    expect(CONTROL_HELP).toContain("picode tools doctor");
   });
 
   it("maps a non-interactive approval request to a stable exit code", async () => {
@@ -109,6 +129,27 @@ describe("CLI-first Control Interface", () => {
     )).toBe(0);
     expect(control.harnessTier).toHaveBeenCalledWith("s-1");
     expect(control.setHarnessTier).toHaveBeenCalledWith("s-1", "tdd");
+  });
+
+  it("gets and sets the permission tier through the session authority", async () => {
+    const stdout: string[] = [];
+    const control = driver();
+    const io = { driver: control, stdout: (line: string) => stdout.push(line), stderr: () => undefined };
+
+    expect(await executeControlCommand(["permissions", "get", "--session", "s-1"], io)).toBe(0);
+    expect(await executeControlCommand(["permissions", "set", "--session", "s-1", "--tier", "full"], io)).toBe(0);
+    expect(control.permissionTier).toHaveBeenCalledWith("s-1");
+    expect(control.setPermissionTier).toHaveBeenCalledWith("s-1", "full");
+  });
+
+  it("reports tool readiness independently from the general doctor", async () => {
+    const stdout: string[] = [];
+    const control = driver();
+    const io = { driver: control, stdout: (line: string) => stdout.push(line), stderr: () => undefined };
+
+    expect(await executeControlCommand(["doctor", "tools"], io)).toBe(0);
+    expect(control.doctorTools).toHaveBeenCalledOnce();
+    expect(JSON.parse(stdout[0] ?? "{}").kind).toBe("tools.doctor");
   });
 
   it("waits for a task and exposes the account Web Wizard as JSONL", async () => {

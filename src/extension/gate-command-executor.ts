@@ -35,6 +35,22 @@ export function parseTestCounts(output: string, _exitCode: number | null): TestC
       failedTests: Number(dotnet[3]),
     };
   }
+  const tapTests = output.match(/# tests\s+(\d+)/i);
+  if (tapTests !== null) {
+    const passedTests = Number(output.match(/# pass\s+(\d+)/i)?.[1] ?? 0);
+    const failedTests = Number(output.match(/# fail\s+(\d+)/i)?.[1] ?? 0);
+    return { matchedTests: Number(tapTests[1]), passedTests, failedTests };
+  }
+  // Node 22+ selects the spec reporter for non-interactive terminals. Its
+  // summary is semantically equivalent to TAP, but uses the information
+  // symbol instead of '#'. Treat it as first-class test evidence so projects
+  // do not have to rewrite their test command merely for Picode.
+  const nodeSpecTests = output.match(/(?:ℹ|\u2139)\s*tests\s+(\d+)/iu);
+  if (nodeSpecTests !== null) {
+    const passedTests = Number(output.match(/(?:ℹ|\u2139)\s*pass\s+(\d+)/iu)?.[1] ?? 0);
+    const failedTests = Number(output.match(/(?:ℹ|\u2139)\s*fail\s+(\d+)/iu)?.[1] ?? 0);
+    return { matchedTests: Number(nodeSpecTests[1]), passedTests, failedTests };
+  }
   const pytestFailed = numberBefore(output, "failed");
   const pytestPassed = numberBefore(output, "passed");
   if (/\d+\s+(?:failed|passed)\b/i.test(output)) {

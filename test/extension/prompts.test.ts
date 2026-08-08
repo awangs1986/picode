@@ -32,6 +32,8 @@ describe("systemPromptInjection", () => {
     expect(standard).toContain("Picode Harness Core (Lean)");
     expect(standard).toContain("Pi's base agent prompt still applies");
     expect(standard).not.toContain("{{TOOL_");
+    expect(standard).toContain("Use ls for directories and read only for files");
+    expect(standard).toContain("On Windows, bash executes PowerShell syntax");
   });
 
   it("loads the packaged TDD prompt by default and maps glob semantics to Pi find", () => {

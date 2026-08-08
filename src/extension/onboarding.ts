@@ -3,7 +3,7 @@ import type { PicodeConfig } from "../store/config.ts";
 
 /**
  * 首次启动引导（PICODE-V3-DESIGN.md §3.7，R3 回归）：
- * 三项推荐分别独立询问 Y/N，不提供"一键全部启用"；
+ * 两项外部运行时推荐分别独立询问 Y/N，不提供"一键全部启用"；
  * 介绍文字跟随界面语言；跳过后不重复打扰，可在设置重开；
  * 启用 ≠ 常驻运行——只进二级驻留（Enabled + Trusted 的可发现 manifest）。
  */
@@ -15,14 +15,6 @@ export interface OnboardingItem {
 }
 
 export const ONBOARDING_ITEMS: readonly OnboardingItem[] = [
-  {
-    capabilityId: "mattpocock-skills",
-    intro: {
-      zh: "mattpocock/skills：成熟的软件开发 Skills 集合，按需加载工作流，不全部注入上下文。",
-      en: "mattpocock/skills: a curated collection of software development skills, loaded on demand without flooding context.",
-    },
-    defaultAnswer: true,
-  },
   {
     capabilityId: "herdr",
     intro: {
@@ -45,7 +37,7 @@ export function shouldRunOnboarding(config: PicodeConfig): boolean {
   return !config.onboarding.completed;
 }
 
-/** 逐项问题文本（三项分别介绍，不能合并成一个"全部安装"问题） */
+/** 逐项问题文本（两项分别介绍，不能合并成一个"全部启用"问题） */
 export function onboardingQuestions(locale: "zh" | "en"): { capabilityId: string; text: string }[] {
   return ONBOARDING_ITEMS.map((item) => ({
     capabilityId: item.capabilityId,

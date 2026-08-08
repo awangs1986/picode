@@ -8,7 +8,7 @@ import { Type } from "typebox";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import type { OperationIntent, Result, SourceRef } from "../shared/types.ts";
+import type { OperationIntent, ReadinessReport, Result, SourceRef } from "../shared/types.ts";
 import { err, ok } from "../shared/types.ts";
 import {
   SUBAGENT_DELEGATION_REQUEST_EVENT,
@@ -23,12 +23,13 @@ import { handleSearchTools } from "./search-tools.ts";
 import { loginProviderIntoVault } from "./provider-login.ts";
 import { PiAccountAdapter } from "./pi-account-adapter.ts";
 import { refreshActiveProviderAccount } from "./provider-refresh.ts";
-import { requestIntentApproval } from "./approval-ui.ts";
+import { resolveIntentApproval } from "./approval-ui.ts";
 import { saveConfig } from "../store/config.ts";
 import { configureSubagentsForSession } from "./subagent-config.ts";
 import { piAgentDir } from "../shared/paths.ts";
 import { SliceSessionCoordinator } from "./slice-session.ts";
-import { WorktreeRegistry } from "../engine/index.ts";
+import { CapabilityReadinessRegistry, StructuredGit, WorktreeRegistry } from "../engine/index.ts";
+import type { GitAction, GitRequest } from "../engine/index.ts";
 import type { CandidateSnapshot } from "../devloop/verify/gate.ts";
 import type { GateContract, GateExecutor } from "../devloop/verify/gate-runner.ts";
 import { ShellGateExecutor } from "./gate-command-executor.ts";
@@ -39,6 +40,7 @@ import { parseToolsMd, registerTaskExtensions, renderTaskExtensionSummary } from
 import { appendCacheMetric, computePrefixSignals } from "./cache-signals.ts";
 import type { PrefixSignals } from "../shared/types.ts";
 import { TodoSessionController } from "./todo-session.ts";
+import { ensurePlanSkills, findMattPocockSkills, planCommandResult } from "./plan-command.ts";
 import {
   discoverProjectContext,
   renderProjectContext,
@@ -47,6 +49,11 @@ import {
   taskStateDigest,
 } from "../devloop/index.ts";
 import type { ProjectContextEntry } from "../devloop/index.ts";
+import {
+  handlePermissionsCommand,
+  PERMISSION_ENTRY_TYPE,
+  restorePermissionTier,
+} from "./permissions.ts";
 
 export interface BridgeProbeSnapshot {
   compactionsObserved: number;
@@ -57,9 +64,31 @@ export interface BridgeProbeSnapshot {
 export interface BridgeOptions {
   now?: () => number;
   onTierReady?: (tier: HarnessTier, ctx: ExtensionContext) => Promise<void> | void;
+  onPermissionTierReady?: (
+    tier: import("../shared/types.ts").PermissionTier,
+    ctx: ExtensionContext,
+  ) => Promise<void> | void;
   onSessionReady?: (ctx: ExtensionContext) => Promise<void> | void;
   startAccountImport?: () => Promise<{ url: URL; browserOpened: boolean }>;
   gateExecutorFor?: (cwd: string) => GateExecutor;
+}
+
+const READ_ONLY_SHELL_HEAD = /^(?:pwd|Get-Location|Get-ChildItem|Get-Content|Get-Item|Test-Path|Resolve-Path|Select-String|ls|dir|rg|grep|find)(?:\s|$)/i;
+const READ_ONLY_SHELL_PIPE = /^(?:Select-Object|Sort-Object|Format-Table|Format-List|Measure-Object|Group-Object|Out-String|head|tail)(?:\s|$)/i;
+const READ_ONLY_GIT = /^git\s+(?:status|diff|show|log|rev-parse|ls-files|blame|shortlog)(?:\s|$)/i;
+
+/** Prove a narrow shell subset read-only; anything ambiguous remains exec/ask. */
+function readOnlyShellCategory(command: string): "fs-read" | "git-read" | undefined {
+  const trimmed = command.trim();
+  if (trimmed === "" || /[;&>{}\n\r]|\b(?:Set-Content|Add-Content|Out-File|Remove-Item|Move-Item|Copy-Item|New-Item|Invoke-WebRequest|curl|wget)\b/i.test(trimmed)) {
+    return undefined;
+  }
+  if (/\bEnv:/i.test(trimmed)) return undefined;
+  if (READ_ONLY_GIT.test(trimmed) && !trimmed.includes("|")) return "git-read";
+  const stages = trimmed.split("|").map((stage) => stage.trim());
+  if (!READ_ONLY_SHELL_HEAD.test(stages[0] ?? "")) return undefined;
+  if (stages.slice(1).some((stage) => !READ_ONLY_SHELL_PIPE.test(stage))) return undefined;
+  return "fs-read";
 }
 
 async function requestFreshReview(input: {
@@ -107,7 +136,10 @@ async function requestFreshReview(input: {
       cwd: input.cwd,
       ...(input.model === undefined ? {} : { model: input.model }),
       timeoutMs: input.timeoutMs,
-      turnBudget: { maxTurns: 8, graceTurns: 1 },
+      // One reviewer round remains the product budget. Twelve internal turns
+      // merely let a fresh reviewer inspect, validate, and return its schema
+      // without turning a tooling timeout into a false product decision.
+      turnBudget: { maxTurns: 12, graceTurns: 1 },
       toolBudget: { hard: 24, block: ["write", "edit"] },
       artifacts: true,
       result: {
@@ -126,7 +158,16 @@ async function requestFreshReview(input: {
   });
 }
 
+export function buildFreshReviewTask(gateId: string): string {
+  return `Review only the current candidate for gate ${gateId}. ` +
+    "Start with git diff --stat and git diff. Inspect only files in that candidate plus directly imported code when necessary. " +
+    "Do not inspect .picode-state, .pi-subagents, prior sessions, task history, or harness internals. " +
+    "The target gate already passed in the host. Do not broaden scope or modify files. " +
+    "Return the required structured {passed, blockers} result as soon as correctness, regression, scope, and test quality are decided.";
+}
+
 const TDD_STATE_ENTRY_TYPE = "picode.tdd-state";
+const PLAN_PENDING_ENTRY_TYPE = "picode.plan-pending";
 
 function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
@@ -158,6 +199,19 @@ function latestTddCheckpoint(entries: readonly unknown[]): TddSessionCheckpoint 
     if (restored !== undefined) checkpoint = restored.checkpoint();
   }
   return checkpoint;
+}
+
+function latestPendingPlan(entries: readonly unknown[]): string | undefined {
+  let pending: string | undefined;
+  for (const entry of entries) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const row = entry as { type?: unknown; customType?: unknown; data?: unknown };
+    if (row.type !== "custom" || row.customType !== PLAN_PENDING_ENTRY_TYPE) continue;
+    const data = row.data as { state?: unknown; args?: unknown } | undefined;
+    if (data?.state === "consumed") pending = undefined;
+    else if (data?.state === "pending" && typeof data.args === "string") pending = data.args;
+  }
+  return pending;
 }
 
 export async function candidateSnapshot(pi: ExtensionAPI, cwd: string): Promise<CandidateSnapshot> {
@@ -205,10 +259,11 @@ function intentFor(event: ToolCallEvent, cwd: string): OperationIntent {
   switch (event.toolName) {
     case "bash": {
       const command = typeof input.command === "string" ? input.command : "";
+      const readOnlyCategory = readOnlyShellCategory(command);
       return {
-        category: /(^|\s)git\s+(commit|merge|push|rebase|reset|clean|branch\s+-D)(\s|$)/i.test(command)
+        category: readOnlyCategory ?? (/^\s*git\s+(commit|merge|push|rebase|reset|clean|branch\s+-D)(\s|$)/i.test(command)
           ? "git-mutate"
-          : "exec",
+          : "exec"),
         targets: [command],
         command,
         cwd,
@@ -223,9 +278,25 @@ function intentFor(event: ToolCallEvent, cwd: string): OperationIntent {
     case "find":
     case "ls":
       return { category: "fs-read", targets: path === undefined ? [] : [path], cwd };
+    case "git":
+      return StructuredGit.intent({ ...(input as GitRequest), cwd, action: String(input.action) as GitAction });
     default:
       return { category: "mcp-tool", targets: [event.toolName], cwd };
   }
+}
+
+async function suiteReadiness(id: string, cwd: string, tier: HarnessTier): Promise<ReadinessReport> {
+  const registry = CapabilityReadinessRegistry.defaults();
+  if (id === "pi-mcp-adapter") return registry.inspect("mcp", { cwd, harnessTier: tier });
+  if (id === "pi-lens") return registry.inspect("pi-lens", { cwd, harnessTier: tier });
+  if (id === "pi-web-access") {
+    const [fetch, search] = await Promise.all([
+      registry.inspect("web.fetch", { cwd, harnessTier: tier }),
+      registry.inspect("web.search", { cwd, harnessTier: tier }),
+    ]);
+    return { capabilityId: id, status: search.status === "Ready" ? "Ready" : "Degraded", summary: `fetch ${fetch.status}; search ${search.status}`, missing: search.missing, nextSteps: search.nextSteps, inspectedAt: search.inspectedAt };
+  }
+  return { capabilityId: id, status: "Ready", summary: "Bundled capability is available", missing: [], nextSteps: [], inspectedAt: new Date().toISOString() };
 }
 
 export function registerPicodeBridge(
@@ -238,6 +309,7 @@ export function registerPicodeBridge(
   const slices = new SliceSessionCoordinator(runtime, (cwd) => candidateSnapshot(pi, cwd));
   const foreignChats = new ForeignChatImportService(runtime);
   const worktrees = new WorktreeRegistry();
+  const structuredGit = new StructuredGit();
   const todos = new TodoSessionController(runtime.store);
   let tdd = new TddSessionController(
     options.gateExecutorFor?.(process.cwd()) ?? new ShellGateExecutor(process.cwd()),
@@ -299,9 +371,17 @@ export function registerPicodeBridge(
     toolIntentLatencyMs.push(Math.max(0, now() - started));
     if (decision.verdict === "allow") return undefined;
     if (decision.verdict === "deny") return { block: true, reason: decision.reason };
-    const allowed = typeof ctx.ui.select === "function"
-      ? await requestIntentApproval(ctx.ui, runtime.guard, intent, decision.reason)
-      : await ctx.ui.confirm("Picode permission", decision.reason);
+    let allowed: boolean;
+    if (typeof ctx.ui.select === "function") {
+      const approval = await resolveIntentApproval(ctx.ui, runtime.guard, intent, decision.reason);
+      allowed = approval !== "denied";
+      if (approval === "session-full") {
+        pi.appendEntry(PERMISSION_ENTRY_TYPE, { tier: "full" });
+        await options.onPermissionTierReady?.("full", ctx);
+      }
+    } else {
+      allowed = await ctx.ui.confirm("Picode permission", decision.reason);
+    }
     return allowed ? undefined : { block: true, reason: "user declined" };
   });
 
@@ -311,7 +391,9 @@ export function registerPicodeBridge(
   });
   pi.on("session_start", async (event, ctx) => {
     if (event.reason === "resume" || event.reason === "fork") historyTransitionsObserved += 1;
-    runtime.harness.switchTo(restoreHarnessTier(ctx.sessionManager.getBranch()));
+    const branch = ctx.sessionManager.getBranch();
+    runtime.harness.switchTo(restoreHarnessTier(branch));
+    runtime.guard.setTier(restorePermissionTier(branch));
     runtime.guard.catalog.removeByOrigin("task");
     taskToolsSummary = undefined;
     taskToolsSummaryPending = false;
@@ -371,8 +453,10 @@ export function registerPicodeBridge(
       if (runtime.harness.current() === "simple") {
         active.delete("todo_write");
         active.delete("harness_result");
+        active.delete("git");
       } else {
         active.add("todo_write");
+        active.add("git");
         for (const nativeTool of ["grep", "find", "ls"]) active.add(nativeTool);
         if (runtime.harness.current() === "tdd") active.add("harness_result");
         else active.delete("harness_result");
@@ -380,6 +464,18 @@ export function registerPicodeBridge(
       pi.setActiveTools([...active]);
     }
     await options.onSessionReady?.(ctx);
+    const pendingPlan = latestPendingPlan(ctx.sessionManager.getBranch());
+    if (pendingPlan !== undefined) {
+      // The pending marker is consumed before the turn starts. If a reload
+      // occurs while the session is idle, this prevents duplicate /plan runs.
+      pi.appendEntry(PLAN_PENDING_ENTRY_TYPE, { state: "consumed" });
+      const prompt = planCommandResult(pendingPlan, { installed: true, roots: [] });
+      const delivery = typeof ctx.isIdle === "function" && !ctx.isIdle()
+        ? { deliverAs: "followUp" as const }
+        : undefined;
+      if (delivery === undefined) pi.sendUserMessage(prompt.message);
+      else pi.sendUserMessage(prompt.message, delivery);
+    }
   });
   pi.on("before_agent_start", (event, ctx) => {
     const injection = systemPromptInjection(runtime.harness.current());
@@ -538,6 +634,19 @@ export function registerPicodeBridge(
       runId: ctx.sessionManager.getSessionId(),
       requestId: event.toolCallId,
     });
+    if (
+      event.toolName === "read" &&
+      event.isError &&
+      event.content.some((block) => block.type === "text" && /\bEISDIR\b/i.test(block.text))
+    ) {
+      const guidance = "Picode guidance: Use the Pi-native ls tool for directories; read accepts files only.";
+      return {
+        isError: true,
+        content: event.content.map((block) => block.type === "text"
+          ? { ...block, text: `${block.text}\n\n${guidance}` }
+          : block),
+      };
+    }
   });
 
   pi.registerCommand("picode-compact", {
@@ -608,6 +717,43 @@ export function registerPicodeBridge(
         pi.appendEntry(HARNESS_ENTRY_TYPE, { tier: after });
         await ctx.reload();
       }
+    },
+  });
+  pi.registerCommand("permissions", {
+    description: "Show or switch Picode session permissions: readonly, auto, or full",
+    handler: async (args, ctx) => {
+      const result = handlePermissionsCommand(runtime.guard, args);
+      if (result.changedTo !== undefined) {
+        pi.appendEntry(PERMISSION_ENTRY_TYPE, { tier: result.changedTo });
+        await options.onPermissionTierReady?.(result.changedTo, ctx);
+      }
+      const level = result.message.startsWith("unknown")
+        ? "error"
+        : result.changedTo === "full" ? "warning" : "info";
+      ctx.ui.notify(result.message, level);
+    },
+  });
+  pi.registerCommand("plan", {
+    description: "Plan through the installed mattpocock/skills workflow",
+    handler: async (args, ctx) => {
+      const bootstrap = ensurePlanSkills(ctx.cwd);
+      if (!bootstrap.ok) {
+        ctx.ui.notify(`Picode bundled planning skills could not be enabled: ${bootstrap.error.message}`, "error");
+        return;
+      }
+      if (bootstrap.value.materialized) {
+        pi.appendEntry(PLAN_PENDING_ENTRY_TYPE, { state: "pending", args });
+        await ctx.reload();
+        return;
+      }
+      const result = planCommandResult(args, findMattPocockSkills(ctx.cwd));
+      // Keep planning in the user's conversation. Picode supplies the
+      // recommendation; the skill owns the planning interview and documents.
+      const delivery = typeof ctx.isIdle === "function" && !ctx.isIdle()
+        ? { deliverAs: "followUp" as const }
+        : undefined;
+      if (delivery === undefined) pi.sendUserMessage(result.message);
+      else pi.sendUserMessage(result.message, delivery);
     },
   });
   pi.registerCommand("accounts", {
@@ -749,6 +895,26 @@ export function registerPicodeBridge(
   });
 
   pi.registerTool({
+    name: "git",
+    label: "Structured Git",
+    description: "Inspect or change Git through fixed actions. Ownership actions always require explicit user approval.",
+    parameters: Type.Object({
+      action: Type.Union(["status", "diff", "log", "show", "branches", "worktrees", "stage", "unstage", "switch", "create_branch", "restore", "create_worktree", "claim_worktree", "release_worktree", "remove_worktree", "commit", "merge", "rebase", "push", "delete_branch"].map((value) => Type.Literal(value))),
+      paths: Type.Optional(Type.Array(Type.String())),
+      ref: Type.Optional(Type.String()),
+      message: Type.Optional(Type.String()),
+      remote: Type.Optional(Type.String()),
+      taskId: Type.Optional(Type.String()),
+      worktreePath: Type.Optional(Type.String()),
+    }),
+    async execute(_toolCallId, input, signal, _onUpdate, ctx) {
+      if (runtime.harness.current() === "simple") return { content: [{ type: "text", text: "git is available only in standard or tdd harness" }], details: {}, isError: true };
+      const result = await structuredGit.execute({ ...(input as Omit<GitRequest, "cwd">), cwd: ctx.cwd }, signal);
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], details: result, ...(result.ok ? {} : { isError: true }) };
+    },
+  });
+
+  pi.registerTool({
     name: "search_tools",
     label: "Search optional tools",
     description:
@@ -768,6 +934,7 @@ export function registerPicodeBridge(
       const text = await handleSearchTools(
         {
           guard: runtime.guard,
+          readiness: (id, activationContext) => suiteReadiness(id, ctx.cwd, activationContext.harnessTier),
           activate: async (id, activationContext) => {
             const gate = runtime.guard.checkActivatable(id);
             return gate.ok ? runtime.engine.activate(id, activationContext) : gate;
@@ -804,6 +971,8 @@ export function registerPicodeBridge(
           eventId: `tdd:${toolCallId}:${kind}`,
           kind,
           payload,
+          taskId: slices.currentTaskId(),
+          sliceId: ctx.sessionManager.getSessionId(),
         }), {
           executionEpoch: runtime.engine.currentEpoch(),
           runId: ctx.sessionManager.getSessionId(),
@@ -853,8 +1022,7 @@ export function registerPicodeBridge(
           pi,
           ownerRunId: ctx.sessionManager.getSessionId(),
           cwd: ctx.cwd,
-          task: `Review the current candidate for gate ${contract.gateId}. Inspect the actual diff and tests. ` +
-            "Return passed=true only when there are no correctness, regression, scope, or test-quality blockers. Do not modify files.",
+          task: buildFreshReviewTask(contract.gateId),
           ...(runtime.config.subagentModel === undefined ? {} : { model: runtime.config.subagentModel }),
           timeoutMs: contract.timeoutMs,
         }),

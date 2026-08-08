@@ -10,6 +10,8 @@ export interface RuntimeEnvelope {
   kind: string;
   sequence?: number;
   payload: unknown;
+  taskId?: string;
+  sliceId?: string;
 }
 
 export type RuntimeEnvelopeDiagnostic =

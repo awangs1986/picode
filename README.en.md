@@ -71,6 +71,12 @@ Inside TUI:
 /harness tdd
 ```
 
+Use `/permissions readonly|auto|full` to control approval density in Standard/TDD
+sessions. The default is `auto`. `full` allows routine commands for the current
+session while destructive operations and Git ownership actions such as commit,
+merge, and push still ask; it does not disable the OS sandbox. The first approval
+dialog also offers “Allow routine operations for this session”.
+
 Native Pi tools are never hidden. Long-tail capabilities are discovered through
 `search_tools` and activated only when needed, keeping the full schema out of the
 permanent context.
@@ -124,13 +130,13 @@ patterns, and lessons within their applicable scope and licenses:
 
 - **earendil-works/pi**: Pi Agent runtime, upstream TUI, session format, and Extension API foundation.
 - **pi-subagents**: delegation, asynchronous work, lifecycle artifacts, Worktree isolation, and Watchdog review.
-- **pi-landstrip**: cross-platform sandbox provider seam; policy remains owned by Picode Guard.
+- **pi-landstrip**: cross-platform sandbox provider seam; policy remains owned by Picode Guard. Windows Harness sessions use the system PowerShell host within the same sandbox boundary to avoid Git Bash/AppContainer launch failures.
 - **pi-mcp-adapter**: external MCP search, description, calls, and approval arbitration.
-- **pi-plan-mode / pi-goal**: read-only planning and bounded goal progression.
+- **mattpocock/skills + Picode `/plan`**: a pinned snapshot ships with Picode; the first explicit `/plan` materializes the `grill-with-docs` dependency closure and reloads the session. Picode has no separate Plan/Goal plugin and never prompts for an external install.
 - **pi-web-access**: web search and fetch extension available to the Simple tier.
 - **pi-cache-optimizer**: provider cache compatibility and hit-rate diagnostics; prompt rewriting is disabled.
 - **pi-lens**: LSP diagnostics and impact assistance.
-- **mattpocock/skills**: optional software-engineering skill collection and progressive loading model.
+- **mattpocock/skills**: pinned software-engineering skill snapshot; nothing is loaded at startup, and explicit commands materialize only the requested closure.
 - **Herdr**: optional multi-task terminal orchestration runtime; it does not replace the Pi Subagent foundation.
 - **Codebase Memory MCP**: optional repository structure indexing and long-term memory provider.
 - **Grok Build**: reference for project-context discovery, tool surfaces, permission approval, and task-state presentation.

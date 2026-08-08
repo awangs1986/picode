@@ -14,12 +14,11 @@ function catalogWithOnboarding(): CapabilityCatalog {
 }
 
 describe("runOnboardingFlow", () => {
-  it("asks three localized questions separately and persists the final facts", async () => {
+  it("asks two localized questions separately and persists the final facts", async () => {
     const catalog = catalogWithOnboarding();
     const confirm = vi.fn()
       .mockResolvedValueOnce(true)
-      .mockResolvedValueOnce(false)
-      .mockResolvedValueOnce(true);
+      .mockResolvedValueOnce(false);
     const persistConfig = vi.fn(async () => ok(undefined));
     const persistCapabilities = vi.fn(async () => ok(undefined));
 
@@ -32,15 +31,13 @@ describe("runOnboardingFlow", () => {
     });
 
     expect(result.ok).toBe(true);
-    expect(confirm).toHaveBeenCalledTimes(3);
+    expect(confirm).toHaveBeenCalledTimes(2);
     expect(confirm.mock.calls.map((call) => call[1])).toEqual([
-      expect.stringContaining("mattpocock/skills"),
       expect.stringContaining("Herdr"),
       expect.stringContaining("CodebaseMemoryProvider"),
     ]);
-    expect(catalog.get("mattpocock-skills")?.setting).toBe("trusted");
-    expect(catalog.get("herdr")?.setting).toBe("disabled");
-    expect(catalog.get("codebase-memory-provider")?.setting).toBe("trusted");
+    expect(catalog.get("herdr")?.setting).toBe("trusted");
+    expect(catalog.get("codebase-memory-provider")?.setting).toBe("disabled");
     expect(persistConfig).toHaveBeenCalledOnce();
     expect(persistCapabilities).toHaveBeenCalledWith(catalog.toJSON());
   });

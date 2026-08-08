@@ -75,10 +75,12 @@ loopback listener、一次性认证、OAuth callback、来源选择和超时都�
 
 ### 2.1 三档权限（UX 预设）
 
-readonly/ask → 自动处理常规、危险询问 → full access。预设编译到两个执行
-底座：landstrip 的 per-agent/per-tool `deny/ask/allow` 规则（ADR-0004）与
-pi-mcp-adapter 的 `approveTools` + 仲裁事件（ADR-0005）。裁决本体留在
-Guard，写 Evidence。
+`readonly` → `auto`（自动处理常规、危险询问）→ `full`。当前档位属于会话
+事实，可用 `/permissions` 查看或切换；`full` 仍不越过破坏性操作和 Git
+所有权确认。Guard 是唯一事前工具授权权威并写 Evidence；pi-mcp-adapter 的
+approval 事件翻译到 Guard（ADR-0005）。pi-landstrip 的 agent permission
+固定为 allow，只承接 Guard 编译后的 OS 沙箱政策和运行时访问升级，禁止再弹
+第二套逐工具确认框。
 
 ### 2.2 approval_fingerprint（Q13 已决）
 
@@ -89,9 +91,10 @@ Guard，写 Evidence。
 - **环境变量不进指纹（P0–P4）**：纳入会导致 ask 疲劳；PATH 劫持类风险由
   OS 沙箱政策兜底（文件写入/网络仍被罩）。列为已知豁口，P5 评估白名单式
   env 摘要。
-- **Grant 分级**：一次性/会话批准绑定精确指纹（内存态）；"永远允许"绑定
-  命令模式不绑指纹（持久化到项目/全局），仍受工作区与破坏性操作上限
-  约束；模式类 Grant 编译进 landstrip permission 规则。
+- **Grant 分级**：一次性/会话批准绑定精确指纹（内存态）；首次询问也可把
+  当前会话切成 `full`，一次放行后续常规操作；"永远允许"绑定命令模式不绑
+  指纹（持久化到项目/全局），仍受工作区与破坏性操作上限约束。所有 Grant
+  只由 Guard 消费，不再复制进 landstrip agent permission。
 
 ### 2.3 Guard 自持、无现货的部分
 
@@ -212,12 +215,11 @@ ref?}` append 进 `evidence/<yyyymm>.jsonl`。
 
 | 能力 | 供应商 | 收编方式 | ADR |
 |---|---|---|---|
-| OS 沙箱（三平台，**仅此**） | pi-landstrip（`maxSubagents: 0`） | Plugin API（`prepareProcess()`），政策由 Guard 编译下发 | 0004 及修订 |
+| OS 沙箱（三平台，**仅此**） | pi-landstrip（`maxSubagents: 0`） | Plugin API（`prepareProcess()`），政策由 Guard 编译下发；Windows 用 Picode PowerShell Shell Provider，Linux/macOS 保持 POSIX Provider | 0004 及修订 |
 | MCP 运行时 | pi-mcp-adapter | 仲裁事件 + 状态事件总线，Trusted 门自持 | 0005 |
 | Subagent/委派/编排 | **pi-subagents**（2026-08-07 改选，取代 landstrip 附赠方案） | 事件总线 RPC v1（spawn/status/steer/stop/resume）；`subagentCommand` 指向 vendored pi；生命周期工件 v3 = Evidence 来源；watchdog 收编为二/三档 AI Review | 0004 修订 |
 | Web 搜索（Simple 档默认工具） | pi-web-access | pin 版本，Simple 档唯一默认加载的扩展工具 | — |
-| /plan（二档起） | @narumitw/pi-plan-mode | 只读强制（fail-closed 工具分类+受限 bash）；"fresh implement" 新会话只带批准计划 | Q22（2026-08-07） |
-| /goal（二档起） | @narumitw/pi-goal | settled 边界续跑 + 三重熔断 + 证据审计完成工具；托管 RPC 供 Devloop 驱动 | Q22（2026-08-07） |
+| `/plan`（二档起） | Picode 自有兼容命令 + 随包 mattpocock/skills 快照 | 首次使用按需物化 `grill-with-docs` 依赖闭包到私有 Pi skill root，重载会话后继续；不联网、不覆盖用户目录、不自动续跑 | ADR-0007 |
 | LSP/诊断（三档默认） | pi-lens | 写/编辑即时诊断、影响级联、read-guard；一二档不加载，watchdog LSP 兜底；**待核 C#/GDScript 覆盖** | Q23（2026-08-07） |
 | 缓存 provider 兼容面 | pi-cache-optimizer | pin 采用；关闭提示词重写（前缀结构归 Picode 纪律）；OpenAI `prompt_cache_key` 兜底、session affinity、Anthropic TTL 守卫、compat doctor | V3-DESIGN §3.3 v2 |
 

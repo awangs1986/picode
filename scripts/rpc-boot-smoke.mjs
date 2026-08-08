@@ -33,12 +33,16 @@ export function runRpcBootSmoke({ launcher, cwd, env, timeoutMs = 20_000 }) {
           // Startup diagnostics may be non-JSON; RPC responses remain line-delimited JSON.
         }
       }
-      if (!["state", "commands", "new"].every((id) => responses.has(id))) return;
+      if (!["state", "commands", "models", "new"].every((id) => responses.has(id))) return;
       const failures = [...responses.values()].filter((response) => response.success !== true);
       if (failures.length > 0) return finish(new Error(`RPC command failed: ${JSON.stringify(failures)}`));
       const commandNames = responses.get("commands")?.data?.commands?.map((entry) => entry.name) ?? [];
       for (const required of ["harness", "accounts", "slice", "chat-import", "subagent-model"]) {
         if (!commandNames.includes(required)) return finish(new Error(`Picode command not loaded: /${required}`));
+      }
+      const models = responses.get("models")?.data?.models ?? [];
+      if (models.some((model) => model.provider === "picode-scripted-test")) {
+        return finish(new Error("test-only scripted provider leaked into the product artifact"));
       }
       finish();
     };
@@ -52,6 +56,7 @@ export function runRpcBootSmoke({ launcher, cwd, env, timeoutMs = 20_000 }) {
     for (const command of [
       { id: "state", type: "get_state" },
       { id: "commands", type: "get_commands" },
+      { id: "models", type: "get_available_models" },
       { id: "new", type: "new_session" },
     ]) child.stdin.write(`${JSON.stringify(command)}\n`);
   });

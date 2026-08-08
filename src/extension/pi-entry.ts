@@ -19,9 +19,16 @@ import { configureSubagentsForSession } from "./subagent-config.ts";
 import { registerSubagentEnvelopeBridge } from "./subagent-envelope-bridge.ts";
 import { startDebugApi } from "../api/server.ts";
 import { err, ok } from "../shared/types.ts";
+import {
+  registerWindowsPowerShellProvider,
+  registerWindowsPowerShellTool,
+} from "./windows-shell-provider.ts";
+import { CapabilityReadinessRegistry, filterToolNamesForReadiness } from "../engine/readiness.ts";
 
 /** Real Pi extension entry. Keep this file as a thin composition adapter. */
 export default function picodeExtension(pi: ExtensionAPI): void {
+  const disposeWindowsShellProvider = registerWindowsPowerShellProvider(pi);
+  pi.on("session_shutdown", () => { disposeWindowsShellProvider(); });
   const toolAdapter = new PiActiveToolAdapter(pi);
   const loadedSuitePackages = new Set<string>();
   const runtime = bootRuntime({ toolAdapter });
@@ -45,6 +52,12 @@ export default function picodeExtension(pi: ExtensionAPI): void {
         agentDir: piAgentDir(),
       });
       if (!configured.ok) ctx.ui.notify(configured.error.message, "error");
+      else if (process.platform === "win32" && tier !== "simple") {
+        ctx.ui.notify(
+          "Windows OS sandbox is deferred to P5; Guard permissions remain active and PowerShell runs with host access.",
+          "warning",
+        );
+      }
       const subagentsConfigured = await configureSubagentsForSession({
         harnessTier: tier,
         agentDir: piAgentDir(),
@@ -60,7 +73,19 @@ export default function picodeExtension(pi: ExtensionAPI): void {
         (entry, toolNames) => { toolAdapter.bind(entry.manifest.id, toolNames); },
         loadedSuitePackages,
       );
+      registerWindowsPowerShellTool(pi, ctx.cwd);
       toolAdapter.reconcile(suiteForTier(tier).map((entry) => entry.manifest.id));
+      const readiness = await CapabilityReadinessRegistry.defaults().inspectAll({ cwd: ctx.cwd, harnessTier: tier });
+      pi.setActiveTools(filterToolNamesForReadiness(pi.getActiveTools(), readiness));
+    },
+    onPermissionTierReady: async (permissionTier, ctx) => {
+      const configured = await configureLandstripForSession({
+        harnessTier: runtime.harness.current(),
+        permissionTier,
+        cwd: ctx.cwd,
+        agentDir: piAgentDir(),
+      });
+      if (!configured.ok) ctx.ui.notify(configured.error.message, "error");
     },
     onSessionReady: async (ctx) => {
       activeContext = ctx;

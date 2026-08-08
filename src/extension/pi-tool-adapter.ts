@@ -28,12 +28,15 @@ export class PiActiveToolAdapter implements ActiveToolAdapter {
 
   async register(manifest: CapabilityManifest): Promise<Result<void>> {
     const tools = this.toolsByCapability.get(manifest.id);
-    if (tools === undefined || tools.length === 0) {
+    if (tools === undefined) {
       return err(
         "engine/capability-not-loaded",
         `capability ${manifest.id} has no loaded Pi tools; reload its extension before activation`,
       );
     }
+    // Hook-only extensions (for example pi-lens) legitimately contribute no
+    // standalone tool schema. Being bound proves the tier loader ran them.
+    if (tools.length === 0) return ok(undefined);
     const active = new Set(this.pi.getActiveTools());
     for (const tool of tools) active.add(tool);
     this.pi.setActiveTools([...active]);

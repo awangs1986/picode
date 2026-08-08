@@ -26,6 +26,18 @@ describe("requestIntentApproval", () => {
     expect(guard.decide(intent).verdict).toBe("allow");
   });
 
+  it("supports allowing all routine operations for the current session", async () => {
+    const guard = new Guard("auto");
+    const ui = {
+      select: vi.fn(async () => "Allow routine operations for this session"),
+    } as unknown as ExtensionUIContext;
+
+    expect(await requestIntentApproval(ui, guard, intent, "confirm")).toBe(true);
+    expect(guard.permissionTier()).toBe("full");
+    expect(guard.decide({ ...intent, command: "npm run build", targets: ["npm run build"] }).verdict)
+      .toBe("allow");
+  });
+
   it("supports a persistent global command-prefix grant", async () => {
     await withTempPicodeDir(async () => {
       const guard = new Guard("auto");

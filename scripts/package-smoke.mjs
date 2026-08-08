@@ -45,7 +45,16 @@ try {
   if (manifest.pi?.extensions?.[0] !== "./src/extension/pi-entry.ts") {
     throw new Error("installed artifact lost the real Pi extension entry");
   }
+  const bundledSkills = JSON.parse(readFileSync(
+    join(installed, "node_modules", "picode", "vendor", "mattpocock", "manifest.json"),
+    "utf8",
+  ));
+  if (bundledSkills.name !== "mattpocock/skills" || bundledSkills.commit?.length !== 40) {
+    throw new Error("installed artifact lost the pinned mattpocock skill bundle");
+  }
   const launcher = join(installed, "node_modules", "picode", "bin", "picode.mjs");
+  const help = run(process.execPath, [launcher, "--help"], { cwd: installed, env: { ...process.env, PICODE_DIR: join(scratch, "help-data") } });
+  if (!help.includes("picode rpc") || !help.includes("picode tools doctor")) throw new Error("installed artifact lost Picode product help");
   const version = run(process.execPath, [launcher, "--version"], {
     cwd: installed,
     env: {
@@ -66,6 +75,12 @@ try {
   if (doctor.version !== 1 || doctor.kind !== "doctor.result" || doctor.payload?.healthy !== true) {
     throw new Error(`installed Control Interface doctor failed: ${JSON.stringify(doctor)}`);
   }
+  const rpcVersion = run(process.execPath, [launcher, "rpc"], {
+    cwd: installed,
+    input: `${JSON.stringify({ version: 9, id: "compat", method: "run.start", params: {} })}\n`,
+    env: { ...process.env, PICODE_DIR: join(scratch, "product-rpc-data") },
+  });
+  if (JSON.parse(rpcVersion).error?.code !== "control/version-unsupported") throw new Error("installed product RPC version contract failed");
   await runRpcBootSmoke({
     launcher,
     cwd: installed,

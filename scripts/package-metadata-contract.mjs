@@ -9,12 +9,19 @@ const failures = [];
 
 if (pkg.name !== "picode") failures.push("package name must be picode");
 if (pkg.bin?.picode !== "./bin/picode.mjs") failures.push("picode bin entry is missing");
+if (pkg.bin?.["picode-ctl"] !== undefined) failures.push("internal debug HTTP client must not be a public bin");
 if (!pkg.pi?.extensions?.includes("./src/extension/pi-entry.ts")) {
   failures.push("Pi package metadata must load the real adapter entry");
 }
-for (const path of ["bin/picode.mjs", "bin/picode-launch.mjs", "src/extension/pi-entry.ts"]) {
+for (const path of [
+  "bin/picode.mjs",
+  "bin/picode-launch.mjs",
+  "src/extension/pi-entry.ts",
+  "vendor/mattpocock/manifest.json",
+]) {
   if (!existsSync(resolve(root, path))) failures.push(`required artifact file is missing: ${path}`);
 }
+if (!pkg.files?.includes("vendor/")) failures.push("package files must include the pinned skill bundle");
 for (const [name, version] of Object.entries(pkg.dependencies ?? {})) {
   if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(String(version))) {
     failures.push(`runtime dependency ${name} is not exactly pinned: ${version}`);

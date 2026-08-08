@@ -351,7 +351,7 @@ stateDiagram-v2
 
 长任务默认拆成可独立验证的 Task Slice。Task Control 独占 Slice/Capsule 生命周期与内容事实；Context & Memory 只把 Capsule 渲染进模型输入。每个 Slice 在边界成立时使用新的 Pi Session，只加载 Task Capsule、Required Context Set、当前相关源码和必要 Evidence，而不是重放完整旧对话。默认最多两轮基于新证据的修复；用户可以明确要求持续多轮尝试。若达到 Verification Budget、没有新增信息或进入重复循环，Agent 停止自动往返并请求用户决定、接受已知风险或移交 QA。
 
-新建 Chat/Task 时 Goal 始终可选，可以只输入第一条消息后再形成 Goal。Todo 是协作与可观测事实，不是 TDD 或完成状态的隐式开关；没有 `/goal` 或 Todo 不能让 Verification 失效，有 Todo 也不能自动宣称完成。
+新建 Chat/Task 时 Task Objective 始终可选，可以只输入第一条消息后再形成 Objective。Todo 是协作与可观测事实，不是 TDD 或完成状态的隐式开关；Objective 或 Todo 都不能让 Verification 失效，也不能自动宣称完成。
 
 ### 6.4 Module 4：Capability & Tool Catalog
 
@@ -523,7 +523,7 @@ Slice 边界可以由模型提议，但最终由 Task Control 根据以下信号
 
 ### 7.4 Developer TDD
 
-Developer TDD 是显式 Verification Profile，不由 `/goal`、模型猜测或 Todo 隐式触发。它提供有限范围、有限轮次的开发反馈，不替代 QA：
+Developer TDD 是显式 Verification Profile，不由 Task Objective、模型猜测或 Todo 隐式触发。它提供有限范围、有限轮次的开发反馈，不替代 QA：
 
 ```mermaid
 stateDiagram-v2
@@ -729,11 +729,10 @@ MCP Adapter 支持 stdio、Streamable HTTP 与仍需兼容的 SSE transport；�
 
 ### 9.5 首次启动推荐
 
-第一次启动 Picode 时，按当前语言分别介绍并询问三次 Y/N：
+第一次启动 Picode 时，按当前语言分别介绍并询问两次 Y/N：
 
-1. Matt Pocock Skills
-2. Herdr
-3. CodebaseMemoryProvider
+1. Herdr
+2. CodebaseMemoryProvider
 
 规则：
 
@@ -742,7 +741,8 @@ MCP Adapter 支持 stdio、Streamable HTTP 与仍需兼容的 SSE transport；�
 - 支持中途退出后从最后未回答项继续；单机使用一个带 owner/pid/过期时间的 onboarding lockfile 防止重复弹窗，不建立 Wizard Lease Module。
 - Yes 只代表信任并启用固定版本，不代表获得运行权限或立即启动进程。
 - No 保持 Discovered/Disabled，不下载、不运行、不向模型暴露，且不反复骚扰；可在设置中重置。
-- 即使三项全启用，Simple Task 也不自动注入 Skill、启动 Herdr 或索引 Codebase Memory。
+- 即使两项全启用，Simple Task 也不自动注入 Skill、启动 Herdr 或索引 Codebase Memory。
+- Matt Pocock Skills 不进入首次引导：完整固定快照随 Picode 分发，但只有用户显式执行 `/plan` 或其它技能命令时，才按需物化对应依赖闭包到私有 Pi skill root。
 
 ### 9.6 Subagent 与 Herdr
 
@@ -1009,7 +1009,7 @@ Remove 使用两阶段确认：第一次展示将删除的 Picode 副本、任�
 - 启动入口是 `picode` / `picode-tui`，Host 启动后进入原版 Pi TUI，而不是打印 JSON 状态列表。
 - 常规启动进入当前/新会话；通过特定命令选择或切换历史 Chat。
 - TUI 与 GUI 共享账号、模型、扩展、Task、Chat Catalog 和权限配置。
-- 首次 TUI 可建议安装 Herdr，但必须遵循三项独立 Y/N 引导。
+- 首次 TUI 可建议启用 Herdr，但必须遵循两项独立 Y/N 引导；不弹出 Matt Pocock Skills 的安装询问。
 - 退出前如有运行任务必须二次确认；确认后取消，不在后台偷偷继续。
 
 ### 14.2 GUI
@@ -1207,7 +1207,7 @@ P3 拆成三个可独立交付、可单独回退的子 Gate，避免形成整条
 - Pi JSONL 实时会话 + SQLite Chat/Task 投影。
 - Archive、Remove、备份、Workspace rebind 和 XML 中英文语言包。
 - Codex/Cursor/Claude 外部聊天选择性导入放在 P3-C 后半段，不移入 P5；每个来源 Adapter 生成不可变 Snapshot、Foreign Transcript IR、Historical Tool Trace、兼容报告和 Compiled Resume，独立验收且不阻塞 P3-A/P3-B。
-- 三项首次启动 Y/N 和共享设置，使用单机 onboarding lockfile。
+- 两项首次启动 Y/N 和共享设置，使用单机 onboarding lockfile；随包 Skills 由显式命令按需物化。
 - 验收：V2 的主要会话/迁移能力在新权威模型下完整可用，单个来源 Parser 延期不会阻塞其他 P3 子 Gate。
 
 ### P4：完整 GUI、产品收尾与真实项目验收

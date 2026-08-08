@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { delimiter, dirname, isAbsolute, join, normalize, parse } from "node:path";
 import { compileSandboxPolicy } from "../guard/sandbox-policy.ts";
 import { atomicWriteFile, withFileLock } from "../shared/fs.ts";
 import type { HarnessTier, PermissionTier, Result } from "../shared/types.ts";
@@ -12,6 +12,34 @@ function readObject(path: string): Record<string, unknown> {
   return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
     ? parsed as Record<string, unknown>
     : {};
+}
+
+function windowsExecutableReadRoots(env: NodeJS.ProcessEnv = process.env): string[] {
+  if (process.platform !== "win32") return [];
+  const seen = new Set<string>();
+  const roots: string[] = [];
+  for (const raw of (env.PATH ?? "").split(delimiter)) {
+    const value = raw.trim().replace(/^"|"$/g, "");
+    if (value === "" || !isAbsolute(value)) continue;
+    const normalized = normalize(value);
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    roots.push(normalized);
+  }
+  return roots;
+}
+
+function windowsTraversalReadRoots(cwd: string): string[] {
+  if (process.platform !== "win32") return [];
+  const volumeRoot = parse(cwd).root;
+  const roots: string[] = [];
+  let current = dirname(cwd);
+  while (current !== volumeRoot && current !== dirname(current)) {
+    roots.push(current);
+    current = dirname(current);
+  }
+  return roots.reverse();
 }
 
 /** Compile Guard policy into the supported landstrip configuration surface. */
@@ -27,7 +55,11 @@ export async function configureLandstripForSession(input: {
   try {
     const policy = compileSandboxPolicy(input.permissionTier, [input.cwd]);
     const sandbox = {
-      enabled: true,
+      // P0-P4: Windows AppContainer cannot reliably enter ordinary developer
+      // workspaces (notably Documents) without host ACL provisioning. Keep
+      // Guard authorization and the PowerShell provider, but report OS
+      // sandboxing as disabled until the P5 Windows provider is available.
+      enabled: process.platform !== "win32",
       shell: { readAccess: process.platform === "win32" ? "policy" : "host" },
       network: {
         allowNetwork: policy.network === "allow",
@@ -39,7 +71,14 @@ export async function configureLandstripForSession(input: {
       },
       filesystem: {
         denyRead: [],
-        allowRead: [input.cwd, "~/.gitconfig", "~/.config/git/config", "/dev/null"],
+        allowRead: [
+          input.cwd,
+          ...windowsTraversalReadRoots(input.cwd),
+          ...windowsExecutableReadRoots(),
+          "~/.gitconfig",
+          "~/.config/git/config",
+          "/dev/null",
+        ],
         allowWrite: policy.writableRoots,
         denyWrite: [...policy.secretZones, sandboxPath, settingsPath],
       },
@@ -53,7 +92,10 @@ export async function configureLandstripForSession(input: {
       const landstrip = typeof settings.landstrip === "object" && settings.landstrip !== null
         ? settings.landstrip as Record<string, unknown>
         : {};
-      settings.landstrip = { ...landstrip, maxSubagents: 0 };
+      // Guard is Picode's only pre-dispatch permission authority. Landstrip
+      // remains the OS sandbox provider, so its independent agent prompt must
+      // not ask a second time for every tool call.
+      settings.landstrip = { ...landstrip, maxSubagents: 0, permission: "allow" };
       atomicWriteFile(settingsPath, JSON.stringify(settings, null, 2));
     });
     return ok(undefined);
