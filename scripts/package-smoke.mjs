@@ -63,7 +63,9 @@ try {
       PATH: `${join(installed, "node_modules", ".bin")}${delimiter}${process.env.PATH ?? ""}`,
     },
   });
-  if (!/^\d+\.\d+\.\d+/.test(version)) throw new Error(`vendored Pi did not boot: ${version}`);
+  if (version !== manifest.version) {
+    throw new Error(`installed Picode version mismatch: manifest=${manifest.version}, CLI=${version}`);
+  }
   const doctor = JSON.parse(run(process.execPath, [launcher, "doctor", "--json"], {
     cwd: installed,
     env: {
@@ -86,7 +88,7 @@ try {
     cwd: installed,
     env: { ...process.env, PICODE_DIR: join(scratch, "rpc-data") },
   });
-  console.log(`real package smoke OK (${filename}; vendored Pi ${version}; CLI doctor + RPC session navigated)`);
+  console.log(`real package smoke OK (${filename}; Picode ${version}; CLI doctor + RPC session navigated)`);
 } finally {
   rmSync(scratch, { recursive: true, force: true });
 }

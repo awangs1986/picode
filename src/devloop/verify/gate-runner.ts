@@ -2,6 +2,8 @@ export interface GateContract {
   gateId: string;
   command: string;
   timeoutMs: number;
+  /** Test gates fail closed on zero matches; smoke/build gates may be exit-code contracts. */
+  requiresTests?: boolean;
   redProbe?: { command: string };
 }
 
@@ -44,7 +46,7 @@ export class GateRunner {
   async run(contract: GateContract): Promise<GateEvidence> {
     const execution = await this.executor.execute(contract.command, contract.timeoutMs);
     const disposition = execution.disposition ?? "executed";
-    const zeroTestsMatched = execution.matchedTests === 0;
+    const zeroTestsMatched = (contract.requiresTests ?? true) && execution.matchedTests === 0;
     const commandFailed = execution.exitCode !== 0 || execution.failedTests > 0;
     let status: GateEvidence["status"] =
       disposition !== "executed"

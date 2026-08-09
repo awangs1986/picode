@@ -1127,6 +1127,7 @@ export function registerPicodeBridge(
           gateId: `${contract.gateId}:integration`,
           command: input.integrationCommand,
           timeoutMs: input.timeoutMs ?? 120_000,
+          requiresTests: false,
         },
         targetPassed: (evidence) => admit("tdd.green", evidence),
         snapshotNow: () => candidateSnapshot(pi, ctx.cwd),

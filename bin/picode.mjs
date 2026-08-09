@@ -8,13 +8,20 @@
  * 扩展套件注入姿势待 Spike 7（settings 合并 vs 启动参数）定稿。
  */
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildPiLaunch, PI_PACKAGE, resolveVendoredPi } from "./picode-launch.mjs";
 
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+const productManifest = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
+const rawUserArgs = process.argv.slice(2);
+
+if (rawUserArgs.length === 1 && (rawUserArgs[0] === "--version" || rawUserArgs[0] === "-V")) {
+  console.log(productManifest.version);
+  process.exit(0);
+}
 
 const picodeDir = process.env.PICODE_DIR ?? join(homedir(), ".picode");
 const agentDir = join(picodeDir, "agent");

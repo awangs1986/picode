@@ -62,16 +62,31 @@ describe("TddSessionController", () => {
   });
 
   it("issues completion only after target, reviewer, integration smoke, and same-snapshot confirm", async () => {
-    const controller = new TddSessionController(new QueueExecutor([failed, passed, passed, passed]));
+    const successfulSmokeWithoutTests: GateExecution = {
+      exitCode: 0,
+      matchedTests: 0,
+      passedTests: 0,
+      failedTests: 0,
+      timedOut: false,
+    };
+    const controller = new TddSessionController(
+      new QueueExecutor([failed, passed, successfulSmokeWithoutTests, passed]),
+    );
     controller.begin();
     await controller.proveRed({ gateId: "runtime", command: "npm test", timeoutMs: 1_000 });
+    const integrationContract = {
+      gateId: "integration",
+      command: "npm run smoke",
+      timeoutMs: 1_000,
+      requiresTests: false,
+    };
 
     const completed = await controller.runGate(
       { gateId: "runtime", command: "npm test", timeoutMs: 1_000 },
       { repo: "C:/repo", head: "abc", dirty: true, contentDigest: "worktree-1" },
       {
         review: async () => ({ ok: true, value: { kind: "evidence", id: "review-1" } }),
-        integrationContract: { gateId: "integration", command: "npm run smoke", timeoutMs: 1_000 },
+        integrationContract,
         snapshotNow: async () => ({ repo: "C:/repo", head: "abc", dirty: true, contentDigest: "worktree-1" }),
       },
     );
