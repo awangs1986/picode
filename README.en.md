@@ -71,6 +71,22 @@ Inside TUI:
 /harness tdd
 ```
 
+After a successful switch, Picode reports the changes to sandboxing, MCP, tool
+surface, watchdog, verification, and the default prompt. Harness defaults are
+`simple → none`, `standard → lean`, and `tdd → full`. To change only the prompt
+guidance level for the current session:
+
+```text
+/system prompt
+/system prompt none
+/system prompt lean
+/system prompt full
+```
+
+With no level, the command opens a three-choice menu. It does not change the
+Harness, tools, permissions, sandbox, or Gates. The next Harness switch clears
+the manual override and restores that tier's default.
+
 Use `/permissions readonly|auto|full` to control approval density in Standard/TDD
 sessions. The default is `auto`. `full` allows routine commands for the current
 session while destructive operations and Git ownership actions such as commit,

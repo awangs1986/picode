@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { atomicWriteFile, withFileLock } from "../shared/fs.ts";
@@ -8,6 +8,7 @@ import type {
   HistoricalCompatibility,
   Result,
   SourceToolSignature,
+  SourceRef,
   StorePort,
   TaskCapsule,
   TaskTodoState,
@@ -142,6 +143,39 @@ export class Store implements StorePort {
       join(dataPaths.tasks(), state.taskId, "todos.json"),
       isTaskTodoState,
     ).write(state);
+  }
+
+  loadTaskVerificationRefs(taskId: string): Result<SourceRef[]> {
+    const root = dataPaths.evidence();
+    if (!existsSync(root)) return ok([]);
+    try {
+      const refs: SourceRef[] = [];
+      for (const file of readdirSync(root).filter((name) => name.endsWith(".jsonl")).sort()) {
+        const lines = readFileSync(join(root, file), "utf8").split(/\r?\n/);
+        for (let index = 0; index < lines.length; index += 1) {
+          const line = lines[index];
+          if (line === undefined || line.trim() === "") continue;
+          try {
+            const event = JSON.parse(line) as { taskId?: unknown; kind?: unknown };
+            if (event.taskId !== taskId || typeof event.kind !== "string") continue;
+            if (!event.kind.startsWith("tdd.") && !event.kind.startsWith("gate.") &&
+              !event.kind.startsWith("completion")) continue;
+            const digest = createHash("sha256").update(line).digest("hex");
+            refs.push({
+              kind: "evidence",
+              id: digest.slice(0, 24),
+              locator: `evidence/${file}#L${index + 1}`,
+              sourceDigest: digest,
+            });
+          } catch {
+            // Evidence is append-only. A malformed row is ignored, never rewritten.
+          }
+        }
+      }
+      return ok(refs);
+    } catch (cause) {
+      return err("store/evidence-unreadable", `cannot read task evidence for ${taskId}`, cause);
+    }
   }
 }
 

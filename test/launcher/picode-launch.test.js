@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
+import { execFile } from "node:child_process";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 import { buildPiLaunch, resolveVendoredPi } from "../../bin/picode-launch.mjs";
+
+const execFileAsync = promisify(execFile);
 
 describe("Picode vendored Pi launch contract", () => {
   it("ships a loadable Pi extension entry", async () => {
@@ -58,4 +62,14 @@ describe("Picode vendored Pi launch contract", () => {
       PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE: "1",
     });
   });
+
+  it("prints RPC protocol help instead of starting the stdin server", async () => {
+    const { stdout } = await execFileAsync(process.execPath, [join(process.cwd(), "bin", "picode.mjs"), "rpc", "--help"], {
+      cwd: process.cwd(),
+      timeout: 20_000,
+    });
+
+    expect(stdout).toContain("run.start");
+    expect(stdout).toContain("approval.respond");
+  }, 20_000);
 });

@@ -7,7 +7,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { JsonAgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import open from "open";
-import { dataPaths, picodeDir } from "../shared/paths.ts";
+import { picodeDir } from "../shared/paths.ts";
 import type { ControlDriver, ControlEvent, SessionIdentity } from "./index.ts";
 import { TaskIngress } from "../devloop/index.ts";
 import { StateFile } from "../store/state-file.ts";
@@ -21,12 +21,12 @@ import { WorktreeRegistry } from "../engine/worktree.ts";
 import { bootRuntime } from "../extension/index.ts";
 import { loadCapabilitySettings, saveCapabilitySettings } from "../store/capabilities.ts";
 import { ForeignChatImportService } from "../extension/foreign-chat-import.ts";
-import { TASK_BINDING_ENTRY_TYPE } from "../extension/slice-session.ts";
+import { restoreTaskBinding, TASK_BINDING_ENTRY_TYPE } from "../extension/slice-session.ts";
 import { adapterFor } from "../store/import-adapters.ts";
 
-function controlTasks(): TaskIngress {
+function controlTasks(tasksRoot: string): TaskIngress {
   return new TaskIngress({
-    tasksRoot: dataPaths.tasks(),
+    tasksRoot,
     stateFile: (path, validate) => new StateFile(path, validate),
   });
 }
@@ -126,6 +126,14 @@ export class RpcControlDriver implements ControlDriver {
     return join(this.agentRoot(), "sessions");
   }
 
+  private tasksRoot(): string {
+    return join(this.picodeRoot(), "tasks");
+  }
+
+  private evidenceRoot(): string {
+    return join(this.picodeRoot(), "evidence");
+  }
+
   private client(input: { cwd?: string; session?: string; provider?: string; model?: string } = {}): RpcClient {
     const extension = join(this.options.packageRoot, "src", "extension", "pi-entry.ts");
     const args = ["--extension", extension, "--session-dir", this.sessionsRoot()];
@@ -181,13 +189,17 @@ export class RpcControlDriver implements ControlDriver {
     const client = this.client({ ...input, ...(session === undefined ? {} : { session }) });
     const queue = new EventQueue();
     let approvalRequired = false;
+    let pendingApprovalId: string | undefined;
     const runId = randomUUID();
     const unsubscribe = client.onEvent((raw) => {
       if (this.cancelledRuns.has(runId)) return;
       if (isUiApproval(raw)) {
         approvalRequired = true;
         const requestId = (raw as { id?: unknown }).id;
-        if (typeof requestId === "string") this.approvalClients.set(requestId, client);
+        if (typeof requestId === "string") {
+          pendingApprovalId = requestId;
+          this.approvalClients.set(requestId, client);
+        }
         queue.push(asEvent("approval.required", raw));
       } else {
         queue.push(asEvent(eventKind(raw), raw));
@@ -197,12 +209,16 @@ export class RpcControlDriver implements ControlDriver {
       try {
         await client.start();
         const initialState = await client.getState();
+        const taskBinding = initialState.sessionFile === undefined
+          ? undefined
+          : restoreTaskBinding(SessionManager.open(initialState.sessionFile, this.sessionsRoot()).getBranch());
         this.activeRuns.set(runId, { client, queue });
         queue.push(asEvent("run.started", {
           runId,
           executionEpoch: 1,
           sessionId: initialState.sessionId,
           sessionFile: initialState.sessionFile,
+          ...(taskBinding === undefined ? {} : { taskId: taskBinding.taskId }),
           effectiveHarnessTier,
           effectivePermissionTier,
         }));
@@ -227,7 +243,16 @@ export class RpcControlDriver implements ControlDriver {
             if (Date.now() - started > (input.timeoutMs ?? 600_000)) throw new Error("Timeout waiting for headless run");
             await new Promise((resolveWait) => setTimeout(resolveWait, 25));
           }
-          if (approvalRequired) await client.abort().catch(() => undefined);
+          if (approvalRequired) {
+            if (pendingApprovalId !== undefined) {
+              await this.respondApproval(pendingApprovalId, "deny").catch(() => undefined);
+            }
+            try {
+              await client.waitForIdle(5_000);
+            } catch {
+              await client.abort().catch(() => undefined);
+            }
+          }
         } else {
           await client.waitForIdle(input.timeoutMs ?? 600_000);
         }
@@ -393,7 +418,7 @@ export class RpcControlDriver implements ControlDriver {
   }
 
   async listCapsules(taskId: string): Promise<unknown> {
-    const root = join(dataPaths.tasks(), taskId, "capsules");
+    const root = join(this.tasksRoot(), taskId, "capsules");
     if (!existsSync(root)) return [];
     return readdirSync(root).filter((name) => name.endsWith(".json")).sort().map((name) => {
       const capsule = JSON.parse(readFileSync(join(root, name), "utf8")) as { capsuleId?: string; status?: string; createdAt?: string; intent?: string; digest?: string };
@@ -409,7 +434,7 @@ export class RpcControlDriver implements ControlDriver {
 
   async readCapsule(taskId: string, capsuleId: string): Promise<unknown> {
     if (!/^[A-Za-z0-9._-]+$/.test(taskId) || !/^[A-Za-z0-9._-]+$/.test(capsuleId)) throw new Error("invalid task or capsule id");
-    const path = join(dataPaths.tasks(), taskId, "capsules", `${capsuleId}.json`);
+    const path = join(this.tasksRoot(), taskId, "capsules", `${capsuleId}.json`);
     if (!existsSync(path)) throw new Error(`capsule not found: ${capsuleId}`);
     return JSON.parse(readFileSync(path, "utf8")) as unknown;
   }
@@ -626,7 +651,7 @@ export class RpcControlDriver implements ControlDriver {
   }
 
   async cancelTask(taskId: string): Promise<unknown> {
-    const ingress = controlTasks();
+    const ingress = controlTasks(this.tasksRoot());
     const written = await ingress.writeControl(taskId, "cancel_requested");
     if (!written.ok) throw new Error(written.error.message);
     const state = await ingress.readControl(taskId);
@@ -660,6 +685,11 @@ export class RpcControlDriver implements ControlDriver {
   async setHarnessTier(session: string, tier: "simple" | "standard" | "tdd"): Promise<string> {
     const manager = await this.sessionManager(session);
     manager.appendCustomEntry(HARNESS_ENTRY_TYPE, { tier });
+    const binding = restoreTaskBinding(manager.getBranch());
+    if (binding !== undefined) {
+      const synchronized = await controlTasks(this.tasksRoot()).updateHarnessTier(binding.taskId, tier);
+      if (!synchronized.ok) throw new Error(synchronized.error.message);
+    }
     return tier;
   }
 
@@ -703,10 +733,10 @@ export class RpcControlDriver implements ControlDriver {
   }
 
   async taskStatus(taskId: string): Promise<unknown> {
-    const taskPath = join(dataPaths.tasks(), taskId, "task.json");
+    const taskPath = join(this.tasksRoot(), taskId, "task.json");
     if (!existsSync(taskPath)) throw new Error(`task not found: ${taskId}`);
     const task = JSON.parse(readFileSync(taskPath, "utf8")) as unknown;
-    const control = await controlTasks().readControl(taskId);
+    const control = await controlTasks(this.tasksRoot()).readControl(taskId);
     return { task, control: control.ok ? control.value : undefined };
   }
 
@@ -717,9 +747,9 @@ export class RpcControlDriver implements ControlDriver {
 
   async evidence(taskId: string): Promise<unknown> {
     const events: unknown[] = [];
-    if (!existsSync(dataPaths.evidence())) return events;
-    for (const file of readdirSync(dataPaths.evidence()).filter((name) => name.endsWith(".jsonl"))) {
-      for (const line of readFileSync(join(dataPaths.evidence(), file), "utf8").split(/\r?\n/)) {
+    if (!existsSync(this.evidenceRoot())) return events;
+    for (const file of readdirSync(this.evidenceRoot()).filter((name) => name.endsWith(".jsonl"))) {
+      for (const line of readFileSync(join(this.evidenceRoot(), file), "utf8").split(/\r?\n/)) {
         if (line.trim() === "") continue;
         try {
           const row = JSON.parse(line) as { taskId?: string };

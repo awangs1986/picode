@@ -28,6 +28,7 @@ export class TddSessionController {
   private contract: GateContract | undefined;
   private readonly gateRuns: GateRun[] = [];
   private lastEvidence: GateEvidence | undefined;
+  private reviewerTechnicalFailures = 0;
 
   constructor(private readonly executor: GateExecutor) {
     this.gateRunner = new GateRunner(executor);
@@ -96,6 +97,7 @@ export class TddSessionController {
       review: () => Promise<Result<SourceRef>>;
       integrationContract: GateContract;
       snapshotNow: () => Promise<CandidateSnapshot>;
+      targetPassed?: (evidence: GateEvidence) => Promise<void> | void;
     },
   ): Promise<Result<CompletionLabel>> {
     if (this.contract === undefined ||
@@ -126,16 +128,34 @@ export class TddSessionController {
         ? err("devloop/tdd-gate-failed", evidence.reason)
         : retry;
     }
+    await pipeline.targetPassed?.(evidence);
 
-    const reviewerBudget = this.run.useReviewerRound();
-    if (!reviewerBudget.ok) return reviewerBudget;
     const review = await pipeline.review();
     if (!review.ok) {
+      // A reviewer process/transport failure is not a review decision. Keep the
+      // already-passing candidate at the gate so the same snapshot can retry;
+      // do not consume either the reviewer-decision budget or a code-fix round.
+      if (["devloop/tdd-review-failed", "devloop/tdd-review-timeout"].includes(review.error.code)) {
+        this.reviewerTechnicalFailures += 1;
+        if (this.reviewerTechnicalFailures > 1) {
+          this.run.markQaHandoff();
+          return err(
+            "devloop/tdd-review-qa-handoff",
+            `independent review remained unavailable after one retry; target gate passed, hand off to QA: ${review.error.message}`,
+            review.error,
+          );
+        }
+        return err("devloop/tdd-review-unavailable", review.error.message, review.error);
+      }
+      const reviewerBudget = this.run.useReviewerRound();
+      if (!reviewerBudget.ok) return reviewerBudget;
       const retry = this.run.transition("green");
       return retry.ok
         ? err("devloop/tdd-review-failed", review.error.message)
         : retry;
     }
+    const reviewerBudget = this.run.useReviewerRound();
+    if (!reviewerBudget.ok) return reviewerBudget;
 
     const integrationEvidence = await this.gateRunner.run(pipeline.integrationContract);
     this.gateRuns.push({
@@ -192,9 +212,15 @@ export class TddSessionController {
     });
   }
 
-  snapshot(): { state: TddState; contract?: GateContract; lastEvidence?: GateEvidence } {
+  snapshot(): {
+    state: TddState;
+    outcome?: ReturnType<TddRun["budgetOutcome"]>;
+    contract?: GateContract;
+    lastEvidence?: GateEvidence;
+  } {
     return {
       state: this.run.current(),
+      ...(this.run.budgetOutcome() === undefined ? {} : { outcome: this.run.budgetOutcome() }),
       ...(this.contract === undefined ? {} : { contract: { ...this.contract } }),
       ...(this.lastEvidence === undefined ? {} : { lastEvidence: { ...this.lastEvidence } }),
     };
@@ -206,6 +232,7 @@ export class TddSessionController {
       run: this.run.checkpoint(),
       ...(this.contract === undefined ? {} : { contract: { ...this.contract } }),
       gateRuns: this.gateRuns.map((run) => structuredClone(run)),
+      reviewerTechnicalFailures: this.reviewerTechnicalFailures,
       ...(this.lastEvidence === undefined ? {} : { lastEvidence: structuredClone(this.lastEvidence) }),
     };
   }
@@ -216,6 +243,7 @@ export class TddSessionController {
     controller.run = TddRun.restore(value.run);
     controller.contract = value.contract === undefined ? undefined : { ...value.contract };
     controller.gateRuns.push(...value.gateRuns.map((run) => structuredClone(run)));
+    controller.reviewerTechnicalFailures = value.reviewerTechnicalFailures ?? 0;
     controller.lastEvidence = value.lastEvidence === undefined
       ? undefined
       : structuredClone(value.lastEvidence);
@@ -237,6 +265,7 @@ export interface TddSessionCheckpoint {
   run: TddRunCheckpoint;
   contract?: GateContract;
   gateRuns: GateRun[];
+  reviewerTechnicalFailures?: number;
   lastEvidence?: GateEvidence;
 }
 

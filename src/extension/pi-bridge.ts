@@ -34,7 +34,13 @@ import type { CandidateSnapshot } from "../devloop/verify/gate.ts";
 import type { GateContract, GateExecutor } from "../devloop/verify/gate-runner.ts";
 import { ShellGateExecutor } from "./gate-command-executor.ts";
 import { TddSessionController, type TddSessionCheckpoint } from "./tdd-session.ts";
-import { systemPromptInjection } from "./prompts.ts";
+import {
+  effectivePromptLevel,
+  PROMPT_LEVEL_ENTRY_TYPE,
+  restorePromptOverride,
+  sessionPromptInjection,
+  type PromptLevel,
+} from "./prompts.ts";
 import { ForeignChatImportService } from "./foreign-chat-import.ts";
 import { parseToolsMd, registerTaskExtensions, renderTaskExtensionSummary } from "./tools-md.ts";
 import { appendCacheMetric, computePrefixSignals } from "./cache-signals.ts";
@@ -253,6 +259,22 @@ export async function candidateSnapshot(pi: ExtensionAPI, cwd: string): Promise<
   };
 }
 
+export async function workspaceChangedFiles(pi: ExtensionAPI, cwd: string): Promise<string[]> {
+  if (typeof pi.exec !== "function") return [];
+  const [tracked, untracked] = await Promise.all([
+    pi.exec("git", ["diff", "--name-only", "-z", "HEAD", "--"], { cwd, timeout: 5_000 }),
+    pi.exec("git", ["ls-files", "--others", "--exclude-standard", "-z"], { cwd, timeout: 5_000 }),
+  ]);
+  const files = new Set<string>();
+  if (tracked.code === 0) {
+    for (const path of tracked.stdout.split("\0")) if (path !== "") files.add(path.replaceAll("\\", "/"));
+  }
+  if (untracked.code === 0) {
+    for (const path of untracked.stdout.split("\0")) if (path !== "") files.add(path.replaceAll("\\", "/"));
+  }
+  return [...files].sort((left, right) => left.localeCompare(right));
+}
+
 function intentFor(event: ToolCallEvent, cwd: string): OperationIntent {
   const input = event.input as Record<string, unknown>;
   const path = typeof input.path === "string" ? input.path : undefined;
@@ -310,7 +332,11 @@ export function registerPicodeBridge(
 ): { snapshot(): BridgeProbeSnapshot } {
   const now = options.now ?? (() => performance.now());
   const accountAdapter = new PiAccountAdapter(pi);
-  const slices = new SliceSessionCoordinator(runtime, (cwd) => candidateSnapshot(pi, cwd));
+  const slices = new SliceSessionCoordinator(
+    runtime,
+    (cwd) => candidateSnapshot(pi, cwd),
+    (cwd) => workspaceChangedFiles(pi, cwd),
+  );
   const foreignChats = new ForeignChatImportService(runtime);
   const worktrees = new WorktreeRegistry();
   const structuredGit = new StructuredGit();
@@ -327,6 +353,7 @@ export function registerPicodeBridge(
   let tokensSinceTaskState = 0;
   let currentPrefixSignals: PrefixSignals | undefined;
   let claimedWriter: { workspace: string; taskId: string } | undefined;
+  let promptOverride: PromptLevel | undefined;
   let compactionsObserved = 0;
   let historyTransitionsObserved = 0;
   const toolIntentLatencyMs: number[] = [];
@@ -399,6 +426,7 @@ export function registerPicodeBridge(
     if (event.reason === "resume" || event.reason === "fork") historyTransitionsObserved += 1;
     const branch = ctx.sessionManager.getBranch();
     runtime.harness.switchTo(restoreHarnessTier(branch));
+    promptOverride = restorePromptOverride(branch);
     runtime.guard.setTier(restorePermissionTier(branch));
     runtime.guard.catalog.removeByOrigin("task");
     taskToolsSummary = undefined;
@@ -429,6 +457,14 @@ export function registerPicodeBridge(
     tdd = TddSessionController.restore(gateExecutor, savedTdd) ?? new TddSessionController(gateExecutor);
     lastTddHeader = undefined;
     await slices.onSessionStart(ctx);
+    try {
+      await slices.syncHarnessTier(runtime.harness.current());
+    } catch (cause) {
+      ctx.ui.notify?.(
+        `Task Harness state was not synchronized: ${cause instanceof Error ? cause.message : String(cause)}`,
+        "error",
+      );
+    }
     const taskId = slices.currentTaskId();
     if (taskId !== undefined) await todos.bind(taskId);
     if (
@@ -484,7 +520,7 @@ export function registerPicodeBridge(
     }
   });
   pi.on("before_agent_start", (event, ctx) => {
-    const injection = systemPromptInjection(runtime.harness.current());
+    const injection = sessionPromptInjection(runtime.harness.current(), promptOverride);
     const contextEvents: string[] = [];
     const taskToolsIncluded = taskToolsSummaryPending && taskToolsSummary !== undefined;
     if (taskToolsSummaryPending && taskToolsSummary !== undefined) {
@@ -717,12 +753,59 @@ export function registerPicodeBridge(
     handler: async (args, ctx) => {
       const before = runtime.harness.current();
       const output = handleHarnessCommand(runtime.harness, args);
-      ctx.ui.notify(output, output.startsWith("unknown") ? "error" : "info");
       const after = runtime.harness.current();
       if (after !== before) {
+        try {
+          await slices.syncHarnessTier(after);
+        } catch (cause) {
+          runtime.harness.switchTo(before);
+          ctx.ui.notify(
+            `harness switch cancelled because Task state could not be synchronized: ${cause instanceof Error ? cause.message : String(cause)}`,
+            "error",
+          );
+          return;
+        }
+        promptOverride = undefined;
         pi.appendEntry(HARNESS_ENTRY_TYPE, { tier: after });
+        pi.appendEntry(PROMPT_LEVEL_ENTRY_TYPE, { level: "harness-default" });
+        ctx.ui.notify(output, "info");
         await ctx.reload();
+        return;
       }
+      ctx.ui.notify(output, output.startsWith("unknown") ? "error" : "info");
+    },
+  });
+  pi.registerCommand("system", {
+    description: "Show or switch session prompt guidance: /system prompt [none|lean|full]",
+    handler: async (args, ctx) => {
+      const match = args.trim().match(/^prompt(?:\s+(none|lean|full))?$/i);
+      if (match === null) {
+        ctx.ui.notify("usage: /system prompt [none|lean|full]", "error");
+        return;
+      }
+      let level = match[1]?.toLowerCase() as PromptLevel | undefined;
+      if (level === undefined && typeof ctx.ui.select === "function") {
+        const selected = await ctx.ui.select("System prompt guidance", [
+          "none — upstream Pi only",
+          "lean — compact engineering guidance",
+          "full — complete TDD-oriented guidance",
+        ]);
+        if (selected === undefined) return;
+        level = selected.split(" ", 1)[0] as PromptLevel;
+      }
+      if (level === undefined) {
+        const current = effectivePromptLevel(runtime.harness.current(), promptOverride);
+        ctx.ui.notify(`current system prompt: ${current} (none | lean | full)`, "info");
+        return;
+      }
+      const before = effectivePromptLevel(runtime.harness.current(), promptOverride);
+      promptOverride = level;
+      pi.appendEntry(PROMPT_LEVEL_ENTRY_TYPE, { level });
+      if (before !== level) runtime.engine.beginNewEpoch(`system prompt switch: ${before} → ${level}`);
+      ctx.ui.notify(
+        `system prompt: ${before} → ${level}; guidance only — harness remains ${runtime.harness.current()} and its tools, permissions, sandbox, and verification are unchanged`,
+        "info",
+      );
     },
   });
   pi.registerCommand("permissions", {
@@ -997,7 +1080,15 @@ export function registerPicodeBridge(
           pi.appendEntry(TDD_STATE_ENTRY_TYPE, tdd.checkpoint());
           admit("tdd.state", tdd.snapshot());
         }
-        return { content: [{ type: "text", text: begun.ok ? `TDD state: ${begun.value}` : `error: ${begun.error.message}` }], details: tdd.snapshot() };
+        return {
+          content: [{
+            type: "text",
+            text: begun.ok
+              ? "TDD phase started: RED evidence pending. Write tests only, then call harness_result prove_red with the target command; do not pre-run it through bash. Production writes remain blocked until prove_red records a real failing test."
+              : `error: ${begun.error.message}`,
+          }],
+          details: tdd.snapshot(),
+        };
       }
       if (input.gateId === undefined || input.command === undefined) {
         return { content: [{ type: "text", text: "gateId and command are required" }], details: {}, isError: true };
@@ -1037,6 +1128,7 @@ export function registerPicodeBridge(
           command: input.integrationCommand,
           timeoutMs: input.timeoutMs ?? 120_000,
         },
+        targetPassed: (evidence) => admit("tdd.green", evidence),
         snapshotNow: () => candidateSnapshot(pi, ctx.cwd),
       });
       pi.appendEntry(TDD_STATE_ENTRY_TYPE, tdd.checkpoint());

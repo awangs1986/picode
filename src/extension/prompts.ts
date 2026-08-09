@@ -4,16 +4,59 @@ import { fileURLToPath } from "node:url";
 import type { HarnessTier } from "../shared/types.ts";
 import { TIER_POLICIES } from "./harness.ts";
 
+export type PromptLevel = "none" | "lean" | "full";
+export const PROMPT_LEVEL_ENTRY_TYPE = "picode.prompt-level";
+
+export function effectivePromptLevel(
+  harnessTier: HarnessTier,
+  override: PromptLevel | undefined,
+): PromptLevel {
+  return override ?? TIER_POLICIES[harnessTier].promptInjection;
+}
+
+export function restorePromptOverride(entries: readonly unknown[]): PromptLevel | undefined {
+  let level: PromptLevel | undefined;
+  for (const entry of entries) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const row = entry as { type?: unknown; customType?: unknown; data?: unknown };
+    if (row.type !== "custom" || row.customType !== PROMPT_LEVEL_ENTRY_TYPE) continue;
+    if (typeof row.data !== "object" || row.data === null) continue;
+    const candidate = (row.data as { level?: unknown }).level;
+    if (candidate === "harness-default") {
+      level = undefined;
+      continue;
+    }
+    if (candidate === "none" || candidate === "lean" || candidate === "full") level = candidate;
+  }
+  return level;
+}
+
+export function sessionPromptInjection(
+  harnessTier: HarnessTier,
+  override: PromptLevel | undefined,
+  promptsDir?: string,
+): string | undefined {
+  const level = effectivePromptLevel(harnessTier, override);
+  const injection = systemPromptInjection(level, promptsDir);
+  if (injection === undefined || override === undefined) return injection;
+  return `${injection}\n\n<picode_prompt_scope>\n` +
+    `Active harness: ${harnessTier}. Prompt guidance level: ${level} (manual session override). ` +
+    "This changes guidance only; tools, permissions, sandbox, watchdog, and verification remain controlled by the active harness. " +
+    "Use only tools and gates actually available in this session.\n" +
+    "</picode_prompt_scope>";
+}
+
 /**
- * 三档提示词通道（Q19 / V3 §6）：
- * - simple：零注入，保持 Pi 原生系统提示词。
- * - standard：注入薄行为核 prompts/harness-core.md。
- * - tdd：注入完整 Developer-TDD 行为核 prompts/tdd-core.md。
+ * Harness 的三档默认提示词（Q19 / V3 §6）：
+ * - simple → none：零注入，保持 Pi 原生系统提示词。
+ * - standard → lean：注入薄行为核 prompts/harness-core.md。
+ * - tdd → full：注入完整 Developer-TDD 行为核 prompts/tdd-core.md。
  *   作者移植时只改文件不改代码；
  *   工具名经占位符重映射（{{TOOL_*}}），语义不兼容部分在文件内适配。
  *
- * 注入是「档位切换时整体替换」而不是逐轮拼接：同档位内前缀稳定，
- * 切档 = 新 Cache Epoch（harness.ts 已记账）。
+ * /system prompt 可在当前会话覆盖 none/lean/full，但只改变行为引导，不改变
+ * Harness 的工具、权限、沙箱或 Gate。切换 Harness 会清除覆盖并恢复新档位默认值。
+ * 任一有效切换都开启新 Cache Epoch，随后保持前缀稳定。
  */
 
 /** Pi 原生工具名重映射表；移植提示词用占位符，避免写死外来工具名 */
@@ -95,10 +138,12 @@ const INJECTION_BUILTIN = {
  * @param promptsDir 包内 prompts/ 目录（组合根从包根解析）
  */
 export function systemPromptInjection(
-  tier: HarnessTier,
+  selection: HarnessTier | PromptLevel,
   promptsDir?: string,
 ): string | undefined {
-  const mode = TIER_POLICIES[tier].promptInjection;
+  const mode: PromptLevel = selection === "simple" || selection === "standard" || selection === "tdd"
+    ? TIER_POLICIES[selection].promptInjection
+    : selection;
   if (mode === "none") return undefined;
   let raw: string = INJECTION_BUILTIN[mode];
   const resolvedPromptsDir = promptsDir ?? (

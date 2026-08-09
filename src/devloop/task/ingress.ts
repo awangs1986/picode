@@ -61,6 +61,19 @@ export class TaskIngress {
     ).read();
   }
 
+  async updateHarnessTier(taskId: string, harnessTier: HarnessTier): Promise<Result<TaskRecord>> {
+    const state = this.options.stateFile(
+      join(this.options.tasksRoot, taskId, "task.json"),
+      isTaskRecord,
+    );
+    const current = await state.read();
+    if (!current.ok) return current;
+    if (current.value.harnessTier === harnessTier) return current;
+    const updated: TaskRecord = { ...current.value, harnessTier };
+    const written = await state.write(updated);
+    return written.ok ? ok(updated) : written;
+  }
+
   readControl(taskId: string): Promise<Result<TaskControlState>> {
     return this.options.stateFile(
       join(this.options.tasksRoot, taskId, "control.json"),

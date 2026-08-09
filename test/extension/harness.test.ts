@@ -83,6 +83,11 @@ describe("handleHarnessCommand", () => {
     const state = new HarnessState("simple", () => {});
     const msg = handleHarnessCommand(state, "tdd");
     expect(msg).toContain("harness tier: simple → tdd");
+    expect(msg).toContain("sandbox: off → on");
+    expect(msg).toContain("MCP: off → on");
+    expect(msg).toContain("tools: web-only → full");
+    expect(msg).toContain("default prompt: none → full");
+    expect(msg).toContain("system prompt: reset to harness default full");
     expect(state.current()).toBe("tdd");
   });
 

@@ -88,6 +88,30 @@ export class HarnessState {
   }
 }
 
+function onOff(value: boolean): "on" | "off" {
+  return value ? "on" : "off";
+}
+
+function verificationFor(tier: HarnessTier): string {
+  if (tier === "tdd") return "developer-tdd";
+  if (tier === "standard") return "quick-review";
+  return "none";
+}
+
+export function describeHarnessChange(from: HarnessTier, to: HarnessTier): string {
+  const before = TIER_POLICIES[from];
+  const after = TIER_POLICIES[to];
+  return [
+    `sandbox: ${onOff(before.sandbox)} → ${onOff(after.sandbox)}`,
+    `MCP: ${onOff(before.mcp)} → ${onOff(after.mcp)}`,
+    `tools: ${before.extensionTools} → ${after.extensionTools}`,
+    `watchdog: ${before.watchdog} → ${after.watchdog}`,
+    `verification: ${verificationFor(from)} → ${verificationFor(to)}`,
+    `default prompt: ${before.promptInjection} → ${after.promptInjection}`,
+    `system prompt: reset to harness default ${after.promptInjection}`,
+  ].join("; ");
+}
+
 /** /harness 命令处理器（纯逻辑；Pi TUI 与 CLI Adapter 均复用该契约） */
 export function handleHarnessCommand(state: HarnessState, arg: string | undefined): string {
   if (arg === undefined || arg.trim() === "") {
@@ -101,5 +125,5 @@ export function handleHarnessCommand(state: HarnessState, arg: string | undefine
   state.switchTo(tier);
   return tier === before
     ? `already on ${tier}`
-    : `harness tier: ${before} → ${tier} (new cache epoch; prompt/tool surface changes take effect next turn)`;
+    : `harness tier: ${before} → ${tier} (new cache epoch)\n${describeHarnessChange(before, tier)}`;
 }

@@ -44,6 +44,25 @@ describe("versioned Control RPC", () => {
     expect(output).toEqual([{ version: 1, id: "bad", error: { code: "control/version-unsupported", message: "unsupported protocol version: 2" } }]);
   });
 
+  it.each([
+    [{ harnessTier: "strict" }, "invalid harness tier: strict"],
+    [{ permissionTier: "unsafe" }, "invalid permission tier: unsafe"],
+  ])("rejects invalid run policy instead of silently falling back", async (policy, message) => {
+    const output: unknown[] = [];
+    const driver = rpcDriver();
+    const run = vi.spyOn(driver, "run");
+    const server = new ControlRpcServer(driver, (event) => output.push(event));
+
+    await server.receive({ version: 1, id: "bad-policy", method: "run.start", params: { prompt: "x", ...policy } });
+
+    expect(output).toEqual([{
+      version: 1,
+      id: "bad-policy",
+      error: { code: "control/request-invalid", message },
+    }]);
+    expect(run).not.toHaveBeenCalled();
+  });
+
   it("runs every product command through the same Control Interface", async () => {
     const output: unknown[] = [];
     const driver = rpcDriver();

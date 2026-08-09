@@ -101,6 +101,23 @@ describe("CLI-first Control Interface", () => {
     expect(CONTROL_HELP).toContain("picode tools doctor");
   });
 
+  it("documents the headless timeout and the interactive RPC approval contract", async () => {
+    const runHelp: string[] = [];
+    const rpcHelp: string[] = [];
+
+    expect(await executeControlCommand(["run", "--help"], {
+      driver: driver(), stdout: (line) => runHelp.push(line), stderr: () => undefined,
+    })).toBe(CONTROL_EXIT.completed);
+    expect(await executeControlCommand(["rpc", "--help"], {
+      driver: driver(), stdout: (line) => rpcHelp.push(line), stderr: () => undefined,
+    })).toBe(CONTROL_EXIT.completed);
+
+    expect(runHelp.join("\n")).toContain("--timeout-ms <ms>");
+    expect(rpcHelp.join("\n")).toContain("run.start");
+    expect(rpcHelp.join("\n")).toContain("approval.respond");
+    expect(rpcHelp.join("\n")).toContain("once|session|session-full|deny");
+  });
+
   it("maps a non-interactive approval request to a stable exit code", async () => {
     const stdout: string[] = [];
     const control = driver({

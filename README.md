@@ -69,6 +69,20 @@ flowchart TD
 /harness tdd
 ```
 
+切换成功后，Picode 会说明沙箱、MCP、工具面、Watchdog、验证策略和默认提示词
+发生了哪些变化。Harness 的默认提示词级别为 `simple → none`、
+`standard → lean`、`tdd → full`。如只想改变当前会话的提示词引导强度：
+
+```text
+/system prompt
+/system prompt none
+/system prompt lean
+/system prompt full
+```
+
+不带级别时会显示选择菜单。该命令不改变 Harness、工具、权限、沙箱或 Gate；
+下一次切换 Harness 会清除手动覆盖并恢复新档位默认值。
+
 Standard/TDD 会话可用 `/permissions readonly|auto|full` 调整授权密度。默认
 `auto`；`full` 会在当前会话放行常规命令，仍会询问破坏性操作以及
 commit/merge/push 等 Git 所有权操作，并且不会关闭 OS 沙箱。第一次审批时也

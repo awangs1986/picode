@@ -9,7 +9,33 @@ import {
   stripAuthorComments,
   systemPromptInjection,
   TOOL_PLACEHOLDERS,
+  effectivePromptLevel,
+  restorePromptOverride,
 } from "../../src/extension/prompts.ts";
+
+describe("session prompt level", () => {
+  it("follows the harness until the user records an explicit override", () => {
+    expect(effectivePromptLevel("simple", undefined)).toBe("none");
+    expect(effectivePromptLevel("standard", undefined)).toBe("lean");
+    expect(effectivePromptLevel("tdd", undefined)).toBe("full");
+    expect(effectivePromptLevel("simple", "full")).toBe("full");
+  });
+
+  it("restores the latest valid session override", () => {
+    expect(restorePromptOverride([
+      { type: "custom", customType: "picode.prompt-level", data: { level: "lean" } },
+      { type: "custom", customType: "other", data: { level: "none" } },
+      { type: "custom", customType: "picode.prompt-level", data: { level: "full" } },
+    ])).toBe("full");
+  });
+
+  it("lets a later harness switch reset a previous manual override", () => {
+    expect(restorePromptOverride([
+      { type: "custom", customType: "picode.prompt-level", data: { level: "full" } },
+      { type: "custom", customType: "picode.prompt-level", data: { level: "harness-default" } },
+    ])).toBeUndefined();
+  });
+});
 
 describe("applyToolPlaceholders", () => {
   it("replaces every known placeholder with the Pi-native tool name", () => {
@@ -34,6 +60,12 @@ describe("systemPromptInjection", () => {
     expect(standard).not.toContain("{{TOOL_");
     expect(standard).toContain("Use ls for directories and read only for files");
     expect(standard).toContain("On Windows, bash executes PowerShell syntax");
+  });
+
+  it("selects injection by prompt level independently of harness policy", () => {
+    expect(systemPromptInjection("none")).toBeUndefined();
+    expect(systemPromptInjection("lean")).toContain("Picode Harness Core (Lean)");
+    expect(systemPromptInjection("full")).toContain("Picode TDD Harness");
   });
 
   it("loads the packaged TDD prompt by default and maps glob semantics to Pi find", () => {

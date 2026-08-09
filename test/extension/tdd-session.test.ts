@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { GateExecution, GateExecutor } from "../../src/devloop/verify/gate-runner.ts";
 import { TddSessionController } from "../../src/extension/tdd-session.ts";
 
@@ -98,6 +98,71 @@ describe("TddSessionController", () => {
     );
     expect(result.ok).toBe(false);
     expect(controller.state()).toBe("green");
+  });
+
+  it("retries one technical reviewer failure without losing the passing target gate", async () => {
+    const controller = new TddSessionController(
+      new QueueExecutor([failed, passed, passed, passed, passed]),
+    );
+    controller.begin();
+    await controller.proveRed({ gateId: "runtime", command: "npm test", timeoutMs: 1_000 });
+    const snapshot = { contentDigest: "candidate" };
+    const targetPassed = vi.fn();
+    const pipeline = {
+      review: async () => ({ ok: true, value: { kind: "evidence", id: "review-2" } } as const),
+      integrationContract: { gateId: "integration", command: "npm run smoke", timeoutMs: 1_000 },
+      snapshotNow: async () => snapshot,
+      targetPassed,
+    };
+
+    const unavailable = await controller.runGate(
+      { gateId: "runtime", command: "npm test", timeoutMs: 1_000 },
+      snapshot,
+      {
+        ...pipeline,
+        review: async () => ({
+          ok: false,
+          error: { code: "devloop/tdd-review-failed", message: "subagent exceeded turn budget" },
+        } as const),
+      },
+    );
+
+    expect(unavailable.ok).toBe(false);
+    expect(controller.state()).toBe("gate");
+    expect(controller.snapshot().lastEvidence?.status).toBe("passed");
+    expect(targetPassed).toHaveBeenCalledWith(expect.objectContaining({ gateId: "runtime", status: "passed" }));
+
+    const retried = await controller.runGate(
+      { gateId: "runtime", command: "npm test", timeoutMs: 1_000 },
+      snapshot,
+      pipeline,
+    );
+    expect(retried.ok).toBe(true);
+    expect(controller.state()).toBe("done");
+  });
+
+  it("hands off to QA after the bounded technical reviewer retry is exhausted", async () => {
+    const controller = new TddSessionController(new QueueExecutor([failed, passed, passed]));
+    controller.begin();
+    await controller.proveRed({ gateId: "runtime", command: "npm test", timeoutMs: 1_000 });
+    const contract = { gateId: "runtime", command: "npm test", timeoutMs: 1_000 };
+    const snapshot = { contentDigest: "candidate" };
+    const unavailablePipeline = {
+      review: async () => ({
+        ok: false,
+        error: { code: "devloop/tdd-review-timeout", message: "review timed out" },
+      } as const),
+      integrationContract: { gateId: "integration", command: "npm run smoke", timeoutMs: 1_000 },
+      snapshotNow: async () => snapshot,
+    };
+
+    expect((await controller.runGate(contract, snapshot, unavailablePipeline)).ok).toBe(false);
+    const exhausted = await controller.runGate(contract, snapshot, unavailablePipeline);
+
+    expect(exhausted.ok).toBe(false);
+    if (!exhausted.ok) expect(exhausted.error.code).toBe("devloop/tdd-review-qa-handoff");
+    expect(controller.snapshot().outcome).toBe("qa-handoff");
+    expect(controller.snapshot().lastEvidence?.status).toBe("passed");
   });
 
   it("restores a recorded RED checkpoint without rerunning the command", async () => {

@@ -69,6 +69,30 @@ describe("WorktreeRegistry", () => {
     });
   });
 
+  it("hides stale short-lived writers and refreshes ownership when the same task resumes", async () => {
+    await withTempPicodeDir(async () => {
+      const registry = new WorktreeRegistry();
+      mkdirSync(dataPaths.tasks(), { recursive: true });
+      const filePath = join(dataPaths.tasks(), "worktrees.json");
+      writeFileSync(filePath, JSON.stringify({
+        version: 1,
+        writers: [{
+          workspaceId: "ws-1",
+          taskId: "task-a",
+          pid: 999999,
+          claimedAt: "2026-01-01T00:00:00.000Z",
+        }],
+        managed: [],
+      }), "utf8");
+
+      expect(registry.list().writers).toEqual([]);
+      expect((await registry.claimWriter("ws-1", "task-a")).ok).toBe(true);
+      expect(registry.list().writers).toEqual([
+        expect.objectContaining({ workspaceId: "ws-1", taskId: "task-a", pid: process.pid }),
+      ]);
+    });
+  });
+
   it("keeps an explicit CLI lease authoritative after its claimant process is gone", async () => {
     await withTempPicodeDir(async () => {
       const registry = new WorktreeRegistry();

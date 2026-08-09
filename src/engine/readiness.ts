@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { homedir } from "node:os";
 import type { CapabilityReadiness, ReadinessContext, ReadinessReport, SetupPlan } from "../shared/types.ts";
@@ -23,7 +23,12 @@ export class CapabilityReadinessRegistry {
       const packageBin = packageRoot === undefined
         ? []
         : [join(packageRoot, "node_modules", ".bin")];
-      const directories = [...(environmentValue(env, "PATH") ?? "").split(delimiter), ...packageBin].filter(Boolean);
+      const runtimeBins = [join(homedir(), ".dotnet", "tools"), join(homedir(), ".cargo", "bin")];
+      const directories = [
+        ...(environmentValue(env, "PATH") ?? "").split(delimiter),
+        ...packageBin,
+        ...runtimeBins,
+      ].filter(Boolean);
       const names = process.platform === "win32"
         ? [command, `${command}.cmd`, `${command}.exe`]
         : [command];
@@ -58,15 +63,22 @@ function defaultProbes(deps: ProbeDeps): Probe[] {
       }
       const typescriptProject = existsSync(join(ctx.cwd, "tsconfig.json")) || existsSync(join(ctx.cwd, "package.json"));
       const rustProject = existsSync(join(ctx.cwd, "Cargo.toml"));
+      const projectEntries = safeDirectoryEntries(ctx.cwd);
+      const csharpProject = projectEntries.some((name) => /\.(?:csproj|sln|slnx)$/i.test(name));
       if (typescriptProject && deps.commandExists("typescript-language-server")) {
         return report("pi-lens", "Ready", "TypeScript code intelligence and language server are available");
       }
       if (rustProject && deps.commandExists("rust-analyzer")) {
         return report("pi-lens", "Ready", "Rust code intelligence and language server are available");
       }
+      if (csharpProject && deps.commandExists("csharp-ls")) {
+        return report("pi-lens", "Ready", "C# code intelligence and csharp-ls are available");
+      }
       const missing = typescriptProject
         ? ["typescript-language-server"]
-        : rustProject ? ["rust-analyzer"] : ["supported-project", "language-server"];
+        : rustProject
+          ? ["rust-analyzer"]
+          : csharpProject ? ["csharp-ls"] : ["supported-project", "language-server"];
       return report(
         "pi-lens",
         "Degraded",
@@ -92,4 +104,12 @@ function defaultProbes(deps: ProbeDeps): Probe[] {
     staticProbe("web.fetch", report("web.fetch", "Ready", "Direct URL fetch is available without a search provider"), []),
     { capabilityId: "web.search", inspect: async () => Object.keys(deps.env).some((key) => /(?:BRAVE|TAVILY|SERPER|OPENAI)_API_KEY/.test(key) && Boolean(deps.env[key])) ? report("web.search", "Ready", "A configured search provider is available") : report("web.search", "Ready", "pi-web-access provides a zero-config Exa search fallback"), prepare: async () => plan("web.search", ["Optionally choose and configure a preferred provider"]) },
   ];
+}
+
+function safeDirectoryEntries(path: string): string[] {
+  try {
+    return readdirSync(path);
+  } catch {
+    return [];
+  }
 }

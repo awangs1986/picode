@@ -16,7 +16,8 @@ export async function runControlCli(input: {
       cwd: process.cwd(),
       env: process.env,
     });
-  if (input.argv[0] === "rpc") {
+  const rpcHelp = input.argv[0] === "rpc" && (input.argv.includes("--help") || input.argv.includes("-h"));
+  if (input.argv[0] === "rpc" && !rpcHelp) {
     const server = new ControlRpcServer(driver, (message) => process.stdout.write(`${JSON.stringify(message)}\n`));
     const lines = createInterface({ input: process.stdin, crlfDelay: Infinity, terminal: false });
     for await (const line of lines) {

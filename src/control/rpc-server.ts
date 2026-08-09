@@ -11,6 +11,18 @@ function text(value: unknown, name: string): string {
   return value;
 }
 
+function harnessTier(value: unknown): "simple" | "standard" | "tdd" | undefined {
+  if (value === undefined) return undefined;
+  if (value === "simple" || value === "standard" || value === "tdd") return value;
+  throw new Error(`invalid harness tier: ${String(value)}`);
+}
+
+function permissionTier(value: unknown): "readonly" | "auto" | "full" | undefined {
+  if (value === undefined) return undefined;
+  if (value === "readonly" || value === "auto" || value === "full") return value;
+  throw new Error(`invalid permission tier: ${String(value)}`);
+}
+
 /** Long-lived protocol seam. It owns correlation only, never product state. */
 export class ControlRpcServer {
   private readonly pending = new Set<Promise<void>>();
@@ -24,6 +36,8 @@ export class ControlRpcServer {
     try {
       if (request.method === "run.start") {
         const params = request.params ?? {};
+        const requestedHarnessTier = harnessTier(params.harnessTier);
+        const requestedPermissionTier = permissionTier(params.permissionTier);
         const task = this.stream(request.id, this.driver.run({
           prompt: text(params.prompt, "prompt"),
           ...(typeof params.cwd === "string" ? { cwd: params.cwd } : {}),
@@ -31,6 +45,8 @@ export class ControlRpcServer {
           ...(typeof params.provider === "string" ? { provider: params.provider } : {}),
           ...(typeof params.model === "string" ? { model: params.model } : {}),
           ...(typeof params.timeoutMs === "number" ? { timeoutMs: params.timeoutMs } : {}),
+          ...(requestedHarnessTier === undefined ? {} : { harnessTier: requestedHarnessTier }),
+          ...(requestedPermissionTier === undefined ? {} : { permissionTier: requestedPermissionTier }),
           nonInteractive: false,
         }));
         this.pending.add(task);

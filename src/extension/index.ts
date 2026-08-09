@@ -55,10 +55,15 @@ export {
   applyToolPlaceholders,
   BUILTIN_LEAN_PROMPT,
   BUILTIN_TDD_PROMPT,
+  effectivePromptLevel,
+  PROMPT_LEVEL_ENTRY_TYPE,
+  restorePromptOverride,
+  sessionPromptInjection,
   stripAuthorComments,
   systemPromptInjection,
   TOOL_PLACEHOLDERS,
 } from "./prompts.ts";
+export type { PromptLevel } from "./prompts.ts";
 export { enrichUnknownToolError } from "./unknown-tool-hook.ts";
 export type { RedirectContext } from "./unknown-tool-hook.ts";
 export {
@@ -263,6 +268,8 @@ export async function requestActivate(
 
 /** 当前档位的系统提示词增量（simple 无；standard lean；tdd full）。 */
 export function promptInjectionFor(runtime: PicodeRuntime, promptsDir?: string): string | undefined {
+  // Runtime-only callers have no Pi session branch. Return the Harness default;
+  // pi-bridge.ts owns restoration and application of a session-level override.
   return systemPromptInjection(runtime.harness.current(), promptsDir);
 }
 

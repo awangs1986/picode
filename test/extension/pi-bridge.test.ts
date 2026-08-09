@@ -110,19 +110,109 @@ describe("Pi 0.84 Bridge feasibility seam", () => {
     expect(first.contentDigest).not.toBe(second.contentDigest);
   });
 
-  it("persists a session harness switch and reloads the extension suite", async () => {
+  it("persists a session harness switch, synchronizes its Task, and reloads the extension suite", async () => {
+    await withTempPicodeDir(async () => {
+      const pi = fakePi();
+      const runtime = createRuntime();
+      registerPicodeBridge(pi.api, runtime);
+      const reload = vi.fn(async () => {});
+      const notify = vi.fn();
+      const ctx = {
+        cwd: "C:/repo",
+        reload,
+        ui: { notify },
+        sessionManager: { getBranch: () => [], getSessionId: () => "harness-sync-session" },
+      } as unknown as ExtensionContext;
+      await pi.handlers.get("session_start")?.(
+        { type: "session_start", reason: "startup" } as never,
+        ctx,
+      );
+      const task = await runtime.taskIngress.accept({
+        source: "pi-session",
+        externalId: "harness-sync-session",
+        title: "harness-sync-session",
+        harnessTier: "simple",
+        workspace: "C:/repo",
+      });
+      expect(task.ok).toBe(true);
+      if (!task.ok) return;
+
+      await pi.commands.get("harness")?.handler("standard", ctx);
+
+      const synchronized = await runtime.taskIngress.read(task.value.taskId);
+      expect(synchronized.ok && synchronized.value.harnessTier).toBe("standard");
+      expect(runtime.harness.current()).toBe("standard");
+      expect(pi.appended).toContainEqual(["picode.harness-tier", { tier: "standard" }]);
+      expect(pi.appended).toContainEqual(["picode.prompt-level", { level: "harness-default" }]);
+      expect(reload).toHaveBeenCalledOnce();
+      expect(notify).toHaveBeenCalledWith(expect.stringContaining("sandbox:"), "info");
+    });
+  });
+
+  it("switches only the session prompt level through /system prompt", async () => {
     const pi = fakePi();
     const runtime = createRuntime();
     registerPicodeBridge(pi.api, runtime);
-    const reload = vi.fn(async () => {});
     const notify = vi.fn();
-    const ctx = { reload, ui: { notify } } as unknown as ExtensionContext;
+    const ctx = {
+      ...fakeContext(true),
+      ui: { notify },
+      sessionManager: {
+        getSessionId: () => "prompt-level-session",
+        getBranch: () => [{
+          type: "custom",
+          customType: "picode.harness-tier",
+          data: { tier: "standard" },
+        }],
+      },
+    } as unknown as ExtensionContext;
+    await pi.handlers.get("session_start")?.(
+      { type: "session_start", reason: "startup" } as never,
+      ctx,
+    );
+    const toolsBefore = pi.activeTools();
 
-    await pi.commands.get("harness")?.handler("standard", ctx);
+    await pi.commands.get("system")?.handler("prompt full", ctx);
+    const prompt = await pi.handlers.get("before_agent_start")?.(
+      { type: "before_agent_start", systemPrompt: "Pi Base" } as never,
+      ctx,
+    ) as { systemPrompt?: string } | undefined;
 
     expect(runtime.harness.current()).toBe("standard");
-    expect(pi.appended).toContainEqual(["picode.harness-tier", { tier: "standard" }]);
-    expect(reload).toHaveBeenCalledOnce();
+    expect(pi.activeTools()).toEqual(toolsBefore);
+    expect(pi.appended).toContainEqual(["picode.prompt-level", { level: "full" }]);
+    expect(prompt?.systemPrompt).toContain("Picode TDD Harness");
+    expect(prompt?.systemPrompt).toContain("changes guidance only");
+    expect(prompt?.systemPrompt).toContain("Active harness: standard");
+    expect(notify).toHaveBeenCalledWith(expect.stringContaining("full"), "info");
+  });
+
+  it("restores an explicit prompt level independently of the harness tier", async () => {
+    const pi = fakePi();
+    const runtime = createRuntime();
+    registerPicodeBridge(pi.api, runtime);
+    const ctx = {
+      ...fakeContext(true),
+      sessionManager: {
+        getSessionId: () => "restored-prompt-level",
+        getBranch: () => [
+          { type: "custom", customType: "picode.harness-tier", data: { tier: "simple" } },
+          { type: "custom", customType: "picode.prompt-level", data: { level: "lean" } },
+        ],
+      },
+    } as unknown as ExtensionContext;
+    await pi.handlers.get("session_start")?.(
+      { type: "session_start", reason: "resume" } as never,
+      ctx,
+    );
+    const prompt = await pi.handlers.get("before_agent_start")?.(
+      { type: "before_agent_start", systemPrompt: "Pi Base" } as never,
+      ctx,
+    ) as { systemPrompt?: string } | undefined;
+
+    expect(runtime.harness.current()).toBe("simple");
+    expect(prompt?.systemPrompt).toContain("Picode Harness Core (Lean)");
+    expect(pi.activeTools()).not.toContain("todo_write");
   });
 
   it("restores and changes the session permission tier through /permissions", async () => {
@@ -343,6 +433,83 @@ describe("Pi 0.84 Bridge feasibility seam", () => {
         customType: "picode.task-capsule",
         content: expect.stringContaining("Implement the next acceptance slice"),
       }));
+    });
+  });
+
+  it("captures changed files and unresolved Todo facts in a sealed Capsule", async () => {
+    await withTempPicodeDir(async (picodeDir) => {
+      const pi = fakePi();
+      (pi.api as unknown as { exec: ExtensionAPI["exec"] }).exec = vi.fn(async (_command, args) => {
+        if (args[0] === "rev-parse") return { code: 0, stdout: "abc123\n", stderr: "", killed: false };
+        if (args[0] === "status") return { code: 0, stdout: " M src/migrate.ts\n?? test/new.test.ts\n", stderr: "", killed: false };
+        if (args[0] === "diff" && args.includes("--name-only")) {
+          return { code: 0, stdout: "src/migrate.ts\0", stderr: "", killed: false };
+        }
+        if (args[0] === "diff") return { code: 0, stdout: "diff", stderr: "", killed: false };
+        if (args[0] === "ls-files") return { code: 0, stdout: "test/new.test.ts\0", stderr: "", killed: false };
+        if (args[0] === "hash-object") return { code: 0, stdout: "blob123\n", stderr: "", killed: false };
+        throw new Error(`unexpected git args ${args.join(" ")}`);
+      }) as ExtensionAPI["exec"];
+      const runtime = createRuntime();
+      registerPicodeBridge(pi.api, runtime);
+      const startCtx = {
+        cwd: "C:/repo",
+        sessionManager: { getSessionId: () => "capsule-facts-session", getBranch: () => [] },
+        ui: { setStatus: vi.fn() },
+      } as unknown as ExtensionContext;
+      await pi.handlers.get("session_start")?.(
+        { type: "session_start", reason: "startup" } as never,
+        startCtx,
+      );
+      const task = await runtime.taskIngress.accept({
+        source: "pi-session",
+        externalId: "capsule-facts-session",
+        title: "capsule-facts-session",
+        harnessTier: "simple",
+        workspace: "C:/repo",
+      });
+      expect(task.ok).toBe(true);
+      if (!task.ok) return;
+      await runtime.store.saveTaskTodos({
+        version: 1,
+        taskId: task.value.taskId,
+        updatedAt: new Date().toISOString(),
+        items: [{ id: "todo-1", content: "Resolve replay ordering", status: "pending" }],
+      });
+      mkdirSync(join(picodeDir, "evidence"), { recursive: true });
+      writeFileSync(join(picodeDir, "evidence", "202608.jsonl"), `${JSON.stringify({
+        ts: "2026-08-09T00:00:00.000Z",
+        kind: "tdd.red",
+        taskId: task.value.taskId,
+        payload: { gateId: "saveguard" },
+      })}\n`);
+      const persistedEntries: Array<[string, unknown]> = [];
+      const commandCtx = {
+        ...startCtx,
+        ui: { notify: vi.fn() },
+        newSession: async (options: {
+          setup?: (manager: { appendCustomEntry(type: string, data: unknown): string }) => Promise<void>;
+          withSession?: (ctx: ExtensionContext) => Promise<void>;
+        }) => {
+          await options.setup?.({
+            appendCustomEntry(type, data) { persistedEntries.push([type, data]); return "entry-1"; },
+          });
+          return { cancelled: false };
+        },
+      } as unknown as ExtensionContext;
+
+      await pi.commands.get("slice")?.handler("Continue integration", commandCtx);
+
+      const capsule = persistedEntries.find(([type]) => type === "picode.task-capsule")?.[1] as {
+        filesTouched?: string[];
+        openQuestions?: string[];
+        verificationRefs?: Array<{ kind?: string; locator?: string }>;
+      } | undefined;
+      expect(capsule?.filesTouched).toEqual(["src/migrate.ts", "test/new.test.ts"]);
+      expect(capsule?.openQuestions).toEqual(["Resolve replay ordering"]);
+      expect(capsule?.verificationRefs).toEqual([
+        expect.objectContaining({ kind: "evidence", locator: "evidence/202608.jsonl#L1" }),
+      ]);
     });
   });
 
@@ -813,6 +980,17 @@ describe("Pi 0.84 Bridge feasibility seam", () => {
       expect(prompt?.systemPrompt).toContain("Picode TDD Harness");
       expect(blocked).toEqual({ block: true, reason: expect.stringContaining("recorded RED") });
       expect(pi.tools.has("harness_result")).toBe(true);
+      const begun = await pi.tools.get("harness_result")?.execute(
+        "begin-red",
+        { action: "begin" },
+        undefined,
+        undefined,
+        ctx,
+      );
+      expect(begun?.content).toEqual([{
+        type: "text",
+        text: expect.stringContaining("RED evidence pending"),
+      }]);
     });
   });
 

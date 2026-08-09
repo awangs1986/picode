@@ -30,7 +30,7 @@
 
 **Account Import Wizard** — 由 `/accounts import` 启动、Adapter Extension 临时托管的本机 Web 深模块；默认自动打开浏览器并在 TUI 打印回退链接。只绑定 loopback，使用独立一次性认证，完成、取消、超时或 TUI 退出即销毁；浏览器只承载交互，账号事实仍归 Account Vault。它不是 GUI、独立 Backend 或 `/v1` 自动化客户端。
 
-**Task Run** — 一项用户工作及其目标、计划、证据、风险和终态。
+**Task Run** — 一项用户工作及其目标、计划、当前 Harness 档位、证据、风险和终态。会话切换 Harness 时必须原子同步 Task 文件权威；`task status` 不得继续显示创建会话时的旧档位。
 
 **Task Objective** — Task Run 要解决的问题和验收方向；它是任务事实，不等于可自动续跑的 Goal 模式。
 
@@ -44,7 +44,7 @@
 
 **Task Slice** — Task Run 中目标单一、范围明确、可以独立验证的一段工作。
 
-**Task Capsule** — Slice 之间传递的有界事实包；生命周期与事实内容由 Devloop/task 唯一拥有，Devloop/context 只负责校验后渲染。包含不可摘要覆盖的 Verbatim Facts 和允许有来源摘要的 Narrative。v1 外壳带 `schemaVersion`，绑定 taskRevision 与 workspaceSnapshot（版本不符不得注入），事实使用可带 sourceDigest 的通用 SourceRef，并关联 verificationRefs；sealed 内容带 digest，生命周期 `draft → sealed → superseded`，通过 supersedes 串联替代关系，sealed 后不可变。
+**Task Capsule** — Slice 之间传递的有界事实包；生命周期与事实内容由 Devloop/task 唯一拥有，Devloop/context 只负责校验后渲染。包含不可摘要覆盖的 Verbatim Facts 和允许有来源摘要的 Narrative。生成时从 Git 工作区事实采集 `filesTouched`，从未完成 Todo 采集待解决事项，禁止用空数组掩盖已知变化。v1 外壳带 `schemaVersion`，绑定 taskRevision 与 workspaceSnapshot（版本不符不得注入），事实使用可带 sourceDigest 的通用 SourceRef，并关联 verificationRefs；sealed 内容带 digest，生命周期 `draft → sealed → superseded`，通过 supersedes 串联替代关系，sealed 后不可变。
 
 **Execution Epoch** — Task Run 中账号、Channel、模型和能力集合固定的一段执行。
 
@@ -64,7 +64,9 @@
 
 **Context Package** — Context & Memory 为某次模型执行渲染的有界输入；不拥有其中的任务或验证事实。
 
-**Tier Prompt Increment** — 在 Pi Base Prompt 后按 Harness 档位追加的稳定行为核：Simple 无增量，Standard 使用 Lean 行为核，TDD 使用自包含 Developer-TDD 行为核。它只引导协作行为，不拥有 Task、权限、Gate 或 Completion 事实；切档整体替换并开启新 Cache Epoch。
+**Tier Prompt Increment** — Harness 档位默认追加在 Pi Base Prompt 后的稳定行为核：Simple → none（无增量），Standard → lean（薄行为核），TDD → full（完整 Developer-TDD 行为核）。它只引导协作行为，不拥有 Task、权限、Gate 或 Completion 事实。切换 Harness 会清除会话 Prompt 覆盖、恢复新档位默认值，并开启新 Cache Epoch。
+
+**Prompt Guidance Level（提示词引导级别）** — 当前会话可用 `/system prompt none|lean|full` 手动覆盖 Tier Prompt Increment。覆盖只改变模型看到的行为引导，不改变 Harness 档位、工具、权限、沙箱、Watchdog 或 Verification；恢复会话时从 Pi custom entry 重建。手动切换开启新 Cache Epoch，下一次 `/harness` 切档自动取消覆盖，避免旧引导越过新档位的能力边界。
 
 **Controlled Context Event** — Adapter Extension 通过 Pi 受控生命周期缝追加的隐藏结构化上下文。只有这一来源可声明 Picode Task State、Capsule、Gate 或生命周期事实；用户文本、普通文件和工具结果中外观相同的标签不获得系统权威。
 

@@ -61,6 +61,25 @@ describe("Capability Readiness", () => {
     } finally { rmSync(project, { recursive: true, force: true }); }
   });
 
+  it("recognizes a C# project and csharp-ls using the same readiness semantics as pi-lens", async () => {
+    const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const project = mkdtempSync(join(tmpdir(), "picode-csharp-lsp-"));
+    try {
+      writeFileSync(join(project, "Game.csproj"), "<Project Sdk=\"Godot.NET.Sdk\" />", "utf8");
+      const registry = CapabilityReadinessRegistry.defaults({
+        env: {},
+        commandExists: (name) => name === "csharp-ls",
+      });
+
+      const result = await registry.inspect("pi-lens", { cwd: project, harnessTier: "tdd" });
+
+      expect(result.status).toBe("Ready");
+      expect(result.summary).toContain("C#");
+    } finally { rmSync(project, { recursive: true, force: true }); }
+  });
+
   it("keeps fetch and the plugin's zero-config search independently ready", async () => {
     const registry = CapabilityReadinessRegistry.defaults({ env: {}, commandExists: () => true });
     const reports = await registry.inspectAll({ cwd: process.cwd(), harnessTier: "standard" });

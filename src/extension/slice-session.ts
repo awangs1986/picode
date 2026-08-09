@@ -9,7 +9,7 @@ import type { PicodeRuntime } from "./index.ts";
 export const TASK_BINDING_ENTRY_TYPE = "picode.task-binding";
 export const TASK_CAPSULE_MESSAGE_TYPE = "picode.task-capsule";
 
-interface TaskBinding {
+export interface TaskBinding {
   taskId: string;
   taskRevision: number;
 }
@@ -19,7 +19,7 @@ function sessionIdOf(ctx: Pick<ExtensionContext, "cwd" | "sessionManager">): str
   return typeof manager.getSessionId === "function" ? manager.getSessionId() : `ephemeral:${ctx.cwd}`;
 }
 
-function bindingFromBranch(entries: readonly unknown[]): TaskBinding | undefined {
+export function restoreTaskBinding(entries: readonly unknown[]): TaskBinding | undefined {
   let binding: TaskBinding | undefined;
   for (const entry of entries) {
     if (typeof entry !== "object" || entry === null) continue;
@@ -47,6 +47,7 @@ export class SliceSessionCoordinator {
   constructor(
     private readonly runtime: PicodeRuntime,
     private readonly snapshotOf: (cwd: string) => Promise<WorkspaceSnapshotRef> = async (cwd) => ({ repo: cwd }),
+    private readonly filesTouchedOf: (cwd: string) => Promise<string[]> = async () => [],
   ) {}
 
   currentTaskId(): string | undefined {
@@ -55,6 +56,12 @@ export class SliceSessionCoordinator {
 
   currentTaskRevision(): number | undefined {
     return this.binding?.taskRevision;
+  }
+
+  async syncHarnessTier(tier: HarnessTier): Promise<void> {
+    if (this.binding === undefined) return;
+    const updated = await this.runtime.taskIngress.updateHarnessTier(this.binding.taskId, tier);
+    if (!updated.ok) throw new Error(updated.error.message);
   }
 
   taskState(mode: HarnessTier, phase: string, requiredContextRefs: string[]): TaskStateHeader | undefined {
@@ -79,7 +86,7 @@ export class SliceSessionCoordinator {
     this.hardBoundary = false;
     this.hardBoundaryDeferred = false;
     this.hardBoundaryDeferUsed = false;
-    const restored = bindingFromBranch(ctx.sessionManager.getBranch());
+    const restored = restoreTaskBinding(ctx.sessionManager.getBranch());
     if (restored !== undefined) {
       this.binding = restored;
       this.sessionId = sessionIdOf(ctx);
@@ -98,6 +105,10 @@ export class SliceSessionCoordinator {
     });
     if (!accepted.ok) throw new Error(accepted.error.message);
     this.binding = { taskId: accepted.value.taskId, taskRevision: 1 };
+    const sessionManager = ctx.sessionManager as {
+      appendCustomEntry?: (type: string, data: unknown) => unknown;
+    };
+    sessionManager.appendCustomEntry?.(TASK_BINDING_ENTRY_TYPE, this.binding);
     this.sessionId = sessionIdOf(ctx);
     this.taskTitle = title;
   }
@@ -155,15 +166,20 @@ export class SliceSessionCoordinator {
     const todos = await this.runtime.store.loadTaskTodos(binding.taskId);
     const taskJson = JSON.stringify(task.value);
     const workspaceSnapshot = await this.snapshotOf(ctx.cwd);
+    const filesTouched = await this.filesTouchedOf(ctx.cwd);
+    const verificationRefs = this.runtime.store.loadTaskVerificationRefs(binding.taskId);
     const todoFacts = todos.ok
       ? todos.value.items.filter((item) => item.status !== "completed")
         .map((item) => `Todo (${item.status}): ${item.content}`)
+      : [];
+    const openQuestions = todos.ok
+      ? todos.value.items.filter((item) => item.status !== "completed").map((item) => item.content)
       : [];
     const sealed = sealCapsule(createCapsule({
       taskId: binding.taskId,
       taskRevision: binding.taskRevision,
       workspaceSnapshot,
-      verificationRefs: [],
+      verificationRefs: verificationRefs.ok ? verificationRefs.value : [],
       intent: normalizedIntent,
       verbatimFacts: [{
         text: `Task: ${task.value.title}`,
@@ -181,8 +197,8 @@ export class SliceSessionCoordinator {
         source: { kind: "session" as const, id: sessionIdOf(ctx), locator: "task-todos" },
       }))],
       decisions: [],
-      filesTouched: [],
-      openQuestions: [],
+      filesTouched,
+      openQuestions,
       nextSteps: [normalizedIntent],
       narrative: "Fresh context continuation created explicitly by the user.",
     }));

@@ -85,18 +85,32 @@ export class WorktreeRegistry {
         (w) => normalizeWorkspaceId(w.workspaceId) === normalizeWorkspaceId(workspaceId),
       );
       if (existing !== undefined) {
-        if (existing.taskId === taskId) return ok(undefined);
-        if (existing.persistent === true || isProcessAlive(existing.pid)) {
+        if (existing.taskId === taskId) {
+          if (existing.persistent === true || existing.pid === process.pid) return ok(undefined);
+          if (isProcessAlive(existing.pid)) {
+            return err(
+              "engine/workspace-has-writer",
+              `workspace ${workspaceId} is already active in another process for task ${taskId}`,
+            );
+          }
+          // The same task is recovering after an abnormal exit. Replace the
+          // dead short-lived owner with this process instead of preserving the
+          // stale pid through the old idempotent path.
+          file.writers = file.writers.filter(
+            (w) => normalizeWorkspaceId(w.workspaceId) !== normalizeWorkspaceId(workspaceId),
+          );
+        } else if (existing.persistent === true || isProcessAlive(existing.pid)) {
           return err(
             "engine/workspace-has-writer",
             `workspace ${workspaceId} is being written by task ${existing.taskId}; ` +
               `use a managed worktree for parallel writes`,
           );
+        } else {
+          // 残留写手（进程已死）：清除后接管
+          file.writers = file.writers.filter(
+            (w) => normalizeWorkspaceId(w.workspaceId) !== normalizeWorkspaceId(workspaceId),
+          );
         }
-        // 残留写手（进程已死）：清除后接管
-        file.writers = file.writers.filter(
-          (w) => normalizeWorkspaceId(w.workspaceId) !== normalizeWorkspaceId(workspaceId),
-        );
       }
       file.writers.push({
         workspaceId,
@@ -154,7 +168,13 @@ export class WorktreeRegistry {
   }
 
   list(): WorktreeFile {
-    return this.load();
+    const file = this.load();
+    return {
+      ...file,
+      // Explicit persistent CLI leases remain visible until release. Runtime
+      // leases whose owner died are not active and must not appear as writers.
+      writers: file.writers.filter((writer) => writer.persistent === true || isProcessAlive(writer.pid)),
+    };
   }
 }
 

@@ -180,7 +180,16 @@ function required(value: string | undefined, label: string): string {
 }
 
 const SUBJECT_HELP: Record<string, string> = {
-  run: "Usage: picode run --prompt <text> [--cwd <dir>] [--session <id>] [--harness simple|standard|tdd] [--permissions readonly|auto|full] [--non-interactive]",
+  run: "Usage: picode run --prompt <text> [--cwd <dir>] [--session <id>] [--harness simple|standard|tdd] [--permissions readonly|auto|full] [--timeout-ms <ms>] [--non-interactive]",
+  rpc: `Usage: picode rpc
+
+Serve versioned NDJSON requests on stdin and stream correlated events on stdout.
+
+Methods:
+  run.start         params: prompt, cwd?, session?, harnessTier?, permissionTier?, timeoutMs?
+  approval.respond  params: requestId, action=once|session|session-full|deny
+  run.cancel        params: runId
+  command.execute   params: argv[]`,
   session: "Usage: picode session list|create|resume|switch|branch|send|events [options]",
   subagent: "Usage: picode subagent status|stop|resume --session <id> [--run <id>] [--message <text>]",
   slice: "Usage: picode slice create --session <id> --intent <text>",

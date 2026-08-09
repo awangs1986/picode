@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
 import { RpcControlDriver } from "../../src/control/rpc-driver.ts";
 import { ControlRpcServer } from "../../src/control/rpc-server.ts";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { restoreTaskBinding } from "../../src/extension/slice-session.ts";
 
 const root = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const scratch = mkdtempSync(join(tmpdir(), "picode-scripted-"));
@@ -63,6 +65,51 @@ describe("no-key real Agent Loop", () => {
     expect(await driver.harnessTier(sessionFile as string)).toBe(harnessTier);
   }, 30_000);
 
+  it("preserves requested run policy and exposes task identity through the public RPC stream", async () => {
+    const driver = new RpcControlDriver({
+      packageRoot: root,
+      piEntry: join(root, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "cli.js"),
+      cwd: scratch,
+      env: { ...process.env, PICODE_DIR: join(scratch, "rpc-run-policy-data") },
+      extraExtensions: [join(root, "test", "fixtures", "scripted-model-extension.ts")],
+    });
+    const output: Array<{ id: string; event?: string; payload?: unknown }> = [];
+    const server = new ControlRpcServer(driver, (message) => output.push(message as typeof output[number]));
+
+    await server.receive({
+      version: 1,
+      id: "run-policy",
+      method: "run.start",
+      params: {
+        prompt: "public rpc run policy",
+        provider: "picode-scripted-test",
+        model: "fixture",
+        harnessTier: "tdd",
+        permissionTier: "full",
+        timeoutMs: 20_000,
+      },
+    });
+    await server.settle();
+
+    const started = output.find((message) => message.event === "run.started")?.payload as {
+      sessionFile?: string;
+      taskId?: string;
+      effectiveHarnessTier?: string;
+      effectivePermissionTier?: string;
+    } | undefined;
+    expect(started).toMatchObject({
+      effectiveHarnessTier: "tdd",
+      effectivePermissionTier: "full",
+      taskId: expect.any(String),
+    });
+    expect(started?.sessionFile).toBeTypeOf("string");
+    expect(await driver.harnessTier(started?.sessionFile as string)).toBe("tdd");
+    expect(await driver.permissionTier(started?.sessionFile as string)).toBe("full");
+    expect(await driver.taskStatus(started?.taskId as string)).toMatchObject({
+      task: { harnessTier: "tdd" },
+    });
+  }, 30_000);
+
   it("applies requested harness and permission tiers when reusing an existing session", async () => {
     const driver = new RpcControlDriver({
       packageRoot: root,
@@ -91,6 +138,17 @@ describe("no-key real Agent Loop", () => {
     expect(events.find((event) => event.kind === "run.started")).toMatchObject({
       payload: { effectiveHarnessTier: "tdd", effectivePermissionTier: "full" },
     });
+    const binding = restoreTaskBinding(
+      SessionManager.open(identity.sessionFile as string).getBranch(),
+    );
+    expect(binding?.taskId).toBeTypeOf("string");
+    if (binding !== undefined) {
+      await driver.setHarnessTier(identity.sessionFile as string, "standard");
+      const status = await driver.taskStatus(binding.taskId) as {
+        task?: { harnessTier?: string };
+      };
+      expect(status.task?.harnessTier).toBe("standard");
+    }
   }, 30_000);
 
   it("creates a pre-seeded headless session below the configured PICODE_DIR", async () => {
@@ -202,6 +260,16 @@ describe("no-key real Agent Loop", () => {
     await server.receive({ version: 1, id: "deny", method: "approval.respond", params: { requestId: approval?.id, action: "deny" } });
     await server.settle();
     expect(existsSync(effect)).toBe(false);
+  }, 30_000);
+
+  it("readonly headless runs cannot create a side effect without approval", async () => {
+    const effect = join(scratch, "approval-effect.txt");
+    rmSync(effect, { force: true });
+    const driver = new RpcControlDriver({ packageRoot: root, piEntry: join(root, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "cli.js"), cwd: scratch, env: { ...process.env, PICODE_DIR: join(scratch, "approval-readonly") }, extraExtensions: [join(root, "test", "fixtures", "scripted-model-extension.ts")] });
+    const events = [];
+    for await (const event of driver.run({ prompt: "TOOL:WRITE", provider: "picode-scripted-test", model: "fixture", permissionTier: "readonly", nonInteractive: true, timeoutMs: 20_000 })) events.push(event);
+    expect(existsSync(effect)).toBe(false);
+    expect(events.some((event) => event.kind === "approval.required")).toBe(true);
   }, 30_000);
 
   it("TDD host blocks a production side effect before RED even with full permission", async () => {
