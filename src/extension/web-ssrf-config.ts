@@ -12,7 +12,6 @@ export interface TunSsrfCompatibilityResult {
   changed: boolean;
   range?: string;
 }
-
 interface LookupAddress { address: string; family: number }
 
 function isTunFakeIp(address: string): boolean {
@@ -75,4 +74,3 @@ export async function ensureTunSsrfCompatibility(options: {
   }
   return { detected: true, changed: true, range: FAKE_IP_RANGE };
 }
-

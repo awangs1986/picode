@@ -1,7 +1,7 @@
 # Picode 网站开发全功能黑盒验收剧本
 
-> 适用对象：独立测试人员或测试 Agent。  
-> 被测对象：正式安装的 `picode`，不是源码函数、Vitest 或测试替身。  
+> 适用对象：独立测试人员或测试 Agent。
+> 被测对象：正式安装的 `picode`，不是源码函数、Vitest 或测试替身。
 > 验收任务：使用 Picode 从零开发一个可构建、可测试的 TypeScript 网站，并在同一项目中覆盖 Picode 当前公开的开发 Workflow、工具面与控制面。
 
 ## 1. 核心判定纪律
@@ -53,7 +53,7 @@
 Web 资料必须通过工具取得：
 
 1. 使用 Web Search 搜索 `MDN prefers-reduced-motion accessibility`；
-2. 使用 Web Fetch 抓取  
+2. 使用 Web Fetch 抓取
    `https://developer.mozilla.org/en-US/docs/Web/CSS/@media/prefers-reduced-motion`；
 3. 从抓取内容提取至少一条可验证事实，写入网站来源区；
 4. 搜索与抓取必须分别留下独立工具调用，不能只用模型记忆。
