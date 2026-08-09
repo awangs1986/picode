@@ -61,7 +61,7 @@ bus. Picode does not run a separate Core service.
 |---|---|---|
 | `simple` | Small edits, experiments, simple pages | Native Pi prompt and core tools; no engineering governance injection |
 | `standard` | Everyday medium-project development | Permissions, sandbox, Todo, Subagents, Worktree, Slice, and discoverable extensions |
-| `tdd` | Features with explicit acceptance criteria | RED must be proven before production writes; Target Gate, independent Reviewer, Integration Smoke, and same-snapshot confirmation are required before completion |
+| `tdd` | Features with explicit acceptance criteria | RED must be proven before production writes; Target Gate, independent Reviewer, Integration Smoke, and same-snapshot confirmation are required before completion; a technical Reviewer failure gets one retry before an explicit QA handoff |
 
 Inside TUI:
 
@@ -148,11 +148,10 @@ patterns, and lessons within their applicable scope and licenses:
 - **pi-subagents**: delegation, asynchronous work, lifecycle artifacts, Worktree isolation, and Watchdog review.
 - **pi-landstrip**: cross-platform sandbox provider seam; policy remains owned by Picode Guard. Windows Harness sessions use the system PowerShell host within the same sandbox boundary to avoid Git Bash/AppContainer launch failures.
 - **pi-mcp-adapter**: external MCP search, description, calls, and approval arbitration.
-- **mattpocock/skills + Picode `/plan`**: a pinned snapshot ships with Picode; the first explicit `/plan` materializes the `grill-with-docs` dependency closure and reloads the session. Picode has no separate Plan/Goal plugin and never prompts for an external install.
+- **mattpocock/skills + Picode `/plan`**: a pinned software-engineering Skills snapshot ships with Picode; the first explicit `/plan` materializes the `grill-with-docs` dependency closure and reloads the session, while startup never loads the whole collection. Picode has no separate Plan/Goal plugin and never prompts for an external install.
 - **pi-web-access**: web search and fetch extension available to the Simple tier.
 - **pi-cache-optimizer**: provider cache compatibility and hit-rate diagnostics; prompt rewriting is disabled.
 - **pi-lens**: LSP diagnostics and impact assistance.
-- **mattpocock/skills**: pinned software-engineering skill snapshot; nothing is loaded at startup, and explicit commands materialize only the requested closure.
 - **Herdr**: optional multi-task terminal orchestration runtime; it does not replace the Pi Subagent foundation.
 - **Codebase Memory MCP**: optional repository structure indexing and long-term memory provider.
 - **Grok Build**: reference for project-context discovery, tool surfaces, permission approval, and task-state presentation.
@@ -169,10 +168,19 @@ npm run smoke:pi-rpc
 npm run smoke:package
 ```
 
-Current baseline: 68 test files and 413 tests pass. TypeScript, module boundaries,
+Current baseline: 77 test files and 495 tests pass. TypeScript, module boundaries,
 locked dependencies, real Pi RPC, npm packaging, installation, and CLI doctor smoke
-are verified. See [P0-P4-ACCEPTANCE.md](docs/verification/P0-P4-ACCEPTANCE.md) for the
-evidence record.
+are verified.
+
+The August 2026 Godot 4.7 .NET vertical black-box run also verified that Picode can
+obtain the official Godot asset through its own web/download path, drive NUnit, build,
+and headless smoke checks for a C# project, discover `csharp-ls`, run a Subagent, and
+preserve Slice/Capsule and Worktree state. Regression tests now cover the issues found
+there: a technical Reviewer failure trapping a valid GREEN candidate, timed-out Gates
+leaking descendants, and dead Writer Leases. The complete Chinese test story is in
+[the Godot TetraShift end-to-end taskbook](docs/verification/GODOT-TETRASHIFT-END-TO-END-TEST.zh.md).
+This does not mean every platform or optional MCP setup has passed release acceptance.
+See [P0-P4-ACCEPTANCE.md](docs/verification/P0-P4-ACCEPTANCE.md) for the baseline evidence.
 
 ## Roadmap
 

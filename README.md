@@ -59,7 +59,7 @@ flowchart TD
 |---|---|---|
 | `simple` | 小改动、实验、简单页面 | 保留 Pi 原生提示词和基础工具，零工程治理注入 |
 | `standard` | 日常中型开发 | 权限、沙箱、Todo、Subagent、Worktree、Slice、可发现扩展 |
-| `tdd` | 需要明确验收的功能 | 先证明 RED，再允许生产代码写入；Target Gate、独立 Reviewer、Integration Smoke、同快照确认后才能完成 |
+| `tdd` | 需要明确验收的功能 | 先证明 RED，再允许生产代码写入；Target Gate、独立 Reviewer、Integration Smoke、同快照确认后才能完成；Reviewer 技术失败只允许一次重试，仍不可用则如实转交 QA |
 
 在 TUI 中输入：
 
@@ -148,11 +148,10 @@ Picode 不是把这些项目整体复制进来，而是按稳定接口、许可�
 - **pi-subagents**：Subagent 委派、异步任务、生命周期工件、Worktree 隔离和 Watchdog Review。
 - **pi-landstrip**：跨平台沙箱 Provider 的调用侧；策略仍由 Picode Guard 决定。Windows Harness 在同一沙箱边界内使用系统 PowerShell，避免 Git Bash/AppContainer 启动失败。
 - **pi-mcp-adapter**：外部 MCP 的搜索、描述、调用和审批仲裁。
-- **mattpocock/skills + Picode `/plan`**：随包携带固定快照；首次显式 `/plan` 时按需物化 `grill-with-docs` 依赖闭包并重载会话，Picode 不再维护独立的 Plan/Goal 插件，也不弹外部安装提示。
+- **mattpocock/skills + Picode `/plan`**：随包携带固定的软件工程 Skills 快照；首次显式 `/plan` 时按需物化 `grill-with-docs` 依赖闭包并重载会话，启动时不整体加载。Picode 不再维护独立的 Plan/Goal 插件，也不弹外部安装提示。
 - **pi-web-access**：Simple 档可用的 Web 搜索/抓取扩展。
 - **pi-cache-optimizer**：Provider 缓存兼容与命中率诊断；Picode 禁止其改写提示词。
 - **pi-lens**：LSP 诊断和影响范围辅助。
-- **mattpocock/skills**：固定版本的软件工程 Skills 快照；不在启动时整体加载，按用户显式指令物化对应技能。
 - **Herdr**：可选的多任务终端编排 Runtime；不替代 Pi Subagent 底座。
 - **Codebase Memory MCP**：可选的代码库结构索引和长期记忆 Provider。
 - **Grok Build**：项目上下文发现、工具面、权限审批和任务状态呈现的参考对象。
@@ -169,8 +168,16 @@ npm run smoke:pi-rpc
 npm run smoke:package
 ```
 
-当前基线：68 个测试文件、413 项测试通过；TypeScript、模块边界、锁定依赖、真实
-Pi RPC、npm 打包安装和 CLI doctor smoke 均已验证。详细证据见
+当前基线：77 个测试文件、495 项测试通过；TypeScript、模块边界、锁定依赖、真实
+Pi RPC、npm 打包安装和 CLI doctor smoke 均已验证。
+
+2026 年 8 月的 Godot 4.7 .NET 纵向黑盒测试进一步验证了：Picode 可以通过自身
+Web/下载链路取得官方 Godot 资产，驱动 C# 项目的 NUnit、构建与无头 Smoke，发现
+`csharp-ls`，运行 Subagent，并保存 Slice/Capsule 与 Worktree 状态。测试暴露的
+Reviewer 技术失败锁死 GREEN、Gate 超时遗留子进程和死亡 Writer Lease 已加入回归
+测试并修复。完整故事与复测步骤见
+[Godot TetraShift 端到端任务书](docs/verification/GODOT-TETRASHIFT-END-TO-END-TEST.zh.md)；
+这仍不代表跨平台和所有可选 MCP 配置已经通过发布验收。详细基础证据见
 [P0-P4-ACCEPTANCE.md](docs/verification/P0-P4-ACCEPTANCE.md)。
 
 ## 未来计划
