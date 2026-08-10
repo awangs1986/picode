@@ -82,6 +82,7 @@ export interface BridgeOptions {
   ) => Promise<void> | void;
   onSessionReady?: (ctx: ExtensionContext) => Promise<void> | void;
   onReinstall?: (ctx: ExtensionCommandContext) => Promise<void> | void;
+  onServe?: (ctx: ExtensionCommandContext) => Promise<{ endpoint: string; pairingCode: string; expiresAt: string }>;
   startAccountImport?: (
     onImported: AccountImportCompleteHandler,
   ) => Promise<{ url: URL; browserOpened: boolean }>;
@@ -766,6 +767,25 @@ export function registerPicodeBridge(
           : block),
       };
     }
+  });
+
+  pi.registerCommand("server", {
+    description: "Start Picode Remote Serve Mode for the current persisted Chat",
+    handler: async (_args, ctx) => {
+      if (options.onServe === undefined) {
+        ctx.ui.notify("Picode Remote Serve is unavailable in this host.", "error");
+        return;
+      }
+      try {
+        const result = await options.onServe(ctx);
+        ctx.ui.notify(
+          `Picode Remote ready: ${result.endpoint} · temporary KEY ${result.pairingCode} · expires ${result.expiresAt}`,
+          "info",
+        );
+      } catch (cause) {
+        ctx.ui.notify(`Picode Remote could not start: ${cause instanceof Error ? cause.message : String(cause)}`, "error");
+      }
+    },
   });
 
   pi.registerCommand("picode-compact", {

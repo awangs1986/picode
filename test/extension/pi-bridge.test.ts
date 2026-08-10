@@ -449,6 +449,19 @@ describe("Pi 0.84 Bridge feasibility seam", () => {
     });
   });
 
+  it("starts Serve Mode from /server and reports the endpoint and temporary KEY", async () => {
+    const pi = fakePi();
+    const onServe = vi.fn(async () => ({ endpoint: "https://100.76.176.18:7878", pairingCode: "2075", expiresAt: "2026-08-10T04:00:00.000Z" }));
+    registerPicodeBridge(pi.api, createRuntime(), { onServe });
+    const notify = vi.fn();
+    const ctx = { ...fakeContext(true), ui: { notify } } as unknown as ExtensionContext;
+
+    await pi.commands.get("server")?.handler("", ctx);
+
+    expect(onServe).toHaveBeenCalledWith(ctx);
+    expect(notify).toHaveBeenCalledWith(expect.stringContaining("temporary KEY 2075"), "info");
+  });
+
   it("exposes the missing-only recommendation flow through /reinstall", async () => {
     const pi = fakePi();
     const onReinstall = vi.fn(async () => {});

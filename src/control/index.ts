@@ -15,6 +15,7 @@ Usage:
   picode tui [pi options]        Start Pi explicitly
   picode run [options]           Run one headless turn
   picode rpc                     Serve versioned NDJSON on stdin/stdout
+  picode serve [options]         Start the trusted-LAN Picode Remote Host
   picode session <action>        List, create, resume, switch, branch, send, or read events
   picode subagent <action>       Inspect, stop, or resume pi-subagents runs
   picode slice create            Seal a Capsule and continue in a fresh session
@@ -44,9 +45,16 @@ export interface SessionIdentity {
   sessionFile?: string;
 }
 
+export interface ControlImage {
+  type: "image";
+  data: string;
+  mimeType: string;
+}
+
 export interface ControlDriver {
   run(input: {
     prompt: string;
+    images?: ControlImage[];
     cwd?: string;
     session?: string;
     provider?: string;
@@ -58,6 +66,7 @@ export interface ControlDriver {
   }): AsyncIterable<ControlEvent>;
   respondApproval?(requestId: string, action: "once" | "session" | "session-full" | "deny"): Promise<unknown>;
   cancelRun?(runId: string): Promise<unknown>;
+  steerRun?(runId: string, message: string): Promise<unknown>;
   createSession(input: { id?: string; cwd?: string }): Promise<SessionIdentity>;
   listSessions(): Promise<unknown>;
   resumeSession(session: string): Promise<SessionIdentity>;
@@ -89,6 +98,9 @@ export interface ControlDriver {
   setHarnessTier(session: string, tier: "simple" | "standard" | "tdd"): Promise<string>;
   permissionTier(session: string): Promise<string>;
   setPermissionTier(session: string, tier: "readonly" | "auto" | "full" | "danger-full-access"): Promise<string>;
+  sessionModelState?(session: string): Promise<unknown>;
+  setSessionModel?(session: string, provider: string, modelId: string): Promise<unknown>;
+  setSessionThinking?(session: string, level: "off" | "minimal" | "low" | "medium" | "high" | "xhigh"): Promise<unknown>;
   importAccount(): AsyncIterable<ControlEvent>;
   listAccounts(): Promise<unknown>;
   useAccount(accountId: string): Promise<unknown>;
@@ -181,6 +193,7 @@ function required(value: string | undefined, label: string): string {
 
 const SUBJECT_HELP: Record<string, string> = {
   run: "Usage: picode run --prompt <text> [--cwd <dir>] [--session <id>] [--harness simple|standard|tdd] [--permissions readonly|auto|full|danger-full-access] [--timeout-ms <ms>] [--non-interactive]",
+  serve: "Usage: picode serve [--bind <ipv4>] [--port <port>] [--name <name>] [--workspace <dir>] [--no-qr]",
   rpc: `Usage: picode rpc
 
 Serve versioned NDJSON requests on stdin and stream correlated events on stdout.

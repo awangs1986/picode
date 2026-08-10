@@ -1,4 +1,4 @@
-import { executeControlCommand, type ControlDriver, type ControlEvent } from "./index.ts";
+import { executeControlCommand, type ControlDriver, type ControlEvent, type ControlImage } from "./index.ts";
 
 export type RpcRequest = { version: number; id: string; method: string; params?: Record<string, unknown> };
 export type RpcMessage =
@@ -6,8 +6,11 @@ export type RpcMessage =
   | { version: 1; id: string; result: unknown }
   | { version: 1; id: string; error: { code: string; message: string } };
 
-function text(value: unknown, name: string): string {
+const MAX_PROMPT_BYTES = 128 * 1024;
+
+function text(value: unknown, name: string, maxBytes?: number): string {
   if (typeof value !== "string" || value.trim() === "") throw new Error(`missing ${name}`);
+  if (maxBytes !== undefined && Buffer.byteLength(value, "utf8") > maxBytes) throw new Error(`${name} exceeds 128 KiB`);
   return value;
 }
 
@@ -15,6 +18,19 @@ function harnessTier(value: unknown): "simple" | "standard" | "tdd" | undefined 
   if (value === undefined) return undefined;
   if (value === "simple" || value === "standard" || value === "tdd") return value;
   throw new Error(`invalid harness tier: ${String(value)}`);
+}
+
+function images(value: unknown): ControlImage[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length > 4) throw new Error("images must be an array with at most four items");
+  return value.map((item) => {
+    if (typeof item !== "object" || item === null) throw new Error("invalid image");
+    const row = item as Record<string, unknown>;
+    if (row.type !== "image" || typeof row.data !== "string" || typeof row.mimeType !== "string" || !row.mimeType.startsWith("image/")) throw new Error("invalid image");
+    if (row.data.length > 1024 * 1024 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(row.data)) throw new Error("invalid image base64");
+    if (Buffer.byteLength(row.data, "base64") > 768 * 1024) throw new Error("image exceeds 768 KiB");
+    return { type: "image", data: row.data, mimeType: row.mimeType };
+  });
 }
 
 function permissionTier(value: unknown): "readonly" | "auto" | "full" | "danger-full-access" | undefined {
@@ -38,8 +54,10 @@ export class ControlRpcServer {
         const params = request.params ?? {};
         const requestedHarnessTier = harnessTier(params.harnessTier);
         const requestedPermissionTier = permissionTier(params.permissionTier);
+        const requestedImages = images(params.images);
         const task = this.stream(request.id, this.driver.run({
-          prompt: text(params.prompt, "prompt"),
+          prompt: text(params.prompt, "prompt", MAX_PROMPT_BYTES),
+          ...(requestedImages === undefined ? {} : { images: requestedImages }),
           ...(typeof params.cwd === "string" ? { cwd: params.cwd } : {}),
           ...(typeof params.session === "string" ? { session: params.session } : {}),
           ...(typeof params.provider === "string" ? { provider: params.provider } : {}),

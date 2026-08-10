@@ -38,5 +38,12 @@ export const dataPaths = {
   apiLock: () => join(picodeDir(), "api.lock"),
   apiToken: () => join(picodeDir(), "api-token"),
   apiPort: () => join(picodeDir(), "api-port"),
+  serve: () => join(picodeDir(), "serve"),
+  serveLock: () => join(picodeDir(), "serve", "serve.lock"),
+  serveIdentityKey: () => join(picodeDir(), "serve", "identity-key.pem"),
+  serveIdentityCert: () => join(picodeDir(), "serve", "identity-cert.pem"),
+  serveDevices: () => join(picodeDir(), "serve", "devices.json"),
+  serveRequests: () => join(picodeDir(), "serve", "requests.json"),
+  serveInfo: () => join(picodeDir(), "serve", "active.json"),
   workspaceFence: () => join(picodeDir(), "workspace-fence.json"),
 };

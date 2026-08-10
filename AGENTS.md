@@ -15,6 +15,13 @@ Store, Engine, Guard, or Devloop Interfaces and is composed by the Adapter
 Extension. Do not introduce a second Runtime, Task, Session, Account, or Evidence
 authority.
 
+`serve/` is a transport adapter, not a fifth domain module. Standalone
+`picode serve` may own a foreground headless Pi Runtime; TUI `/server` must bind
+to the already-running Pi session and must not spawn a second writer. Remote
+`command.execute` is read-only. Chat mutation uses dedicated Control methods and
+the Writer Lease, while workspace, permission, capability, account, and model
+availability remain Host-authoritative.
+
 ## Verification
 
 - Work test-first at the documented Interface seam.

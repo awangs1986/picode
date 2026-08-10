@@ -4,14 +4,14 @@
  * - shared 只能 import shared；
  * - 四个领域模块（store/engine/guard/devloop）只能 import shared 和自己；
  *   跨模块协作经 shared 里的接口类型 + 组合根注入；
- * - extension/、control/ 与 api/ 是允许 import 全部模块的组合层。
+ * - extension/、control/、api/ 与 serve/ 是允许 import 全部模块的适配/组合层。
  */
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 
 const SRC = resolve(new URL("..", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1"), "src");
 const DOMAIN = ["store", "engine", "guard", "devloop"];
-const COMPOSITION = ["extension", "control", "api"];
+const COMPOSITION = ["extension", "control", "api", "serve"];
 
 function walk(dir) {
   return readdirSync(dir).flatMap((name) => {

@@ -56,7 +56,22 @@ loopback listener、一次性认证、OAuth callback、来源选择和超时都�
   TUI 退出时撤销。
 - Interface 的结果是结构化 `ImportOutcome`（applied/skipped/warnings/
   activeAccountChanged），供组合根刷新 TUI 并在需要时开启 Execution Epoch；
-  页面文案不是事实 Interface。
+页面文案不是事实 Interface。
+
+### 1.2.1 Remote Serve Adapter Seam（P5）
+
+`serve/` 是 HTTPS/WSS 传输与配对 Adapter，不是第五个领域模块，也不拥有
+Chat、Task、Guard、Account 或 Model 事实。它可以组合 Control、Store 与 Shared
+接口，但不得自行修改领域状态。
+
+- 独立 `picode serve --workspace <path>` 是显式无头入口，可以持有自己的前台
+  Pi Runtime；工作区必须由 PC 参数显式授权。
+- Pi TUI 中 `/server` 绑定当前运行的 Pi Authority。模型回合、取消、Steering、
+  模型和 Thinking 切换都回到该 TUI；不得另启 Pi RPC writer。
+- `command.execute` 只开放查询命令。写 Chat 只能走带 Chat Writer Lease 的专用
+  RPC；权限、Harness、能力、Worktree 和账号变更保持 PC-only。
+- Android/网页客户端只持有投影和请求权。设备令牌只存 Host 哈希，Host 私钥、
+  凭据、缓存、日志和 scripted demo 均不属于可合并或可返回的数据面。
 
 ### 1.3 V2 P1-02～P1-05 复用 Seam
 

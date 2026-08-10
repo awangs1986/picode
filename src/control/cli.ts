@@ -4,6 +4,7 @@ import { executeControlCommand } from "./index.ts";
 import { RpcControlDriver } from "./rpc-driver.ts";
 import { ControlRpcServer, type RpcRequest } from "./rpc-server.ts";
 import { createInterface } from "node:readline";
+import { runServeCli } from "../serve/cli.ts";
 
 export async function runControlCli(input: {
   argv: string[];
@@ -16,6 +17,14 @@ export async function runControlCli(input: {
       cwd: process.cwd(),
       env: process.env,
     });
+  if (input.argv[0] === "serve") {
+    return runServeCli({
+      argv: input.argv.slice(1),
+      driver,
+      stdout: (line) => process.stdout.write(`${line}\n`),
+      stderr: (line) => process.stderr.write(`${line}\n`),
+    });
+  }
   const rpcHelp = input.argv[0] === "rpc" && (input.argv.includes("--help") || input.argv.includes("-h"));
   if (input.argv[0] === "rpc" && !rpcHelp) {
     const server = new ControlRpcServer(driver, (message) => process.stdout.write(`${JSON.stringify(message)}\n`));

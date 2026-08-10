@@ -165,6 +165,7 @@ export class RpcControlDriver implements ControlDriver {
 
   async *run(input: {
     prompt: string;
+    images?: Array<{ type: "image"; data: string; mimeType: string }>;
     cwd?: string;
     session?: string;
     provider?: string;
@@ -268,7 +269,7 @@ export class RpcControlDriver implements ControlDriver {
             }
           }
         } else {
-          await client.prompt(input.prompt);
+          await client.prompt(input.prompt, input.images);
         }
         if (input.nonInteractive) {
           const started = Date.now();
@@ -347,6 +348,13 @@ export class RpcControlDriver implements ControlDriver {
     active.queue.push(asEvent("run.cancelled", { runId }));
     await active.client.abort();
     return { runId, cancelled: true };
+  }
+
+  async steerRun(runId: string, message: string): Promise<unknown> {
+    const active = this.activeRuns.get(runId);
+    if (active === undefined) throw new Error(`run not found: ${runId}`);
+    await active.client.steer(message);
+    return { runId, steered: true };
   }
 
   async createSession(input: { id?: string; cwd?: string }): Promise<SessionIdentity> {
@@ -737,6 +745,54 @@ export class RpcControlDriver implements ControlDriver {
     const manager = await this.sessionManager(session);
     manager.appendCustomEntry(PERMISSION_ENTRY_TYPE, { tier });
     return tier;
+  }
+
+  async sessionModelState(session: string): Promise<unknown> {
+    const identity = await resolveSession(session, this.sessionsRoot());
+    const client = this.client({ session: identity.sessionFile ?? session });
+    try {
+      await client.start();
+      const [state, models, thinkingLevels, harnessTier, permissionTier] = await Promise.all([
+        client.getState(), client.getAvailableModels(), client.getAvailableThinkingLevels(),
+        this.harnessTier(session), this.permissionTier(session),
+      ]);
+      return {
+        model: state.model === undefined ? null : { provider: state.model.provider, id: state.model.id, name: state.model.name },
+        thinkingLevel: state.thinkingLevel,
+        harnessTier,
+        permissionTier,
+        availableModels: models.map((model) => ({ provider: model.provider, id: model.id })),
+        availableThinkingLevels: thinkingLevels,
+      };
+    } finally {
+      await client.stop();
+    }
+  }
+
+  async setSessionModel(session: string, provider: string, modelId: string): Promise<unknown> {
+    const identity = await resolveSession(session, this.sessionsRoot());
+    const client = this.client({ session: identity.sessionFile ?? session });
+    try {
+      await client.start();
+      const model = await client.setModel(provider, modelId);
+      const state = await client.getState();
+      return { model, thinkingLevel: state.thinkingLevel };
+    } finally {
+      await client.stop();
+    }
+  }
+
+  async setSessionThinking(session: string, level: "off" | "minimal" | "low" | "medium" | "high" | "xhigh"): Promise<unknown> {
+    const identity = await resolveSession(session, this.sessionsRoot());
+    const client = this.client({ session: identity.sessionFile ?? session });
+    try {
+      await client.start();
+      await client.setThinkingLevel(level);
+      const state = await client.getState();
+      return { model: state.model === undefined ? null : { provider: state.model.provider, id: state.model.id }, thinkingLevel: state.thinkingLevel };
+    } finally {
+      await client.stop();
+    }
   }
 
   async *importAccount(): AsyncIterable<ControlEvent> {

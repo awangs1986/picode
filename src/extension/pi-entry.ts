@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import open from "open";
 import { bootRuntime } from "./index.ts";
 import { registerPicodeBridge } from "./pi-bridge.ts";
@@ -41,8 +41,19 @@ import { registerInputCursorBlink } from "./input-cursor-blink.ts";
 import { registerModelContinuity } from "./model-continuity.ts";
 import { registerInterjection } from "./interjection.ts";
 import { registerThinkingCommand } from "./thinking-command.ts";
+import { startRemoteServe, type RemoteServeHandle } from "../serve/server.ts";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { hostname } from "node:os";
+import { advertisedIpv4 } from "../serve/network.ts";
+import { TuiControlDriver } from "./tui-control-driver.ts";
 
 /** Real Pi extension entry. Keep this file as a thin composition adapter. */
+function remoteAdvertisedHost(): string {
+  const configured = process.env["PICODE_SERVE_ADVERTISE"];
+  return configured !== undefined && configured.trim() !== "" ? configured : (advertisedIpv4() ?? "127.0.0.1");
+}
+
 export default function picodeExtension(pi: ExtensionAPI): void {
   registerThinkingCommand(pi);
   registerInputCursorBlink(pi);
@@ -61,6 +72,8 @@ export default function picodeExtension(pi: ExtensionAPI): void {
     });
   }
   let activeContext: ExtensionContext | undefined;
+  let remoteCommandContext: ExtensionCommandContext | undefined;
+  let remoteServe: RemoteServeHandle | undefined;
   registerMcpApprovalBridge(pi.events, runtime, () => activeContext);
   registerSubagentEnvelopeBridge(pi.events, runtime);
   let capabilitySettingsRestored = false;
@@ -162,6 +175,34 @@ export default function picodeExtension(pi: ExtensionAPI): void {
       runtime.config = completed.value;
       ctx.ui.notify("Picode setup saved. Optional capabilities remain stopped until used.", "info");
     },
+    onServe: async (ctx) => {
+      if (ctx.sessionManager.getSessionFile() === undefined) {
+        throw new Error("current Chat is not persisted yet; send one message before /server");
+      }
+      if (remoteServe === undefined) {
+        remoteCommandContext = ctx;
+        const packageRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
+        const advertisedHost = remoteAdvertisedHost();
+        const driver = new TuiControlDriver({
+          packageRoot,
+          piEntry: join(packageRoot, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "cli.js"),
+          cwd: ctx.cwd,
+          env: { ...process.env },
+        }, pi, remoteCommandContext);
+        remoteServe = await startRemoteServe({
+          driver,
+          bind: process.env["PICODE_SERVE_BIND"] ?? "0.0.0.0",
+          advertisedHost,
+          port: Number(process.env["PICODE_SERVE_PORT"] ?? "7878"),
+          hostName: process.env["PICODE_SERVE_NAME"] ?? hostname(),
+          newChatWorkspace: ctx.cwd,
+        });
+      } else {
+        await remoteServe.rotatePairing();
+      }
+      const pairing = JSON.parse(remoteServe.pairingPayload) as { pairingCode: string; expiresAt: string };
+      return { endpoint: remoteServe.endpoint, pairingCode: pairing.pairingCode, expiresAt: pairing.expiresAt };
+    },
     onReinstall: async (ctx) => {
       const result = await runRecommendedReinstall({
         locale: runtime.config.locale,
@@ -193,6 +234,11 @@ export default function picodeExtension(pi: ExtensionAPI): void {
         },
       });
     },
+  });
+  pi.on("session_shutdown", () => {
+    const handle = remoteServe;
+    remoteServe = undefined;
+    if (handle !== undefined) void handle.close();
   });
   registerModelContinuity(pi, {
     store: {
