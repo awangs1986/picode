@@ -7,7 +7,10 @@ const PERMISSION_NAMES: Record<string, PermissionTier> = {
   readonly: "readonly",
   auto: "auto",
   full: "full",
+  "danger-full-access": "danger-full-access",
 };
+
+const AVAILABLE = "readonly | auto | full | danger-full-access";
 
 export function restorePermissionTier(entries: readonly unknown[]): PermissionTier {
   let tier: PermissionTier = "auto";
@@ -17,7 +20,7 @@ export function restorePermissionTier(entries: readonly unknown[]): PermissionTi
     if (row.type !== "custom" || row.customType !== PERMISSION_ENTRY_TYPE) continue;
     if (typeof row.data !== "object" || row.data === null) continue;
     const candidate = (row.data as { tier?: unknown }).tier;
-    if (candidate === "readonly" || candidate === "auto" || candidate === "full") tier = candidate;
+    if (candidate === "readonly" || candidate === "auto" || candidate === "full" || candidate === "danger-full-access") tier = candidate;
   }
   return tier;
 }
@@ -29,12 +32,12 @@ export function handlePermissionsCommand(
   const value = arg?.trim().toLowerCase();
   if (value === undefined || value === "") {
     return {
-      message: `current permission tier: ${guard.permissionTier()} (available: readonly | auto | full)`,
+      message: `current permission tier: ${guard.permissionTier()} (available: ${AVAILABLE})`,
     };
   }
   const tier = PERMISSION_NAMES[value];
   if (tier === undefined) {
-    return { message: `unknown permission tier "${arg?.trim()}" (available: readonly | auto | full)` };
+    return { message: `unknown permission tier "${arg?.trim()}" (available: ${AVAILABLE})` };
   }
   const before = guard.permissionTier();
   guard.setTier(tier);
@@ -43,6 +46,8 @@ export function handlePermissionsCommand(
     : {
         message: tier === "full"
           ? "permission tier: full for this session; routine operations are allowed, but destructive and Git ownership actions still ask"
+          : tier === "danger-full-access"
+          ? "permission tier: danger-full-access for this session; no approval prompts and no OS sandbox — TDD gates and explicit workspace fences remain active"
           : `permission tier: ${before} → ${tier} for this session`,
         changedTo: tier,
       };

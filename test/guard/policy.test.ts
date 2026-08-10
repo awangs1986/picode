@@ -73,6 +73,24 @@ describe("decide()", () => {
     });
   });
 
+  describe("danger-full-access tier", () => {
+    it("allows every intent without approval, including destructive and Git ownership operations", () => {
+      const intents = [
+        makeIntent({ category: "fs-write", targets: ["/"], destructive: true }),
+        makeIntent({ category: "exec", command: "rm -rf build", destructive: true }),
+        makeIntent({ category: "network", targets: ["https://example.com"] }),
+        makeIntent({ category: "mcp-tool", targets: ["server:write"] }),
+        makeIntent({ category: "git-mutate", command: "git push", targets: ["origin"] }),
+      ];
+      for (const intent of intents) {
+        expect(decide({ tier: "danger-full-access", intent, grants: [] })).toEqual({
+          verdict: "allow",
+          reason: "danger-full-access tier: approvals disabled",
+        });
+      }
+    });
+  });
+
   describe("grants", () => {
     it("allows on exact fingerprint match", () => {
       const intent = makeIntent({ category: "exec", command: "npm test", targets: [] });

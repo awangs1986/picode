@@ -22,12 +22,18 @@ export interface PolicyInput {
 }
 
 export function decide({ tier, intent, grants }: PolicyInput): Decision {
-  // Git 所有权：变更类 Git 操作在任何档位都必须用户确认（MODULES.md §2.3）
+  // Codex parity: approval_policy=never. WorkspaceFence remains a separate,
+  // user-authored policy and is evaluated by Guard before this pure policy.
+  if (tier === "danger-full-access") {
+    return { verdict: "allow", reason: "danger-full-access tier: approvals disabled" };
+  }
+
+  // Git 所有权：除用户显式选择 danger-full-access 外均需确认。
   if (intent.category === "git-mutate") {
     return { verdict: "ask", reason: "git-ownership: mutation requires explicit user consent" };
   }
 
-  // 破坏性操作：full 档也不自动放行（R0 §10.2 全局允许的上限）
+  // 破坏性操作：full 档也不自动放行；danger-full-access 已在上方显式处理。
   if (intent.destructive) {
     return { verdict: "ask", reason: "destructive operation always asks" };
   }

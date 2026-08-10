@@ -20,7 +20,7 @@ describe("workspace write fence", () => {
           fromWorkspace: oldWorkspace,
           toWorkspace: newWorkspace,
         });
-        const guard = new Guard("full", undefined, undefined, new WorkspaceFence());
+        const guard = new Guard("danger-full-access", undefined, undefined, new WorkspaceFence());
 
         expect(guard.decide({
           category: "fs-write",

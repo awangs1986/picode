@@ -272,6 +272,17 @@ describe("no-key real Agent Loop", () => {
     expect(events.some((event) => event.kind === "approval.required")).toBe(true);
   }, 30_000);
 
+  it("danger-full-access runs a real side effect without an approval event", async () => {
+    const effect = join(scratch, "approval-effect.txt");
+    rmSync(effect, { force: true });
+    const driver = new RpcControlDriver({ packageRoot: root, piEntry: join(root, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "cli.js"), cwd: scratch, env: { ...process.env, PICODE_DIR: join(scratch, "approval-danger-full-access") }, extraExtensions: [join(root, "test", "fixtures", "scripted-model-extension.ts")] });
+    const events = [];
+    for await (const event of driver.run({ prompt: "TOOL:WRITE", provider: "picode-scripted-test", model: "fixture", harnessTier: "standard", permissionTier: "danger-full-access", nonInteractive: true, timeoutMs: 20_000 })) events.push(event);
+    expect(existsSync(effect)).toBe(true);
+    expect(events.some((event) => event.kind === "approval.required")).toBe(false);
+    expect(events.at(-1)?.kind).toBe("run.completed");
+  }, 30_000);
+
   it("TDD host blocks a production side effect before RED even with full permission", async () => {
     const effect = join(scratch, "approval-effect.txt");
     rmSync(effect, { force: true });

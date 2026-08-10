@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { atomicWriteFile, withFileLock } from "../shared/fs.ts";
 import { dataPaths } from "../shared/paths.ts";
-import type { AccountRef, Result } from "../shared/types.ts";
+import type { AccountRef, ModelCapacity, Result } from "../shared/types.ts";
 import { err, ok } from "../shared/types.ts";
 
 /**
@@ -233,6 +233,46 @@ export class AccountsManager {
       return err("store/account-credentials-missing", `no credentials for account: ${accountId}`);
     }
     return ok(account.credentials);
+  }
+
+  /**
+   * Migration seam for accounts imported before model limits were persisted.
+   * Only safe endpoint metadata changes; identity, status and credentials stay byte-for-byte intact.
+   */
+  async updateModelCapacity(
+    accountId: string,
+    capacity: ModelCapacity,
+  ): Promise<Result<AccountRef>> {
+    if (!Number.isSafeInteger(capacity.contextWindow) || capacity.contextWindow < 1_024) {
+      return err("store/account-capacity-invalid", "model context window must be at least 1024 tokens");
+    }
+    if (capacity.maxTokens !== undefined &&
+      (!Number.isSafeInteger(capacity.maxTokens) || capacity.maxTokens < 1_024 ||
+        capacity.maxTokens > capacity.contextWindow)) {
+      return err("store/account-capacity-invalid", "model output limit must fit within its context window");
+    }
+    const path = dataPaths.accounts();
+    try {
+      return await withFileLock(`${path}.lock`, () => {
+        const vault = this.load();
+        if (!vault.ok) return vault;
+        const target = vault.value.accounts.find((account) => account.id === accountId);
+        if (target === undefined) return err("store/account-unknown", `no account: ${accountId}`);
+        target.endpoint = {
+          ...target.endpoint,
+          contextWindow: capacity.contextWindow,
+          ...(capacity.maxTokens === undefined ? {} : { maxTokens: capacity.maxTokens }),
+        };
+        atomicWriteFile(path, JSON.stringify(vault.value, null, 2), { mode: 0o600 });
+        return ok(toRef(target));
+      });
+    } catch (cause) {
+      return err(
+        "store/account-capacity-update-failed",
+        `failed to persist model capacity for account ${accountId}`,
+        cause,
+      );
+    }
   }
 
   /**

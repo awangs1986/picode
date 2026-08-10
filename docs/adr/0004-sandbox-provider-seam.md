@@ -4,6 +4,10 @@
 - 修订记录（2026-08-07，Q9 补充）：landstrip 收窄为**纯沙箱供应商**——`landstrip.maxSubagents: 0` 禁用其 task 工具与自带 agent；Subagent/委派供应商改为 **pi-subagents**（评估与兼容路径见 MODULES.md §3）。子进程沙箱覆盖 = 每个 pi 子进程自行加载 landstrip（环境级扩展发现），以 `subagent:acknowledge-extension` 协议验证加载事实
 - 修订记录（2026-08-08，Windows shell）：`pi-landstrip@0.18.26` 的 POSIX Provider 在标准 AppContainer 下先因 launcher 环境缺失触发 error 203，补齐环境后 Git Bash 仍因 MSYS `BaseNamedObjects` 权限失败。Picode 因此通过公开 `provideLandstripShell()` 接口注册 Windows PowerShell Provider；Guard/landstrip 政策和 AppContainer 保持不变，Linux/macOS 继续使用上游 POSIX Provider。
 - 修订记录（2026-08-08，授权去重）：真实会话证明 Guard 与 landstrip 的默认 agent permission 会对同一工具重复询问。Picode 将 landstrip agent permission 固定为 `allow`，由 Guard 单独负责事前 allow/ask/deny；landstrip 仍负责 OS 隔离与沙箱运行时升级。新增会话级 `/permissions readonly|auto|full`，其中 `full` 不越过破坏性与 Git 所有权确认。
+- 修订记录（2026-08-10，Codex 完全访问对等）：新增显式
+  `danger-full-access` 档位。其语义固定为 Guard 不询问任何 Operation Intent，
+  同时关闭 landstrip OS 沙箱；`full` 的既有安全语义保持不变。TDD Gate 与
+  用户建立的 Workspace Fence 是独立任务契约，不随权限档位失效。
 - 修订记录（2026-08-08，Windows P0–P4 降级）：真实 Documents 工作区复测证明标准 AppContainer 会拒绝进入工作区或长期挂起，无法满足开发工具的正确性。Windows P0–P4 因此只保留 Guard 事前授权与 PowerShell Provider，明确显示“无 OS 沙箱”；Windows 强沙箱整体回到 P5。Linux/macOS 的 landstrip 强制不变。本条取代下文较早的 Windows AppContainer 基线描述。
 - 日期：2026-08-07
 - 决策人：作者

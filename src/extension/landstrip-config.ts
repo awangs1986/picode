@@ -60,7 +60,7 @@ export async function configureLandstripForSession(input: {
       // workspaces (notably Documents) without host ACL provisioning. Keep
       // Guard authorization and the PowerShell provider, but report OS
       // sandboxing as disabled until the P5 Windows provider is available.
-      enabled: process.platform !== "win32",
+      enabled: !policy.unrestricted && process.platform !== "win32",
       shell: { readAccess: process.platform === "win32" ? "policy" : "host" },
       network: {
         allowNetwork: policy.network === "allow",

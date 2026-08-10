@@ -118,6 +118,27 @@ describe("CLI-first Control Interface", () => {
     expect(rpcHelp.join("\n")).toContain("once|session|session-full|deny");
   });
 
+  it("accepts the Codex-equivalent danger-full-access permission tier", async () => {
+    const run = vi.fn(async function* () {
+      yield { version: 1 as const, kind: "run.completed", payload: { sessionId: "s-1" } };
+    });
+    const control = driver({ run });
+    const exitCode = await executeControlCommand([
+      "run",
+      "--prompt",
+      "inspect",
+      "--permissions",
+      "danger-full-access",
+      "--non-interactive",
+    ], { driver: control, stdout: () => undefined, stderr: () => undefined });
+
+    expect(exitCode).toBe(CONTROL_EXIT.completed);
+    expect(control.run).toHaveBeenCalledWith(expect.objectContaining({
+      permissionTier: "danger-full-access",
+      nonInteractive: true,
+    }));
+  });
+
   it("maps a non-interactive approval request to a stable exit code", async () => {
     const stdout: string[] = [];
     const control = driver({

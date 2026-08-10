@@ -28,6 +28,16 @@ describe("compileSandboxPolicy", () => {
     expect(policy.fsWrite).toBe("allow");
   });
 
+  it("danger-full-access requests an unrestricted sandbox", () => {
+    const policy = compileSandboxPolicy("danger-full-access", roots);
+    expect(policy.unrestricted).toBe(true);
+    expect(policy.network).toBe("allow");
+    expect(policy.exec).toBe("allow");
+    expect(policy.fsWrite).toBe("allow");
+    expect(policy.fsWriteOutsideWorkspace).toBe("allow");
+    expect(policy.gitMutate).toBe("allow");
+  });
+
   it("all tiers set fsWriteOutsideWorkspace and gitMutate to ask", () => {
     for (const tier of ["readonly", "auto", "full"] as const) {
       const policy = compileSandboxPolicy(tier, roots);

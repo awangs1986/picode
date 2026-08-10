@@ -5,6 +5,7 @@ import type {
   ToolCallEvent,
   ToolCallEventResult,
 } from "@earendil-works/pi-coding-agent";
+import type { Model } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
@@ -23,6 +24,7 @@ import { handleAccountsCommand } from "./accounts-command.ts";
 import { handleSearchTools } from "./search-tools.ts";
 import { loginProviderIntoVault } from "./provider-login.ts";
 import { PiAccountAdapter } from "./pi-account-adapter.ts";
+import { repairLegacyAccountCapacity } from "./account-capacity-repair.ts";
 import { refreshActiveProviderAccount } from "./provider-refresh.ts";
 import { resolveIntentApproval } from "./approval-ui.ts";
 import { saveConfig } from "../store/config.ts";
@@ -332,6 +334,16 @@ async function suiteReadiness(id: string, cwd: string, tier: HarnessTier): Promi
   return { capabilityId: id, status: "Ready", summary: "Bundled capability is available", missing: [], nextSteps: [], inspectedAt: new Date().toISOString() };
 }
 
+function knownModels(ctx: ExtensionContext): readonly Model<any>[] {
+  const registry = ctx.modelRegistry as Partial<{ getAll(): Model<any>[] }> | undefined;
+  const catalog = registry?.getAll?.();
+  if (catalog !== undefined) return catalog;
+  if (ctx.scopedModels !== undefined && ctx.scopedModels.length > 0) {
+    return ctx.scopedModels.map((entry) => entry.model);
+  }
+  return ctx.model === undefined ? [] : [ctx.model];
+}
+
 export function registerPicodeBridge(
   pi: ExtensionAPI,
   runtime: PicodeRuntime,
@@ -384,6 +396,7 @@ export function registerPicodeBridge(
         active,
         credentials.value,
         ctx.modelRegistry.getProvider(active.provider) !== undefined,
+        knownModels(ctx),
       );
       if (!applied.ok) throw new Error(applied.error.message);
       ctx.ui.notify(`已将 ${active.label} 加载到当前 Pi 会话。`, "info");
@@ -469,11 +482,22 @@ export function registerPicodeBridge(
           ctx.ui.notify?.(`Active account ${account.label} could not be restored: ${credentials.error.message}`, "warning");
           continue;
         }
-        const knownProvider = ["anthropic", "openai", "openai-codex", "cursor"].includes(account.provider) ||
+        const catalog = knownModels(ctx);
+        const repaired = await repairLegacyAccountCapacity(
+          runtime.accounts,
+          account,
+          credentials.value,
+          catalog,
+        );
+        if (!repaired.ok) {
+          ctx.ui.notify?.(`Account ${account.label} capacity could not be refreshed: ${repaired.error.message}`, "warning");
+        }
+        const accountToRestore = repaired.ok ? repaired.value.account : account;
+        const knownProvider = ["anthropic", "openai", "openai-codex", "cursor"].includes(accountToRestore.provider) ||
           ctx.modelRegistry?.getProvider(account.provider) !== undefined;
-        const restored = accountAdapter.apply(account, credentials.value, knownProvider);
+        const restored = accountAdapter.apply(accountToRestore, credentials.value, knownProvider, catalog);
         if (!restored.ok) {
-          ctx.ui.notify?.(`Active account ${account.label} could not be restored: ${restored.error.message}`, "warning");
+          ctx.ui.notify?.(`Active account ${accountToRestore.label} could not be restored: ${restored.error.message}`, "warning");
         }
       }
     }
@@ -707,7 +731,7 @@ export function registerPicodeBridge(
       ctx.abort();
       return;
     }
-    const applied = accountAdapter.apply(active, credentials.value, true);
+    const applied = accountAdapter.apply(active, credentials.value, true, knownModels(ctx));
     if (!applied.ok) {
       ctx.ui.notify(`OAuth refresh failed: ${applied.error.message}`, "error");
       ctx.abort();
@@ -900,7 +924,7 @@ export function registerPicodeBridge(
     },
   });
   pi.registerCommand("permissions", {
-    description: "Show or switch Picode session permissions: readonly, auto, or full",
+    description: "Show or switch Picode session permissions: readonly, auto, full, or danger-full-access",
     handler: async (args, ctx) => {
       const result = handlePermissionsCommand(runtime.guard, args);
       if (result.changedTo !== undefined) {
@@ -909,7 +933,7 @@ export function registerPicodeBridge(
       }
       const level = result.message.startsWith("unknown")
         ? "error"
-        : result.changedTo === "full" ? "warning" : "info";
+        : result.changedTo === "full" || result.changedTo === "danger-full-access" ? "warning" : "info";
       ctx.ui.notify(result.message, level);
     },
   });
@@ -998,10 +1022,22 @@ export function registerPicodeBridge(
           ctx.ui.notify(`error: ${credentials.error.message}`, "error");
           return;
         }
-        const applied = accountAdapter.apply(
+        const catalog = knownModels(ctx);
+        const repaired = await repairLegacyAccountCapacity(
+          runtime.accounts,
           account,
           credentials.value,
+          catalog,
+        );
+        if (!repaired.ok) {
+          ctx.ui.notify(`Account capacity could not be refreshed: ${repaired.error.message}`, "warning");
+        }
+        const accountToApply = repaired.ok ? repaired.value.account : account;
+        const applied = accountAdapter.apply(
+          accountToApply,
+          credentials.value,
           ctx.modelRegistry.getProvider(account.provider) !== undefined,
+          catalog,
         );
         if (!applied.ok) {
           ctx.ui.notify(`error: ${applied.error.message}`, "error");

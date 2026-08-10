@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import type { AccountsManager } from "../store/accounts.ts";
+import type { ModelCapacity } from "../shared/types.ts";
 import type { ChatArchiveFilter, ChatCatalogScan, ChatSort } from "./chat-import-catalog.ts";
 import {
   parseAccountJson,
@@ -12,6 +13,10 @@ import {
   type ChatSource,
   type ChatSourceLocations,
 } from "./chat-source-discovery.ts";
+import {
+  parseTokenLimit,
+  probeModelCapacity,
+} from "./model-capacity.ts";
 
 export type WizardCompletion =
   | {
@@ -66,6 +71,7 @@ export async function startAccountImportWizard(options: {
   timeoutMs?: number;
   discoverAccounts?: () => Promise<AccountImportCandidate[]>;
   discoverChatSources?: () => Promise<ChatSourceLocations>;
+  probeCapacity?: typeof probeModelCapacity;
   chatImport?: WizardChatImport;
   /** Refresh the live Pi provider registry after credentials are durably saved. */
   onImported?: AccountImportCompleteHandler;
@@ -83,6 +89,30 @@ export async function startAccountImportWizard(options: {
     ? undefined
     : await (options.discoverChatSources ?? discoverLocalChatSources)();
   const candidatesById = new Map(candidates.map((item) => [item.id, item]));
+  const enrichCapacity = async (candidate: AccountImportCandidate): Promise<AccountImportCandidate> => {
+    if (candidate.endpoint?.contextWindow !== undefined) return candidate;
+    const baseUrl = candidate.credentials.baseUrl ?? candidate.endpoint?.baseUrl;
+    const modelId = candidate.defaultModel ?? candidate.endpoint?.model;
+    if (baseUrl === undefined || modelId === undefined) return candidate;
+    const probed = await (options.probeCapacity ?? probeModelCapacity)({
+      baseUrl,
+      accessToken: candidate.credentials.accessToken,
+      modelId,
+    });
+    if (!probed.ok) {
+      return { ...candidate, warnings: [...candidate.warnings, `无法自动探测模型上下文上限：${probed.error.message}`] };
+    }
+    if (probed.value === undefined) {
+      return {
+        ...candidate,
+        warnings: [...candidate.warnings, "Provider 模型目录没有公布上下文上限；将优先匹配 Pi 的可信本地模型目录。"],
+      };
+    }
+    return {
+      ...candidate,
+      endpoint: { ...(candidate.endpoint ?? {}), ...probed.value },
+    };
+  };
   const escapeHtml = (value: string): string => value
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
@@ -181,7 +211,7 @@ export async function startAccountImportWizard(options: {
         .map((path) => `<option value="${escapeHtml(path)}"></option>`)
         .join("");
       const candidateRows = renderCandidates(candidates);
-      const accountContent = `<section class="card section"><div class="section-head"><div><h2 class="section-title">本机发现的账号</h2><div class="muted">选择要保存的账号，并单独决定是否立即启用。</div></div><span class="pill">${candidates.length} 个候选</span></div>${candidateRows}</section><section class="card section"><h2 class="section-title">导入账号 JSON</h2><form method="post" action="/preview-json"><div class="field-grid"><label class="label">来源格式<select class="field" name="kind"><option value="codex">Codex</option><option value="claude">Claude</option><option value="cursor">Cursor</option><option value="custom">自定义 API</option></select></label><label class="label">JSON 快照<textarea class="field" name="json" rows="5" required placeholder="粘贴账号 JSON；最大 1 MB"></textarea></label></div><div class="btn-row"><button class="btn" type="submit">预览 JSON</button></div></form><div class="divider"></div><h2 class="section-title">手动添加 API</h2><form method="post" action="/submit"><div class="field-grid three"><label class="label">Provider<input class="field" name="provider" required placeholder="openai / anthropic / cursor"></label><label class="label">账号名称<input class="field" name="label" required></label><label class="label">API Key / Access Token<input class="field" name="accessToken" type="password" required autocomplete="off"></label><label class="label">Refresh Token（可选）<input class="field" name="refreshToken" type="password" autocomplete="off"></label><label class="label">Base URL（可选）<input class="field" name="baseUrl" type="url" placeholder="https://example.com/v1"></label><label class="label">默认模型（可选）<input class="field" name="defaultModel"></label></div><div class="btn-row"><label class="security"><input class="checkbox" type="checkbox" name="activateAfterImport" value="yes" checked>保存后立即启用</label><button class="btn primary" type="submit">保存账号</button></div></form></section>`;
+      const accountContent = `<section class="card section"><div class="section-head"><div><h2 class="section-title">本机发现的账号</h2><div class="muted">选择要保存的账号，并单独决定是否立即启用。</div></div><span class="pill">${candidates.length} 个候选</span></div>${candidateRows}</section><section class="card section"><h2 class="section-title">导入账号 JSON</h2><form method="post" action="/preview-json"><div class="field-grid"><label class="label">来源格式<select class="field" name="kind"><option value="codex">Codex</option><option value="claude">Claude</option><option value="cursor">Cursor</option><option value="custom">自定义 API</option></select></label><label class="label">JSON 快照<textarea class="field" name="json" rows="5" required placeholder="粘贴账号 JSON；最大 1 MB"></textarea></label></div><div class="btn-row"><button class="btn" type="submit">预览 JSON</button></div></form><div class="divider"></div><h2 class="section-title">手动添加 API</h2><form method="post" action="/submit"><div class="field-grid three"><label class="label">Provider<input class="field" name="provider" required placeholder="openai / anthropic / cursor"></label><label class="label">账号名称<input class="field" name="label" required></label><label class="label">API Key / Access Token<input class="field" name="accessToken" type="password" required autocomplete="off"></label><label class="label">Refresh Token（可选）<input class="field" name="refreshToken" type="password" autocomplete="off"></label><label class="label">Base URL（可选）<input class="field" name="baseUrl" type="url" placeholder="https://example.com/v1"></label><label class="label">默认模型（可选）<input class="field" name="defaultModel"></label><label class="label">上下文上限（可选）<input class="field" name="contextWindow" inputmode="numeric" placeholder="自动探测；例如 1000000"></label></div><div class="btn-row"><label class="security"><input class="checkbox" type="checkbox" name="activateAfterImport" value="yes" checked>保存后立即启用</label><button class="btn primary" type="submit">保存账号</button></div></form></section>`;
       const chatContent = options.chatImport === undefined ? "" : `<section class="card section"><div class="section-head"><div><h2 class="section-title">扫描本机聊天</h2><div class="muted">已自动嗅探当前来源的历史目录；路径可直接修改。扫描只读取标题和最后一条可见对话。</div></div>${(selectedLocation?.candidates.length ?? 0) > 0 ? `<span class="pill">已检测目录</span>` : `<span class="pill">使用常规路径</span>`}</div><div class="source-tabs">${sourceTabs}</div><form method="post" action="/chat-scan"><input type="hidden" name="source" value="${selectedSource}"><div class="toolbar"><label class="label">聊天文件或目录<input class="field" name="path" list="chat-source-paths" required value="${escapeHtml(selectedLocation?.defaultPath ?? "")}" placeholder="选择或粘贴历史目录路径"><datalist id="chat-source-paths">${pathOptions}</datalist></label><label class="label">归档状态<select class="field" name="archiveFilter"><option value="active">仅非归档</option><option value="all">全部</option><option value="archived">仅归档</option></select></label><label class="label">排序<select class="field" name="sort"><option value="updated-desc">时间：最新优先</option><option value="updated-asc">时间：最早优先</option><option value="size-desc">大小：从大到小</option><option value="size-asc">大小：从小到大</option></select></label><button class="btn primary" type="submit">扫描聊天</button></div></form></section><div class="card empty">扫描后将在这里显示聊天标题、最近内容、时间、大小和工作区分组。</div>`;
       res.writeHead(200, { ...headers, "content-type": "text/html; charset=utf-8" });
       res.end(view === "chats"
@@ -317,7 +347,7 @@ export async function startAccountImportWizard(options: {
         res.writeHead(400, headers).end("select at least one detected account");
         return;
       }
-      const candidates = selected as AccountImportCandidate[];
+      const candidates = await Promise.all((selected as AccountImportCandidate[]).map(enrichCapacity));
       const activateCandidateId = form.get("activateCandidateId") ?? undefined;
       if (activateCandidateId !== undefined && !selectedIds.includes(activateCandidateId)) {
         res.writeHead(400, headers).end("active account must be selected for import");
@@ -393,6 +423,25 @@ export async function startAccountImportWizard(options: {
       }
       const provider = body.provider.trim().toLowerCase();
       const cursorApiKey = provider === "cursor";
+      const baseUrl = typeof body.baseUrl === "string" && body.baseUrl.trim() !== "" ? body.baseUrl.trim() : undefined;
+      const defaultModel = typeof body.defaultModel === "string" && body.defaultModel.trim() !== "" ? body.defaultModel.trim() : undefined;
+      const explicitContextWindow = parseTokenLimit(body.contextWindow);
+      let capacity: ModelCapacity | undefined = explicitContextWindow === undefined
+        ? undefined
+        : { contextWindow: explicitContextWindow };
+      const importWarnings: string[] = [];
+      if (capacity === undefined && baseUrl !== undefined && defaultModel !== undefined) {
+        const probed = await (options.probeCapacity ?? probeModelCapacity)({
+          baseUrl,
+          accessToken: body.accessToken,
+          modelId: defaultModel,
+        });
+        if (probed.ok) capacity = probed.value;
+        else importWarnings.push(`无法自动探测模型上下文上限：${probed.error.message}`);
+        if (probed.ok && probed.value === undefined) {
+          importWarnings.push("Provider 模型目录没有公布上下文上限；将优先匹配 Pi 的可信本地模型目录。");
+        }
+      }
       const imported = await options.accounts.importCredentials({
         provider,
         piProvider: provider,
@@ -400,18 +449,20 @@ export async function startAccountImportWizard(options: {
         credentials: {
           accessToken: body.accessToken,
           ...(typeof body.refreshToken === "string" ? { refreshToken: body.refreshToken } : {}),
-          ...(typeof body.baseUrl === "string" ? { baseUrl: body.baseUrl } : {}),
+          ...(baseUrl === undefined ? {} : { baseUrl }),
         },
         authKind: "api_key",
         chatCompatible: true,
         ...(cursorApiKey ? { metadata: { credentialKind: "cursor_sdk_api_key" } } : {}),
-        ...(typeof body.baseUrl === "string" || typeof body.defaultModel === "string" ? {
+        ...(baseUrl !== undefined || defaultModel !== undefined || capacity !== undefined ? {
           endpoint: {
-            ...(typeof body.baseUrl === "string" && body.baseUrl !== "" ? { baseUrl: body.baseUrl } : {}),
-            ...(typeof body.defaultModel === "string" && body.defaultModel !== "" ? { model: body.defaultModel } : {}),
+            ...(baseUrl === undefined ? {} : { baseUrl }),
+            ...(defaultModel === undefined ? {} : { model: defaultModel }),
+            ...(capacity === undefined ? {} : capacity),
           },
         } : {}),
-        ...(typeof body.defaultModel === "string" ? { defaultModel: body.defaultModel } : {}),
+        ...(defaultModel === undefined ? {} : { defaultModel }),
+        ...(importWarnings.length === 0 ? {} : { warnings: importWarnings }),
       });
       if (!imported.ok) {
         res.writeHead(500, headers).end(imported.error.message);
@@ -433,7 +484,7 @@ export async function startAccountImportWizard(options: {
         accountId: activated.value.id,
         importedAccountIds: [activated.value.id],
         activeAccountChanged: shouldActivate,
-        warnings: [],
+        warnings: importWarnings,
       };
       await notifyImported(outcome);
       if (options.chatImport === undefined) finish(outcome);

@@ -44,6 +44,28 @@ describe("versioned Control RPC", () => {
     expect(output).toEqual([{ version: 1, id: "bad", error: { code: "control/version-unsupported", message: "unsupported protocol version: 2" } }]);
   });
 
+  it("accepts danger-full-access as an explicit run policy", async () => {
+    let received: unknown;
+    const driver = rpcDriver();
+    driver.run = vi.fn(async function* (input) {
+      received = input;
+      yield { version: 1 as const, kind: "run.completed", payload: { runId: "danger-run" } };
+    });
+    const output: unknown[] = [];
+    const server = new ControlRpcServer(driver, (message) => output.push(message));
+
+    await server.receive({
+      version: 1,
+      id: "danger",
+      method: "run.start",
+      params: { prompt: "x", permissionTier: "danger-full-access" },
+    });
+    await server.settle();
+
+    expect(received).toMatchObject({ prompt: "x", permissionTier: "danger-full-access" });
+    expect(output).toContainEqual(expect.objectContaining({ id: "danger", event: "run.completed" }));
+  });
+
   it.each([
     [{ harnessTier: "strict" }, "invalid harness tier: strict"],
     [{ permissionTier: "unsafe" }, "invalid permission tier: unsafe"],

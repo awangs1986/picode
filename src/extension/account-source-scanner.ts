@@ -3,6 +3,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AccountCredentials } from "../store/accounts.ts";
+import type { AccountRef } from "../shared/types.ts";
+import { capacityFromModelRecord } from "./model-capacity.ts";
 
 export interface AccountImportCandidate {
   id: string;
@@ -15,7 +17,7 @@ export interface AccountImportCandidate {
   piProvider: string;
   authKind: "api_key" | "oauth" | "session";
   chatCompatible: boolean;
-  endpoint?: { baseUrl?: string; api?: string; model?: string };
+  endpoint?: AccountRef["endpoint"];
   metadata?: Record<string, unknown>;
   warnings: string[];
 }
@@ -149,6 +151,7 @@ export function parseAccountJson(kind: SourceKind, text: string, source: string)
   const rows = flatten(parsed);
   const result: AccountImportCandidate[] = [];
   for (const row of rows) {
+    const capacity = capacityFromModelRecord(row);
     if (kind === "codex") {
       const accessToken = firstString(row, [
         ["OPENAI_API_KEY"], ["apiKey"], ["api_key"], ["access_token"], ["accessToken"],
@@ -180,6 +183,7 @@ export function parseAccountJson(kind: SourceKind, text: string, source: string)
           ...(baseUrl === undefined ? {} : { baseUrl }),
           api: "openai-responses",
           ...(defaultModel === undefined ? {} : { model: defaultModel }),
+          ...(capacity === undefined ? {} : capacity),
         },
         warnings: refreshToken === undefined && !isApiKey
           ? ["This Codex OAuth snapshot has no refresh token; chat may stop when it expires."]
@@ -259,6 +263,7 @@ export function parseAccountJson(kind: SourceKind, text: string, source: string)
       endpoint: {
         ...(baseUrl === undefined ? {} : { baseUrl }),
         ...(defaultModel === undefined ? {} : { model: defaultModel }),
+        ...(capacity === undefined ? {} : capacity),
       },
       warnings: [],
     }));

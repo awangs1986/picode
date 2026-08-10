@@ -59,4 +59,20 @@ describe("configureLandstripForSession", () => {
       expect(sandbox.filesystem.denyWrite).toContain("C:/repo-old");
     });
   });
+
+  it("disables the OS sandbox for Codex-equivalent danger-full-access", async () => {
+    await withTempPicodeDir(async (dir) => {
+      const result = await configureLandstripForSession({
+        harnessTier: "standard",
+        permissionTier: "danger-full-access",
+        cwd: "C:/repo",
+        agentDir: dir,
+      });
+
+      expect(result.ok).toBe(true);
+      const sandbox = JSON.parse(readFileSync(`${dir}/sandbox.json`, "utf8"));
+      expect(sandbox.enabled).toBe(false);
+      expect(sandbox.network.allowNetwork).toBe(true);
+    });
+  });
 });

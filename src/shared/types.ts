@@ -29,8 +29,11 @@ export type HarnessTier = "simple" | "standard" | "tdd";
 // 权限与 Guard 契约（MODULES.md §2）
 // ---------------------------------------------------------------------------
 
-/** 权限三档（UX 预设，不是新引擎） */
-export type PermissionTier = "readonly" | "auto" | "full";
+/**
+ * 权限预设（UX 预设，不是新引擎）。full 仍保护破坏性/Git 所有权；
+ * danger-full-access 对齐 Codex 的 AskForApproval::Never + DangerFullAccess。
+ */
+export type PermissionTier = "readonly" | "auto" | "full" | "danger-full-access";
 
 export type IntentCategory =
   | "fs-read"
@@ -173,10 +176,24 @@ export interface AccountRef {
   /** Pi provider registered by the runtime adapter (may differ from source product). */
   piProvider?: string;
   /** Safe endpoint projection. Never contains API keys or bearer credentials. */
-  endpoint?: { baseUrl?: string; api?: string; model?: string };
+  endpoint?: {
+    baseUrl?: string;
+    api?: string;
+    model?: string;
+    /** Provider-declared maximum request context for this model. */
+    contextWindow?: number;
+    /** Provider-declared maximum generated tokens for this model. */
+    maxTokens?: number;
+  };
   metadata?: Record<string, unknown>;
   warnings?: string[];
   notes?: string;
+}
+
+/** Persisted model limits; these are Provider facts, never guessed defaults. */
+export interface ModelCapacity {
+  contextWindow: number;
+  maxTokens?: number;
 }
 
 // ---------------------------------------------------------------------------

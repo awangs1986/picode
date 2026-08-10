@@ -25,7 +25,7 @@ function fakePi() {
 
 function context(
   model: { provider: string; id: string },
-  entries: Array<{ type: string }>,
+  entries: Array<{ type: string; provider?: string; modelId?: string }>,
   models: Array<{ provider: string; id: string }> = [model],
 ): ExtensionContext {
   return {
@@ -41,6 +41,31 @@ function context(
 }
 
 describe("conversation model continuity", () => {
+  it("restores the latest conversation model after its imported provider becomes available", async () => {
+    await withTempPicodeDir(async () => {
+      const pi = fakePi();
+      registerModelContinuity(pi.api);
+      const fallback = { provider: "openai", id: "gpt-5.6-sol" };
+      const conversationModel = { provider: "cursor", id: "grok-4.5:fast" };
+
+      await pi.handlers.get("session_start")?.(
+        { type: "session_start", reason: "resume" },
+        context(fallback, [
+          { type: "model_change", provider: "openai", modelId: "gpt-5.6-sol" },
+          { type: "message" },
+          { type: "model_change", provider: "cursor", modelId: "grok-4.5:fast" },
+          { type: "message" },
+        ], [fallback, conversationModel]),
+      );
+
+      expect(pi.selected).toEqual([conversationModel]);
+      expect(loadConfig()).toMatchObject({
+        ok: true,
+        value: { lastConversationModel: { provider: "cursor", modelId: "grok-4.5:fast" } },
+      });
+    });
+  });
+
   it("makes the resumed conversation's model the default for the next new project", async () => {
     await withTempPicodeDir(async () => {
       expect((await saveConfig({

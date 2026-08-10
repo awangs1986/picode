@@ -106,8 +106,11 @@ picode run --cwd D:\repo --harness tdd --permissions auto `
 - `readonly`：读取自动允许，副作用请求审批。
 - `auto`：工作区内常规操作自动允许，Shell、网络等风险操作请求审批。
 - `full`：常规操作放行，但破坏性操作和 Git 所有权操作仍必须确认。
+- `danger-full-access`：对齐 Codex 完全访问；不询问审批并关闭 OS 沙箱，
+  破坏性操作和 Git 所有权操作也直接放行。TDD Gate 与显式工作区 fence 不变。
 
-`commit`、`merge`、`rebase`、`push`、删除分支不会因为 `full` 而自动放行。
+`commit`、`merge`、`rebase`、`push`、删除分支不会因为 `full` 而自动放行；只有
+用户明确选择 `danger-full-access` 才会无审批执行。
 
 ## 4. 会话管理
 

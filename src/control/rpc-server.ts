@@ -17,9 +17,9 @@ function harnessTier(value: unknown): "simple" | "standard" | "tdd" | undefined 
   throw new Error(`invalid harness tier: ${String(value)}`);
 }
 
-function permissionTier(value: unknown): "readonly" | "auto" | "full" | undefined {
+function permissionTier(value: unknown): "readonly" | "auto" | "full" | "danger-full-access" | undefined {
   if (value === undefined) return undefined;
-  if (value === "readonly" || value === "auto" || value === "full") return value;
+  if (value === "readonly" || value === "auto" || value === "full" || value === "danger-full-access") return value;
   throw new Error(`invalid permission tier: ${String(value)}`);
 }
 

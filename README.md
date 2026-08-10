@@ -83,10 +83,15 @@ flowchart TD
 不带级别时会显示选择菜单。该命令不改变 Harness、工具、权限、沙箱或 Gate；
 下一次切换 Harness 会清除手动覆盖并恢复新档位默认值。
 
-Standard/TDD 会话可用 `/permissions readonly|auto|full` 调整授权密度。默认
+Standard/TDD 会话可用 `/permissions readonly|auto|full|danger-full-access` 调整授权密度。默认
 `auto`；`full` 会在当前会话放行常规命令，仍会询问破坏性操作以及
 commit/merge/push 等 Git 所有权操作，并且不会关闭 OS 沙箱。第一次审批时也
 可以直接选择“Allow routine operations for this session”。
+
+`danger-full-access` 精确对应 Codex 的 `approval_policy=never` 加
+`sandbox_mode=danger-full-access`：当前会话不再弹出工具审批，并关闭 OS 沙箱，
+包括破坏性操作与 Git 所有权操作也会直接执行。它不会取消 TDD Gate，也不会
+覆盖用户通过强制工作区切换建立的旧工作区禁写 fence。仅应在可信仓库中显式使用。
 
 Agent 工作期间可输入 `/insert <补充指令>`：当前工具不会被取消，补充指令会在
 工具完成后、下一次模型调用前插入同一回合。若回合已经结束，它会自动成为新的

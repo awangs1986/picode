@@ -171,12 +171,12 @@ export class RpcControlDriver implements ControlDriver {
     model?: string;
     nonInteractive: boolean;
     timeoutMs?: number;
-    permissionTier?: "readonly" | "auto" | "full";
+    permissionTier?: "readonly" | "auto" | "full" | "danger-full-access";
     harnessTier?: "simple" | "standard" | "tdd";
   }): AsyncIterable<ControlEvent> {
     let session = input.session;
     let effectiveHarnessTier: "simple" | "standard" | "tdd" = "simple";
-    let effectivePermissionTier: "readonly" | "auto" | "full" = "auto";
+    let effectivePermissionTier: "readonly" | "auto" | "full" | "danger-full-access" = "auto";
     if (session === undefined && (input.permissionTier !== undefined || input.harnessTier !== undefined)) {
       const manager = SessionManager.create(input.cwd ?? this.options.cwd ?? process.cwd(), this.sessionsRoot());
       if (input.harnessTier !== undefined) manager.appendCustomEntry(HARNESS_ENTRY_TYPE, { tier: input.harnessTier });
@@ -733,7 +733,7 @@ export class RpcControlDriver implements ControlDriver {
     return restorePermissionTier(manager.getBranch());
   }
 
-  async setPermissionTier(session: string, tier: "readonly" | "auto" | "full"): Promise<string> {
+  async setPermissionTier(session: string, tier: "readonly" | "auto" | "full" | "danger-full-access"): Promise<string> {
     const manager = await this.sessionManager(session);
     manager.appendCustomEntry(PERMISSION_ENTRY_TYPE, { tier });
     return tier;

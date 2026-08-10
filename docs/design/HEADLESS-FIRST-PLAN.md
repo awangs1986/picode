@@ -64,11 +64,14 @@ Interface 必须覆盖：
 ## 4. 无头权限
 
 - 默认 `--non-interactive` 遇到 ask 返回 `approval.required` 并以退出码 3 结束。
-- `--permissions readonly|auto|full` 是本次 Run 的显式用户授权；`full` 仍不能
+- `--permissions readonly|auto|full|danger-full-access` 是本次 Run 的显式用户授权；`full` 仍不能
   自动越过破坏性操作和 Git 所有权。
+- `danger-full-access` 是与 Codex 完全访问对等的显式危险档位：审批策略为 never，
+  OS 沙箱关闭；TDD Gate 和用户设置的 Workspace Fence 仍是独立契约。
 - 长生命周期 `picode rpc` 可响应审批；模型不能伪造 `approval.respond`，只有
   协议客户端输入通道可提交。
-- 不提供 `--yes-to-everything`，不从提示词文本推断授权。
+- 不从提示词文本推断授权；完全访问只能由用户通过结构化参数或 `/permissions`
+  明确选择。
 
 ## 5. 确定性无密钥测试
 

@@ -40,9 +40,11 @@ import {
 import { registerInputCursorBlink } from "./input-cursor-blink.ts";
 import { registerModelContinuity } from "./model-continuity.ts";
 import { registerInterjection } from "./interjection.ts";
+import { registerThinkingCommand } from "./thinking-command.ts";
 
 /** Real Pi extension entry. Keep this file as a thin composition adapter. */
 export default function picodeExtension(pi: ExtensionAPI): void {
+  registerThinkingCommand(pi);
   registerInputCursorBlink(pi);
   registerInterjection(pi);
   registerSubagentControlCommand(pi);

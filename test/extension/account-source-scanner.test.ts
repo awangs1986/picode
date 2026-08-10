@@ -35,10 +35,16 @@ describe("parseAccountJson", () => {
       apiKey: "deep-key",
       baseUrl: "https://api.deepseek.com/v1",
       model: "deepseek-chat",
+      context_window: 128_000,
+      max_output_tokens: 8_192,
     }), "custom.json");
 
     expect(claude[0]).toMatchObject({ provider: "anthropic", label: "claude@example.com" });
-    expect(custom[0]).toMatchObject({ provider: "deepseek", defaultModel: "deepseek-chat" });
+    expect(custom[0]).toMatchObject({
+      provider: "deepseek",
+      defaultModel: "deepseek-chat",
+      endpoint: { baseUrl: "https://api.deepseek.com/v1", model: "deepseek-chat", contextWindow: 128_000, maxTokens: 8_192 },
+    });
   });
 
   it("imports a Codex API key together with its configured reverse-proxy endpoint", async () => {

@@ -53,7 +53,7 @@ export interface ControlDriver {
     model?: string;
     nonInteractive: boolean;
     timeoutMs?: number;
-    permissionTier?: "readonly" | "auto" | "full";
+    permissionTier?: "readonly" | "auto" | "full" | "danger-full-access";
     harnessTier?: "simple" | "standard" | "tdd";
   }): AsyncIterable<ControlEvent>;
   respondApproval?(requestId: string, action: "once" | "session" | "session-full" | "deny"): Promise<unknown>;
@@ -88,7 +88,7 @@ export interface ControlDriver {
   harnessTier(session: string): Promise<string>;
   setHarnessTier(session: string, tier: "simple" | "standard" | "tdd"): Promise<string>;
   permissionTier(session: string): Promise<string>;
-  setPermissionTier(session: string, tier: "readonly" | "auto" | "full"): Promise<string>;
+  setPermissionTier(session: string, tier: "readonly" | "auto" | "full" | "danger-full-access"): Promise<string>;
   importAccount(): AsyncIterable<ControlEvent>;
   listAccounts(): Promise<unknown>;
   useAccount(accountId: string): Promise<unknown>;
@@ -180,7 +180,7 @@ function required(value: string | undefined, label: string): string {
 }
 
 const SUBJECT_HELP: Record<string, string> = {
-  run: "Usage: picode run --prompt <text> [--cwd <dir>] [--session <id>] [--harness simple|standard|tdd] [--permissions readonly|auto|full] [--timeout-ms <ms>] [--non-interactive]",
+  run: "Usage: picode run --prompt <text> [--cwd <dir>] [--session <id>] [--harness simple|standard|tdd] [--permissions readonly|auto|full|danger-full-access] [--timeout-ms <ms>] [--non-interactive]",
   rpc: `Usage: picode rpc
 
 Serve versioned NDJSON requests on stdin and stream correlated events on stdout.
@@ -200,7 +200,7 @@ Methods:
   task: "Usage: picode task status|wait|cancel --task <id> [options]",
   gate: "Usage: picode gate status|evidence --task <id>",
   harness: "Usage: picode harness get|set --session <id> [--tier simple|standard|tdd]",
-  permissions: "Usage: picode permissions get|set --session <id> [--tier readonly|auto|full]",
+  permissions: "Usage: picode permissions get|set --session <id> [--tier readonly|auto|full|danger-full-access]",
   account: "Usage: picode account list|use|import [options]",
   tools: "Usage: picode tools doctor [--cwd <dir>] [--harness simple|standard|tdd] | picode tools search [--query <text>]",
   doctor: "Usage: picode doctor [tools]",
@@ -232,7 +232,7 @@ export async function executeControlCommand(
       const timeoutMs = rawTimeout === undefined ? undefined : Number(rawTimeout);
       if (timeoutMs !== undefined && (!Number.isFinite(timeoutMs) || timeoutMs <= 0)) throw new Error("invalid --timeout-ms");
       const permissionTier = stringFlag(parsed, "--permissions");
-      if (permissionTier !== undefined && permissionTier !== "readonly" && permissionTier !== "auto" && permissionTier !== "full") throw new Error(`invalid permission tier: ${permissionTier}`);
+      if (permissionTier !== undefined && permissionTier !== "readonly" && permissionTier !== "auto" && permissionTier !== "full" && permissionTier !== "danger-full-access") throw new Error(`invalid permission tier: ${permissionTier}`);
       const harnessTier = stringFlag(parsed, "--harness");
       if (harnessTier !== undefined && harnessTier !== "simple" && harnessTier !== "standard" && harnessTier !== "tdd") throw new Error(`invalid harness tier: ${harnessTier}`);
       return emitStream(io.driver.run({
@@ -435,7 +435,7 @@ export async function executeControlCommand(
     if (subject === "permissions" && action === "set") {
       const session = required(stringFlag(parsed, "--session"), "--session");
       const tier = required(stringFlag(parsed, "--tier"), "--tier");
-      if (tier !== "readonly" && tier !== "auto" && tier !== "full") throw new Error(`invalid permission tier: ${tier}`);
+      if (tier !== "readonly" && tier !== "auto" && tier !== "full" && tier !== "danger-full-access") throw new Error(`invalid permission tier: ${tier}`);
       emitJson(io, event("permissions.changed", { session, tier: await io.driver.setPermissionTier(session, tier) }));
       return CONTROL_EXIT.completed;
     }

@@ -10,7 +10,7 @@
 |---|---|---|
 | **Store** | Session Gateway | 文件权威的读写纪律（原子写+文件锁）、Chat/Task 目录索引、单一 Account Vault、外部会话导入（Import Contract Ingester）、备份 |
 | **Engine** | Work & Sandbox + Pi Seam | pi SDK/扩展 API 封装、执行生命周期、Subagent 接入、Work 监督、Managed Worktree、沙箱 Provider 的调用侧 |
-| **Guard** | Authorization & Policy + Capability & Tool Catalog | 三档权限预设、Operation Intent 裁决、approval_fingerprint、能力目录与信任生命周期、扩展状态 |
+| **Guard** | Authorization & Policy + Capability & Tool Catalog | 权限预设、Operation Intent 裁决、approval_fingerprint、能力目录与信任生命周期、扩展状态 |
 | **Devloop** | Task Control + Context & Memory + Verification | Task Run/Slice/Capsule、上下文组装与压缩、Quick Review、TDD 状态机、Gate/Evidence、Completion Label |
 
 合并理由：每个模块对应一个真实交付物，变更节奏不同（Engine 跟 pi 升级走、
@@ -75,11 +75,14 @@ loopback listener、一次性认证、OAuth callback、来源选择和超时都�
 
 ## 2. Guard 设计条目
 
-### 2.1 三档权限（UX 预设）
+### 2.1 权限档位（UX 预设）
 
-`readonly` → `auto`（自动处理常规、危险询问）→ `full`。当前档位属于会话
+`readonly` → `auto`（自动处理常规、危险询问）→ `full` →
+`danger-full-access`。当前档位属于会话
 事实，可用 `/permissions` 查看或切换；`full` 仍不越过破坏性操作和 Git
-所有权确认。Guard 是唯一事前工具授权权威并写 Evidence；pi-mcp-adapter 的
+所有权确认。`danger-full-access` 对齐 Codex 的 `AskForApproval::Never` +
+`DangerFullAccess`，放行所有 Operation Intent 并关闭 OS 沙箱；它不改变 TDD
+状态机，也不覆盖用户明确建立的 Workspace Fence。Guard 是唯一事前工具授权权威并写 Evidence；pi-mcp-adapter 的
 approval 事件翻译到 Guard（ADR-0005）。pi-landstrip 的 agent permission
 固定为 allow，只承接 Guard 编译后的 OS 沙箱政策和运行时访问升级，禁止再弹
 第二套逐工具确认框。
@@ -94,7 +97,8 @@ approval 事件翻译到 Guard（ADR-0005）。pi-landstrip 的 agent permission
   OS 沙箱政策兜底（文件写入/网络仍被罩）。列为已知豁口，P5 评估白名单式
   env 摘要。
 - **Grant 分级**：一次性/会话批准绑定精确指纹（内存态）；首次询问也可把
-  当前会话切成 `full`，一次放行后续常规操作；"永远允许"绑定命令模式不绑
+  当前会话切成 `full`，一次放行后续常规操作；`danger-full-access` 只能由用户
+  通过命令/CLI/RPC 明确选择，不出现在普通审批选项里；"永远允许"绑定命令模式不绑
   指纹（持久化到项目/全局），仍受工作区与破坏性操作上限约束。所有 Grant
   只由 Guard 消费，不再复制进 landstrip agent permission。
 

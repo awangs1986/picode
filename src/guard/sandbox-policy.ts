@@ -10,17 +10,19 @@ import type { PermissionTier } from "../shared/types.ts";
 export type RuleVerdict = "deny" | "ask" | "allow";
 
 export interface CompiledSandboxPolicy {
+  /** true = Codex-equivalent DangerFullAccess; the OS sandbox is bypassed. */
+  unrestricted: boolean;
   /** 工作区边界：写操作只允许这些根之下（Managed Worktree 追加） */
   writableRoots: string[];
-  /** 秘密禁区：任何档位 denyWrite 硬阻断 + 读需 ask */
+  /** 秘密禁区：沙箱档位 denyWrite 硬阻断；danger-full-access 显式绕过 */
   secretZones: string[];
   network: RuleVerdict;
   exec: RuleVerdict;
   fsWrite: RuleVerdict;
-  /** 工作区外写：full 档也不放行（ask） */
-  fsWriteOutsideWorkspace: "deny" | "ask";
-  /** Git 变更类操作永远 ask（Git 所有权，MODULES.md §2.3） */
-  gitMutate: "ask";
+  /** 工作区外写：full 为 ask；danger-full-access 为 allow */
+  fsWriteOutsideWorkspace: RuleVerdict;
+  /** Git 变更类操作默认 ask；danger-full-access 显式放行 */
+  gitMutate: RuleVerdict;
 }
 
 export const DEFAULT_SECRET_ZONES = [
@@ -39,6 +41,7 @@ export function compileSandboxPolicy(
   extraSecretZones: string[] = [],
 ): CompiledSandboxPolicy {
   const base = {
+    unrestricted: false,
     writableRoots: [...workspaceRoots],
     secretZones: [...DEFAULT_SECRET_ZONES, ...extraSecretZones],
     fsWriteOutsideWorkspace: "ask" as const,
@@ -51,5 +54,15 @@ export function compileSandboxPolicy(
       return { ...base, network: "ask", exec: "ask", fsWrite: "allow" };
     case "full":
       return { ...base, network: "allow", exec: "allow", fsWrite: "allow" };
+    case "danger-full-access":
+      return {
+        ...base,
+        unrestricted: true,
+        network: "allow",
+        exec: "allow",
+        fsWrite: "allow",
+        fsWriteOutsideWorkspace: "allow",
+        gitMutate: "allow",
+      };
   }
 }

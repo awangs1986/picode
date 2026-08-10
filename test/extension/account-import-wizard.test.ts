@@ -25,6 +25,10 @@ describe("account import Web Wizard", () => {
         accounts,
         openBrowser: async () => {},
         timeoutMs: 5_000,
+        probeCapacity: async () => ({
+          ok: true,
+          value: { contextWindow: 1_000_000, maxTokens: 64_000 },
+        }),
       });
 
       const { cookie, formUrl } = await bootstrap(wizard.url);
@@ -33,6 +37,7 @@ describe("account import Web Wizard", () => {
       const html = await form.text();
       expect(html).toContain("<form");
       expect(html).toContain("Base URL");
+      expect(html).toContain("上下文上限");
       expect(html).toContain('data-layout="chat-browser"');
       expect(html).toContain("导入中心");
       expect(html).not.toContain(wizard.url.pathname);
@@ -45,6 +50,7 @@ describe("account import Web Wizard", () => {
           label: "Codex reverse proxy",
           accessToken: "cpa_secret",
           baseUrl: "https://proxy.example/v1",
+          defaultModel: "gpt-5.6-terra",
         }),
       });
 
@@ -54,6 +60,12 @@ describe("account import Web Wizard", () => {
       expect(listed.ok && listed.value[0]).toMatchObject({
         provider: "openai",
         label: "Codex reverse proxy",
+        endpoint: {
+          baseUrl: "https://proxy.example/v1",
+          model: "gpt-5.6-terra",
+          contextWindow: 1_000_000,
+          maxTokens: 64_000,
+        },
       });
     });
   });
@@ -83,6 +95,10 @@ describe("account import Web Wizard", () => {
           accounts,
           openBrowser: async () => {},
           discoverAccounts: async () => detected,
+          probeCapacity: async () => ({
+            ok: true,
+            value: { contextWindow: 1_000_000, maxTokens: 64_000 },
+          }),
           onImported: (completion) => { liveRefreshes.push(completion.importedAccountIds); },
           timeoutMs: 5_000,
         });
@@ -109,6 +125,8 @@ describe("account import Web Wizard", () => {
           endpoint: expect.objectContaining({
             baseUrl: "https://proxy.example/v1",
             model: "gpt-5.6-terra",
+            contextWindow: 1_000_000,
+            maxTokens: 64_000,
           }),
         });
         const accountId = listed.ok ? listed.value[0]?.id : undefined;

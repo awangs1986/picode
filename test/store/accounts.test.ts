@@ -303,4 +303,46 @@ describe("AccountsManager", () => {
       });
     });
   });
+
+  describe("updateModelCapacity", () => {
+    it("backfills a legacy account without changing its identity, status, or credentials", async () => {
+      await withTempPicodeDir(async () => {
+        const mgr = new AccountsManager(() => {});
+        const imported = await mgr.importCredentials({
+          stableId: "legacy-proxy",
+          provider: "openai",
+          label: "Legacy proxy",
+          credentials: { accessToken: "keep-secret", baseUrl: "https://proxy.example/v1" },
+          defaultModel: "gpt-5.6-terra",
+          endpoint: { baseUrl: "https://proxy.example/v1", model: "gpt-5.6-terra" },
+        });
+        expect(imported.ok).toBe(true);
+        if (!imported.ok) return;
+        await mgr.setActive(imported.value.id);
+
+        const updated = await mgr.updateModelCapacity(imported.value.id, {
+          contextWindow: 1_000_000,
+          maxTokens: 128_000,
+        });
+
+        expect(updated).toEqual({
+          ok: true,
+          value: expect.objectContaining({
+            id: imported.value.id,
+            status: "active",
+            endpoint: expect.objectContaining({
+              baseUrl: "https://proxy.example/v1",
+              model: "gpt-5.6-terra",
+              contextWindow: 1_000_000,
+              maxTokens: 128_000,
+            }),
+          }),
+        });
+        expect(mgr.credentialsFor(imported.value.id)).toEqual({
+          ok: true,
+          value: { accessToken: "keep-secret", baseUrl: "https://proxy.example/v1" },
+        });
+      });
+    });
+  });
 });

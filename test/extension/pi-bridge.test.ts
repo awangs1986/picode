@@ -297,6 +297,42 @@ describe("Pi 0.84 Bridge feasibility seam", () => {
     expect(notify).toHaveBeenCalledWith(expect.stringContaining("full"), "warning");
   });
 
+  it("exposes and persists Codex-equivalent danger-full-access through /permissions", async () => {
+    const pi = fakePi();
+    const runtime = createRuntime();
+    const permissionReady = vi.fn(async () => {});
+    registerPicodeBridge(pi.api, runtime, { onPermissionTierReady: permissionReady });
+    const notify = vi.fn();
+    const ctx = { ...fakeContext(true), ui: { notify } } as unknown as ExtensionContext;
+
+    await pi.commands.get("permissions")?.handler("danger-full-access", ctx);
+
+    expect(runtime.guard.permissionTier()).toBe("danger-full-access");
+    expect(pi.appended).toContainEqual(["picode.permission-tier", { tier: "danger-full-access" }]);
+    expect(permissionReady).toHaveBeenCalledWith("danger-full-access", ctx);
+    expect(notify).toHaveBeenCalledWith(expect.stringContaining("no approval prompts"), "warning");
+  });
+
+  it("keeps the TDD pre-RED write gate active in danger-full-access", async () => {
+    const pi = fakePi();
+    const runtime = createRuntime();
+    runtime.harness.switchTo("tdd");
+    runtime.guard.setTier("danger-full-access");
+    registerPicodeBridge(pi.api, runtime);
+
+    const result = await pi.handlers.get("tool_call")?.({
+      type: "tool_call",
+      toolCallId: "danger-tdd-write",
+      toolName: "write",
+      input: { path: "src/production.ts", content: "export const value = 1;" },
+    } as never, fakeContext(true));
+
+    expect(result).toEqual({
+      block: true,
+      reason: "TDD requires a recorded RED before production implementation writes",
+    });
+  });
+
   it("restores the permission tier from the Pi session branch", async () => {
     const pi = fakePi();
     const runtime = createRuntime();
@@ -502,7 +538,15 @@ describe("Pi 0.84 Bridge feasibility seam", () => {
       const notify = vi.fn();
       const ctx = {
         ui: { notify },
-        modelRegistry: { getProvider: (id: string) => id === "openai" ? {} : undefined },
+        modelRegistry: {
+          getProvider: (id: string) => id === "openai" ? {} : undefined,
+          getAll: () => [{
+            id: "gpt-5.6-terra",
+            provider: "openai",
+            contextWindow: 1_000_000,
+            maxTokens: 128_000,
+          }],
+        },
       } as unknown as ExtensionContext;
 
       await pi.commands.get("import")?.handler("", ctx);
@@ -702,7 +746,15 @@ describe("Pi 0.84 Bridge feasibility seam", () => {
       const notify = vi.fn();
       const ctx = {
         ui: { notify },
-        modelRegistry: { getProvider: (id: string) => id === "openai" ? {} : undefined },
+        modelRegistry: {
+          getProvider: (id: string) => id === "openai" ? {} : undefined,
+          getAll: () => [{
+            id: "gpt-5.6-terra",
+            provider: "openai",
+            contextWindow: 1_000_000,
+            maxTokens: 128_000,
+          }],
+        },
       } as unknown as ExtensionContext;
 
       await pi.commands.get("accounts")?.handler(`use ${imported.value.id}`, ctx);
@@ -710,6 +762,13 @@ describe("Pi 0.84 Bridge feasibility seam", () => {
       expect(pi.providers.get("openai")).toMatchObject({
         apiKey: "cpa_secret",
         baseUrl: "https://proxy.example/v1",
+      });
+      expect(runtime.accounts.list()).toEqual({
+        ok: true,
+        value: [expect.objectContaining({
+          id: imported.value.id,
+          endpoint: expect.objectContaining({ contextWindow: 1_000_000, maxTokens: 128_000 }),
+        })],
       });
       expect(notify).toHaveBeenCalledWith(expect.stringContaining("active account"), "info");
     });
