@@ -1,6 +1,6 @@
 # Picode V3 P0–P4 验收记录
 
-> 更新：2026-08-08
+> 更新：2026-08-09
 > 工作区：`D:/otherproject/picode/v3`  
 > 规则：`passed` 只表示命令真实运行成功；`not_run` 不折算为绿色。
 
@@ -11,7 +11,8 @@
 | TypeScript | `npm run typecheck` | passed |
 | 四模块边界 | `npm run check:boundaries` | passed |
 | 固定依赖与摘要 | `npm run check:package-metadata`；所有 runtime dependency 精确版本且 lock integrity 存在 | passed |
-| 全量自动测试 | `bun run check`：76 files / 465 tests | passed |
+| 全量自动测试 | `npm run check`：84 files / 528 tests | passed |
+| 第三方 OpenAI 反代压缩 | 原 97,520-token 黑盒会话通过 `/compact`；返回 `compaction_end`、估算压缩后 22,174 tokens、exit 0 | passed |
 | Pi 开发态启动 | `npm run smoke:pi-rpc`；真实 vendored Pi 0.84.0，加载 Picode Extension，执行 `get_state/get_commands/new_session` | passed |
 | 安装产物 | `npm run smoke:package`；真实 `npm pack`、临时安装、CLI doctor、启动 vendored Pi、RPC 新会话 | passed (Windows) |
 | CLI/RPC Control Interface | 产品帮助、一次性 CLI、版本化 NDJSON RPC、审批响应、取消/超时、Session/Harness/Permission/Account/Gate/Tools；正常启动零调试端口 | passed (Windows) |
@@ -24,6 +25,8 @@
 | TOOLS.md | 任务级解析、文件夹信任、紧凑注入、切任务清理 | passed |
 | 缓存诊断 | 真实 Pi usage 投影；system/schema/history/provider/model/baseUrl 摘要；JSONL 不落提示词明文 | passed (structural) |
 | 分档提示词 | Simple 零增量；Standard Lean 与 TDD 自包含行为核经 Pi `before_agent_start` 追加并保留 Base Prompt；作者注释剥离、占位符完整解析 | passed (automated seam) |
+| 网页账号与聊天导入 P0–P1 | 临时 loopback Wizard、多账号原子导入/显式激活、JSON 预览、聊天边界扫描、标题/摘要/时间/大小/归档筛选、去重、选择导入与工作区绑定 | passed (automated seam) |
+| Cursor 连续性 P2–P3 | 固定 `pi-cursor-sdk@0.1.61`；安装态真实加载；隔离 store、严格 resume ledger、checkpoint 失败后的 transcript bootstrap 契约 | passed (automated seam + package smoke) |
 
 ## P1–P4 功能闭环
 
@@ -46,6 +49,7 @@
 | Provider 缓存命中率 | 当前环境无测试 API Key；结构与归因已验证，不能虚构命中率 | not_run |
 | 中型仓库模型驱动 Slice 漂移实验 | 当前环境无测试 Provider；Capsule/换会话结构已验证 | not_run |
 | 三来源真实用户历史性能/失真 | 契约 fixture 已通过，尚未由用户选择真实样本执行 | not_run |
+| Cursor P4 长会话压力与跨客户端恢复 | 本轮明确只实施 P0–P3；真实 Cursor 账号的压缩、跨客户端和压力场景尚未执行 | not_run |
 
 因此，结论是：**P1–P4 可代码化范围已经闭合；Windows 开发态与安装产物通过；
 跨平台、真实 Provider 和真实历史样本属于待执行验收，不能提前标绿。**

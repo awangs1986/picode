@@ -39,7 +39,9 @@ try {
   const filename = packJson[0]?.filename;
   if (typeof filename !== "string") throw new Error("npm pack did not return an artifact filename");
   const tarball = join(packed, filename);
-  runNpm(["install", "--prefix", installed, "--ignore-scripts", "--no-audit", "--no-fund", tarball]);
+  // Keep lifecycle scripts enabled: the artifact is only valid if its pinned Pi
+  // compatibility patch applies in a clean installation.
+  runNpm(["install", "--prefix", installed, "--no-audit", "--no-fund", tarball]);
 
   const manifest = JSON.parse(readFileSync(join(installed, "node_modules", "picode", "package.json"), "utf8"));
   if (manifest.pi?.extensions?.[0] !== "./src/extension/pi-entry.ts") {

@@ -88,8 +88,24 @@ Standard/TDD 会话可用 `/permissions readonly|auto|full` 调整授权密度�
 commit/merge/push 等 Git 所有权操作，并且不会关闭 OS 沙箱。第一次审批时也
 可以直接选择“Allow routine operations for this session”。
 
+如需重新检查推荐组件，在 TUI 输入 `/reinstall`。Picode 会依次检测
+`mattpocock/skills`、Herdr 和 CodebaseMemoryProvider，只对缺失项分别询问；
+已安装项不会重复提示。启用可选能力不等于启动常驻进程。
+
 Pi 原生工具不会被隐藏。长尾能力由 `search_tools` 发现，需要时才激活，避免所有
 工具 Schema 常驻上下文。
+
+需要彻底改到另一个工程时，在 TUI 输入：
+
+```text
+/workspace D:\path\to\new-project
+```
+
+这是强制切换，不是普通的目录跳转。Picode 会先明确警告当前对话上下文不会继承；
+确认后等待当前回合结束，在新工作区的标准 `AGENTS.md` 写入受管边界，重新启动一份
+原版 Pi 会话，并由 Guard 永久拒绝该工作区谱系对旧工作区的写入。Standard/TDD 下
+相同禁令也会编译到 Landstrip 沙箱策略。要保留当前对话，请新开 TUI，而不要使用
+该命令。
 
 ## 运行
 
@@ -148,7 +164,7 @@ Picode 不是把这些项目整体复制进来，而是按稳定接口、许可�
 - **pi-subagents**：Subagent 委派、异步任务、生命周期工件、Worktree 隔离和 Watchdog Review。
 - **pi-landstrip**：跨平台沙箱 Provider 的调用侧；策略仍由 Picode Guard 决定。Windows Harness 在同一沙箱边界内使用系统 PowerShell，避免 Git Bash/AppContainer 启动失败。
 - **pi-mcp-adapter**：外部 MCP 的搜索、描述、调用和审批仲裁。
-- **mattpocock/skills + Picode `/plan`**：随包携带固定的软件工程 Skills 快照；首次显式 `/plan` 时按需物化 `grill-with-docs` 依赖闭包并重载会话，启动时不整体加载。Picode 不再维护独立的 Plan/Goal 插件，也不弹外部安装提示。
+- **mattpocock/skills + Picode `/plan`**：随包携带固定的软件工程 Skills 快照；首次显式 `/plan` 时按需物化 `grill-with-docs` 依赖闭包并重载会话，启动时不整体加载。Picode 不再维护独立的 Plan/Goal 插件；用户也可显式运行 `/reinstall` 检查三项推荐组件。
 - **pi-web-access**：Simple 档可用的 Web 搜索/抓取扩展。
 - **pi-cache-optimizer**：Provider 缓存兼容与命中率诊断；Picode 禁止其改写提示词。
 - **pi-lens**：LSP 诊断和影响范围辅助。

@@ -28,7 +28,7 @@
 
 **Account Vault** — Store 内账号引用、凭据、Provider 单活跃关系与持久化格式的唯一权威。TUI、Web Wizard、OAuth Adapter 和调试面只能通过其 Interface 读取投影或提交变更，不得直接读写另一份账号状态。
 
-**Account Import Wizard** — 由 `/accounts import` 启动、Adapter Extension 临时托管的本机 Web 深模块；默认自动打开浏览器并在 TUI 打印回退链接。只绑定 loopback，使用独立一次性认证，完成、取消、超时或 TUI 退出即销毁；浏览器只承载交互，账号事实仍归 Account Vault。它不是 GUI、独立 Backend 或 `/v1` 自动化客户端。
+**Account Import Wizard** — 由裸 `/import`（主入口）或 `/accounts import`（兼容入口）启动、Adapter Extension 临时托管的本机 Web 深模块；默认自动打开浏览器并在 TUI 打印回退链接。`/import <path.jsonl>` 仍归上游 Pi，执行原生单会话 JSONL 导入。Wizard 只绑定 loopback，使用独立一次性认证，完成、取消、超时或 TUI 退出即销毁；浏览器只承载交互，账号事实仍归 Account Vault。它不是 GUI、独立 Backend 或 `/v1` 自动化客户端。
 
 **Task Run** — 一项用户工作及其目标、计划、当前 Harness 档位、证据、风险和终态。会话切换 Harness 时必须原子同步 Task 文件权威；`task status` 不得继续显示创建会话时的旧档位。
 
@@ -39,6 +39,8 @@
 **Bundled Skill** — 随 Picode 分发、由来源 Commit/许可证/摘要固定的 Skills 快照。它不在启动时整体加载，只有用户显式使用某个指令时才物化对应依赖闭包。
 
 **Skill Materialization** — 将随包 Skill 的一个依赖闭包原子复制到 Picode 私有 Pi skill root 的一次性操作；不覆盖已有用户目录，完成后由 Pi 重载发现，不等于启动后台进程。
+
+**Recommended Component Reinstall** — 用户显式执行 `/reinstall` 时，对 mattpocock/skills、Herdr 与 CodebaseMemoryProvider 分别检查现有安装/能力状态；只询问缺失项。Skills 从随包固定快照物化，外部能力进入 Enabled + Trusted 的二级驻留状态；两者都不等于启动常驻进程。
 
 **Goal Mode** — 被 Picode 明确废弃的独立自动推进插件语义；任务仍可拥有 Objective、Next Steps 和 Capsule，但不得因为存在目标字段而自动继续执行。
 
@@ -138,6 +140,8 @@
 
 **Workspace Identity** — 与 Windows/Linux/macOS 路径文本分离的工作区身份。
 
+**Forced Workspace Switch** — 用户在 TUI 通过 `/workspace <absolute-directory>` 明确确认的破坏上下文边界操作。Adapter Extension 只生成一次性切换请求；Picode Launcher 等待旧 Pi 退出后，以目标目录和全新会话重启 vendored Pi。目标工作区的标准 `AGENTS.md` 保存当前路径和禁止写入的旧路径；Guard 在所有 Harness 档位拒绝旧路径写入，Standard/TDD 另将禁令编译进 Sandbox Provider。它不是 `cd`、不会伪造 Pi 的 cwd，也不继承旧会话上下文。
+
 **Managed Worktree** — 由 Picode 管理、用于隔离并发或高风险开发写入的 Git Worktree。
 
 **Foreign Transcript Snapshot** — 外部 Agent 原始会话的不可变导入副本；不是 Pi 实时 Transcript。
@@ -145,3 +149,13 @@
 **Import Contract** — 版本化的导入交换格式（manifest + Foreign Transcript IR + SourceToolSignature + 附件引用）；来源解析工具与 Picode 核心之间唯一的耦合点。来源格式解析住在核心之外；语义映射（工具痕迹五级判定、归一化投影）由核心内的 ImportCompiler 集中执行。
 
 **Writer Lease** — 同一 Chat Session 在本机某一时刻唯一写入者的短期所有权。
+
+**Account Import Wizard** — 裸 `/import` 或 `/accounts import` 启动的临时 loopback 网页。它只负责扫描、预览和收集用户选择；Account Vault 是凭据权威，Wizard 关闭后不保留第二份状态。账号导入与激活是两个动作，导入不会隐式替换当前账号。带路径的 `/import <path.jsonl>` 保留为 Pi 原生会话导入。
+
+**Chat Source Discovery** — Web 导入页按当前用户和平台嗅探 Codex、Cursor 与 Claude Code 的受支持 JSONL 历史根，选中来源时预填首个存在目录；用户可以改写路径。它不把尚无 Adapter 的 Cursor SQLite 目录伪装成可导入来源，也不扫描 Picode/Pi 自己的登录凭据。
+
+**Chat Import Catalog** — 外部聊天的短生命周期元数据投影：标题、最后一条对话摘要、时间、大小、归档状态、来源与原工作区组。扫描只读文件边界，不把工具日志或推理当作可见对话；选中导入前必须完成本机工作区绑定。
+
+**Cursor Session Ledger** — `pi-cursor-sdk` 写入 Pi 会话 custom entry 的 Cursor Agent 恢复记录，包含 store identity、分支/压缩谱系和发送状态。它是 Cursor 连续性的唯一权威；Picode 不维护平行 ledger。
+
+**Transcript Bootstrap** — Cursor checkpoint 不存在、不匹配或恢复失败时，从当前 Pi transcript 重建给新 Cursor Agent 的上下文。失败必须显示连续性提示，不得静默假装恢复了旧 Agent。

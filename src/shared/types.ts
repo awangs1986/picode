@@ -166,6 +166,16 @@ export interface AccountRef {
   defaultModel?: string;
   /** 同 Provider 可存多个账号，同时只有一个 active */
   status: "active" | "stored" | "unavailable" | "retired";
+  /** Credential kind is descriptive only; secrets remain in the Store vault. */
+  authKind?: "api_key" | "oauth" | "session";
+  /** Some imported credentials are retained for backup but cannot drive Pi chat. */
+  chatCompatible?: boolean;
+  /** Pi provider registered by the runtime adapter (may differ from source product). */
+  piProvider?: string;
+  /** Safe endpoint projection. Never contains API keys or bearer credentials. */
+  endpoint?: { baseUrl?: string; api?: string; model?: string };
+  metadata?: Record<string, unknown>;
+  warnings?: string[];
   notes?: string;
 }
 

@@ -97,6 +97,7 @@ export class TddSessionController {
       review: () => Promise<Result<SourceRef>>;
       integrationContract: GateContract;
       snapshotNow: () => Promise<CandidateSnapshot>;
+      checkpoint?: (checkpoint: TddSessionCheckpoint) => Promise<void> | void;
       targetPassed?: (evidence: GateEvidence) => Promise<void> | void;
     },
   ): Promise<Result<CompletionLabel>> {
@@ -128,6 +129,10 @@ export class TddSessionController {
         ? err("devloop/tdd-gate-failed", evidence.reason)
         : retry;
     }
+    // Persist the passing target and gate state before entering the independent
+    // reviewer. A process interruption during review must not restore the old
+    // RED checkpoint while the Evidence ledger already contains tdd.green.
+    await pipeline.checkpoint?.(this.checkpoint());
     await pipeline.targetPassed?.(evidence);
 
     const review = await pipeline.review();

@@ -62,6 +62,72 @@ function fakeContext(confirm: boolean, cwd = "C:/repo"): ExtensionContext {
 }
 
 describe("Pi 0.84 Bridge feasibility seam", () => {
+  it("restores an active Cursor SDK account into Pi on session startup", async () => {
+    await withTempPicodeDir(async () => {
+      const pi = fakePi();
+      const runtime = createRuntime();
+      const imported = await runtime.accounts.importMany([{
+        stableId: "cursor-sdk",
+        provider: "cursor",
+        piProvider: "cursor",
+        label: "Cursor SDK",
+        authKind: "api_key",
+        chatCompatible: true,
+        credentials: { accessToken: "cursor-secret" },
+      }], "cursor-sdk");
+      expect(imported.ok).toBe(true);
+      registerPicodeBridge(pi.api, runtime);
+      await pi.handlers.get("session_start")?.(
+        { type: "session_start", reason: "resume" } as never,
+        fakeContext(true),
+      );
+
+      expect(pi.providers.get("cursor")).toMatchObject({ apiKey: "cursor-secret" });
+    });
+  });
+
+  it("forces an acknowledged workspace switch through a fresh launcher session", async () => {
+    await withTempPicodeDir(async (dir) => {
+      const oldWorkspace = join(dir, "old-workspace");
+      const newWorkspace = join(dir, "new-workspace");
+      mkdirSync(oldWorkspace);
+      mkdirSync(newWorkspace);
+      const previousLaunchId = process.env.PICODE_LAUNCH_ID;
+      process.env.PICODE_LAUNCH_ID = "bridge-workspace-test";
+      try {
+        const pi = fakePi();
+        registerPicodeBridge(pi.api, createRuntime());
+        const confirm = vi.fn(async () => true);
+        const notify = vi.fn();
+        const shutdown = vi.fn();
+        const waitForIdle = vi.fn(async () => {});
+        const ctx = {
+          cwd: oldWorkspace,
+          ui: { confirm, notify },
+          shutdown,
+          waitForIdle,
+          sessionManager: { getBranch: () => [], getSessionId: () => "workspace-session" },
+        } as unknown as ExtensionContext;
+
+        await pi.commands.get("workspace")?.handler(newWorkspace, ctx);
+
+        expect(confirm).toHaveBeenCalledWith(
+          expect.stringContaining("Force workspace switch"),
+          expect.stringContaining("conversation context"),
+        );
+        expect(waitForIdle).toHaveBeenCalledOnce();
+        expect(shutdown).toHaveBeenCalledOnce();
+        expect(readFileSync(join(newWorkspace, "AGENTS.md"), "utf8"))
+          .toContain("Forbidden previous workspace");
+        expect(readFileSync(join(dir, "workspace-switch-bridge-workspace-test.json"), "utf8"))
+          .toContain(newWorkspace.replaceAll("\\", "\\\\"));
+      } finally {
+        if (previousLaunchId === undefined) delete process.env.PICODE_LAUNCH_ID;
+        else process.env.PICODE_LAUNCH_ID = previousLaunchId;
+      }
+    });
+  });
+
   it("keeps Simple close to Pi and exposes todo plus search primitives in Standard", async () => {
     await withTempPicodeDir(async () => {
       const simplePi = fakePi();
@@ -347,6 +413,18 @@ describe("Pi 0.84 Bridge feasibility seam", () => {
     });
   });
 
+  it("exposes the missing-only recommendation flow through /reinstall", async () => {
+    const pi = fakePi();
+    const onReinstall = vi.fn(async () => {});
+    registerPicodeBridge(pi.api, createRuntime(), { onReinstall });
+    const ctx = fakeContext(true);
+
+    await pi.commands.get("reinstall")?.handler("", ctx);
+
+    expect(onReinstall).toHaveBeenCalledOnce();
+    expect(onReinstall).toHaveBeenCalledWith(ctx);
+  });
+
   it("exposes Account Vault operations through the Pi /accounts command", async () => {
     await withTempPicodeDir(async () => {
       const pi = fakePi();
@@ -373,6 +451,68 @@ describe("Pi 0.84 Bridge feasibility seam", () => {
       expect.stringContaining("http://127.0.0.1:1234/token/"),
       "warning",
     );
+  });
+
+  it("routes bare /import to the Picode Web Wizard without stealing Pi JSONL imports", async () => {
+    const pi = fakePi();
+    const startAccountImport = vi.fn(async () => ({
+      url: new URL("http://127.0.0.1:4321/token/"),
+      browserOpened: true,
+    }));
+    registerPicodeBridge(pi.api, createRuntime(), { startAccountImport });
+    const notify = vi.fn();
+
+    await pi.commands.get("import")?.handler("", { ui: { notify } } as unknown as ExtensionContext);
+
+    expect(startAccountImport).toHaveBeenCalledOnce();
+    expect(notify).toHaveBeenCalledWith(
+      expect.stringContaining("http://127.0.0.1:4321/token/"),
+      "info",
+    );
+  });
+
+  it("loads an imported active Codex proxy into the current Pi model registry", async () => {
+    await withTempPicodeDir(async () => {
+      const pi = fakePi();
+      const runtime = createRuntime();
+      registerPicodeBridge(pi.api, runtime, {
+        startAccountImport: async (onImported) => {
+          const imported = await runtime.accounts.importMany([{
+            stableId: "codex-proxy",
+            provider: "openai",
+            piProvider: "openai",
+            label: "Codex Proxy",
+            credentials: { accessToken: "proxy-secret", baseUrl: "https://proxy.example/v1" },
+            defaultModel: "gpt-5.6-terra",
+            authKind: "api_key",
+            chatCompatible: true,
+          }], "codex-proxy");
+          expect(imported.ok).toBe(true);
+          if (imported.ok) {
+            await onImported({
+              status: "imported",
+              importedAccountIds: imported.value.map((account) => account.id),
+              activeAccountChanged: true,
+              warnings: [],
+            });
+          }
+          return { url: new URL("http://127.0.0.1:4567/token/"), browserOpened: true };
+        },
+      });
+      const notify = vi.fn();
+      const ctx = {
+        ui: { notify },
+        modelRegistry: { getProvider: (id: string) => id === "openai" ? {} : undefined },
+      } as unknown as ExtensionContext;
+
+      await pi.commands.get("import")?.handler("", ctx);
+
+      expect(pi.providers.get("openai")).toMatchObject({
+        apiKey: "proxy-secret",
+        baseUrl: "https://proxy.example/v1",
+      });
+      expect(notify).toHaveBeenCalledWith("已将 Codex Proxy 加载到当前 Pi 会话。", "info");
+    });
   });
 
   it("creates a sealed Capsule and starts a fresh Pi session through /slice", async () => {

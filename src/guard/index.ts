@@ -11,6 +11,7 @@ import { CapabilityCatalog } from "./catalog.ts";
 import { computeFingerprint } from "./fingerprint.ts";
 import { GrantStore } from "./grants.ts";
 import { decide } from "./policy.ts";
+import { WorkspaceFence } from "./workspace-fence.ts";
 
 export { CapabilityCatalog } from "./catalog.ts";
 export { computeFingerprint } from "./fingerprint.ts";
@@ -20,6 +21,7 @@ export type { McpApprovalRequest, McpArbitrationResult } from "./mcp-arbitration
 export { decide } from "./policy.ts";
 export { compileSandboxPolicy, DEFAULT_SECRET_ZONES } from "./sandbox-policy.ts";
 export type { CompiledSandboxPolicy, RuleVerdict } from "./sandbox-policy.ts";
+export { WorkspaceFence } from "./workspace-fence.ts";
 
 export interface GuardDecisionRecord {
   intent: OperationIntent;
@@ -42,6 +44,7 @@ export class Guard implements GuardPort {
     private tier: PermissionTier,
     grants?: GrantStore,
     private readonly decisionSink?: (record: GuardDecisionRecord) => void,
+    private readonly workspaceFence = new WorkspaceFence(),
   ) {
     this.grants = grants ?? new GrantStore();
   }
@@ -55,13 +58,18 @@ export class Guard implements GuardPort {
   }
 
   decide(intent: OperationIntent): Decision {
-    const decision = decide({ tier: this.tier, intent, grants: this.grants.all() });
+    const decision = this.workspaceFence.decide(intent) ??
+      decide({ tier: this.tier, intent, grants: this.grants.all() });
     this.decisionSink?.({
       intent: structuredClone(intent),
       decision: { ...decision },
       fingerprint: computeFingerprint(intent),
     });
     return decision;
+  }
+
+  forbiddenWriteRoots(): string[] {
+    return this.workspaceFence.deniedWriteRoots();
   }
 
   grant(g: Grant): void {

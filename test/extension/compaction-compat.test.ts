@@ -1,0 +1,24 @@
+import { describe, expect, it } from "vitest";
+import { isThirdPartyOpenAiResponses, reasoningFreeFetch } from "../../src/extension/compaction-compat.ts";
+
+describe("third-party compaction compatibility", () => {
+  it("only applies to non-official OpenAI Responses endpoints", () => {
+    expect(isThirdPartyOpenAiResponses({ api: "openai-responses", baseUrl: "https://api.openai.com/v1" })).toBe(false);
+    expect(isThirdPartyOpenAiResponses({ api: "openai-responses", baseUrl: "https://gateway.example/v1" })).toBe(true);
+    expect(isThirdPartyOpenAiResponses({ api: "openai-completions", baseUrl: "https://gateway.example/v1" })).toBe(false);
+    expect(isThirdPartyOpenAiResponses(undefined)).toBe(false);
+  });
+
+  it("removes reasoning-only fields without changing the summary payload", async () => {
+    let sent: Record<string, unknown> | undefined;
+    const wrapped = reasoningFreeFetch(async (_input, init) => {
+      sent = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return new Response("ok");
+    });
+    await wrapped("https://gateway.example/v1/responses", {
+      method: "POST",
+      body: JSON.stringify({ model: "gpt", input: ["summary"], reasoning: { effort: "none" }, include: ["reasoning.encrypted_content"] }),
+    });
+    expect(sent).toEqual({ model: "gpt", input: ["summary"] });
+  });
+});

@@ -25,6 +25,20 @@ export interface StoredAccount extends AccountRef {
   credentials?: AccountCredentials;
 }
 
+export interface AccountImportInput {
+  stableId?: string;
+  provider: string;
+  piProvider?: string;
+  label: string;
+  credentials: AccountCredentials;
+  defaultModel?: string;
+  authKind?: AccountRef["authKind"];
+  chatCompatible?: boolean;
+  endpoint?: AccountRef["endpoint"];
+  metadata?: Record<string, unknown>;
+  warnings?: string[];
+}
+
 interface VaultFile {
   version: 1;
   accounts: StoredAccount[];
@@ -105,25 +119,60 @@ export class AccountsManager {
   }
 
   /** Web Wizard/JSON import enters through the same vault authority as OAuth. */
-  async importCredentials(input: {
-    provider: string;
-    label: string;
-    credentials: AccountCredentials;
-    defaultModel?: string;
-  }): Promise<Result<AccountRef>> {
+  async importCredentials(input: AccountImportInput): Promise<Result<AccountRef>> {
+    const imported = await this.importMany([input]);
+    if (!imported.ok) return imported;
+    const account = imported.value[0];
+    return account === undefined
+      ? err("store/account-import-empty", "account import produced no account")
+      : ok(account);
+  }
+
+  /** Atomic Web Wizard apply seam: selected candidates are upserted in one vault write. */
+  async importMany(
+    inputs: readonly AccountImportInput[],
+    activateStableId?: string,
+  ): Promise<Result<AccountRef[]>> {
+    if (inputs.length === 0) return err("store/account-import-empty", "select at least one account");
     const vault = this.load();
     if (!vault.ok) return vault;
-    const account: StoredAccount = {
-      id: this.accountId(input.provider),
-      provider: input.provider,
-      label: input.label,
-      status: "stored",
-      credentials: input.credentials,
-      ...(input.defaultModel === undefined ? {} : { defaultModel: input.defaultModel }),
-    };
-    vault.value.accounts.push(account);
+    const imported: StoredAccount[] = [];
+    for (const input of inputs) {
+      const id = input.stableId === undefined
+        ? this.accountId(input.provider)
+        : `${input.provider}:${input.stableId}`;
+      const account: StoredAccount = {
+        id,
+        provider: input.provider,
+        label: input.label,
+        status: "stored",
+        credentials: input.credentials,
+        ...(input.piProvider === undefined ? {} : { piProvider: input.piProvider }),
+        ...(input.defaultModel === undefined ? {} : { defaultModel: input.defaultModel }),
+        ...(input.authKind === undefined ? {} : { authKind: input.authKind }),
+        ...(input.chatCompatible === undefined ? {} : { chatCompatible: input.chatCompatible }),
+        ...(input.endpoint === undefined ? {} : { endpoint: input.endpoint }),
+        ...(input.metadata === undefined ? {} : { metadata: input.metadata }),
+        ...(input.warnings === undefined ? {} : { warnings: input.warnings }),
+      };
+      const index = vault.value.accounts.findIndex((candidate) => candidate.id === id);
+      if (index === -1) vault.value.accounts.push(account);
+      else vault.value.accounts[index] = account;
+      imported.push(account);
+    }
+    if (activateStableId !== undefined) {
+      const active = imported.find((account) => account.id === `${account.provider}:${activateStableId}`);
+      if (active === undefined) return err("store/account-activation-missing", "active account was not selected");
+      if (active.chatCompatible === false) {
+        return err("store/account-chat-incompatible", "selected account cannot be activated for Pi chat");
+      }
+      for (const account of vault.value.accounts) {
+        if (account.provider === active.provider && account.status === "active") account.status = "stored";
+      }
+      active.status = "active";
+    }
     const saved = await this.save(vault.value);
-    return saved.ok ? ok(toRef(account)) : saved;
+    return saved.ok ? ok(imported.map(toRef)) : saved;
   }
 
   /**

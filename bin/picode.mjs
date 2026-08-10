@@ -8,11 +8,12 @@
  * 扩展套件注入姿势待 Spike 7（settings 合并 vs 启动参数）定稿。
  */
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildPiLaunch, PI_PACKAGE, resolveVendoredPi } from "./picode-launch.mjs";
+import { buildPiLaunch, consumeWorkspaceSwitchRequest, PI_PACKAGE, resolveCursorSdkExtension, resolveVendoredPi } from "./picode-launch.mjs";
 
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const productManifest = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
@@ -54,14 +55,6 @@ if (!existsSync(piEntry)) {
   process.exit(1);
 }
 
-const launch = buildPiLaunch({
-  packageRoot,
-  picodeDir,
-  piEntry,
-  userArgs: process.argv.slice(2),
-  parentEnv: process.env,
-});
-
 const controlSubjects = new Set(["run", "rpc", "session", "subagent", "slice", "capsule", "worktree", "capability", "chat", "task", "gate", "harness", "permissions", "account", "tools", "doctor", "help"]);
 let userArgs = process.argv.slice(2);
 if (userArgs[0] === "tui") userArgs = userArgs.slice(1);
@@ -79,10 +72,59 @@ if (productHelp || (userArgs[0] !== undefined && controlSubjects.has(userArgs[0]
   }
 } else {
 
-  const child = spawn(process.execPath, launch.args, {
-    stdio: "inherit",
-    env: launch.env,
-  });
-
-  child.on("exit", (code) => process.exit(code ?? 0));
+  const piRpcMode = userArgs.some((arg, index) => arg === "--mode" && userArgs[index + 1] === "rpc");
+  if (!piRpcMode && (process.stdin.isTTY !== true || process.stdout.isTTY !== true)) {
+    console.error(
+      "[picode] The interactive TUI needs a terminal. Over SSH, run `ssh -t <host> picode`. " +
+      "For non-interactive automation, use `picode run` or `picode rpc`.",
+    );
+    process.exitCode = 2;
+  } else {
+    const launchId = randomUUID();
+    let launchCwd = process.cwd();
+    let launchUserArgs = userArgs;
+    while (true) {
+      const launch = buildPiLaunch({
+        packageRoot,
+        picodeDir,
+        piEntry,
+        cursorSdkExtension: resolveCursorSdkExtension({ resolve: (specifier) => import.meta.resolve(specifier) }),
+        userArgs: launchUserArgs,
+        parentEnv: { ...process.env, PICODE_LAUNCH_ID: launchId },
+      });
+      const outcome = await new Promise((resolve) => {
+        const child = spawn(process.execPath, launch.args, {
+          stdio: "inherit",
+          env: launch.env,
+          cwd: launchCwd,
+        });
+        child.once("error", (cause) => resolve({ cause }));
+        child.once("exit", (code) => resolve({ code: code ?? 0 }));
+      });
+      if (outcome.cause !== undefined) {
+        console.error(`[picode] failed to start Pi TUI: ${outcome.cause.message}`);
+        process.exitCode = 1;
+        break;
+      }
+      let target;
+      try {
+        target = await consumeWorkspaceSwitchRequest({
+          picodeDir,
+          launchId,
+          fromCwd: launchCwd,
+        });
+      } catch (cause) {
+        console.error(`[picode] rejected workspace switch request: ${cause instanceof Error ? cause.message : String(cause)}`);
+        process.exitCode = 70;
+        break;
+      }
+      if (target === undefined) {
+        process.exitCode = outcome.code;
+        break;
+      }
+      console.error(`[picode] switched workspace to ${target}; starting a fresh Pi session.`);
+      launchCwd = target;
+      launchUserArgs = [];
+    }
+  }
 }

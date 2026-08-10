@@ -1,4 +1,5 @@
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -23,6 +24,7 @@ import { loadCapabilitySettings, saveCapabilitySettings } from "../store/capabil
 import { ForeignChatImportService } from "../extension/foreign-chat-import.ts";
 import { restoreTaskBinding, TASK_BINDING_ENTRY_TYPE } from "../extension/slice-session.ts";
 import { adapterFor } from "../store/import-adapters.ts";
+import { WebChatImportCoordinator } from "../extension/web-chat-import.ts";
 
 function controlTasks(tasksRoot: string): TaskIngress {
   return new TaskIngress({
@@ -136,7 +138,13 @@ export class RpcControlDriver implements ControlDriver {
 
   private client(input: { cwd?: string; session?: string; provider?: string; model?: string } = {}): RpcClient {
     const extension = join(this.options.packageRoot, "src", "extension", "pi-entry.ts");
-    const args = ["--extension", extension, "--session-dir", this.sessionsRoot()];
+    const cursorManifest = createRequire(import.meta.url).resolve("pi-cursor-sdk/package.json");
+    const cursorSdkExtension = join(dirname(cursorManifest), "src", "index.ts");
+    const args = [
+      "--extension", extension,
+      "--extension", cursorSdkExtension,
+      "--session-dir", this.sessionsRoot(),
+    ];
     for (const extra of this.options.extraExtensions ?? []) args.push("--extension", extra);
     if (input.session !== undefined) args.push("--session", input.session);
     return new RpcClient({
@@ -190,6 +198,10 @@ export class RpcControlDriver implements ControlDriver {
     const queue = new EventQueue();
     let approvalRequired = false;
     let pendingApprovalId: string | undefined;
+    let settleCompaction: ((event: { errorMessage?: string }) => void) | undefined;
+    const compactionSettled = new Promise<{ errorMessage?: string }>((resolveCompaction) => {
+      settleCompaction = resolveCompaction;
+    });
     const runId = randomUUID();
     const unsubscribe = client.onEvent((raw) => {
       if (this.cancelledRuns.has(runId)) return;
@@ -203,6 +215,10 @@ export class RpcControlDriver implements ControlDriver {
         queue.push(asEvent("approval.required", raw));
       } else {
         queue.push(asEvent(eventKind(raw), raw));
+      }
+      if ((raw as { type?: unknown }).type === "compaction_end") {
+        const errorMessage = (raw as { errorMessage?: unknown }).errorMessage;
+        settleCompaction?.(typeof errorMessage === "string" ? { errorMessage } : {});
       }
     });
     const execute = (async () => {
@@ -229,8 +245,27 @@ export class RpcControlDriver implements ControlDriver {
             await client.compact(compact[1]?.trim() || undefined);
           } catch (cause) {
             const message = cause instanceof Error ? cause.message : String(cause);
-            if (!/nothing to compact/i.test(message)) throw cause;
-            compactResult = "Nothing to compact";
+            if (/nothing to compact/i.test(message)) {
+              compactResult = "Nothing to compact";
+            } else if (/timeout waiting for response to compact/i.test(message)) {
+              // Upstream RpcClient has a fixed 30 s request timeout, while a
+              // real gateway summary can legitimately take longer. The Pi
+              // runtime continues working and emits the authoritative terminal
+              // event, so wait for that event within Picode's run budget.
+              const terminal = await new Promise<{ errorMessage?: string }>((resolveCompaction, reject) => {
+                const timer = setTimeout(
+                  () => reject(new Error("Timeout waiting for compaction terminal event")),
+                  input.timeoutMs ?? 600_000,
+                );
+                void compactionSettled.then((value) => {
+                  clearTimeout(timer);
+                  resolveCompaction(value);
+                }, reject);
+              });
+              if (terminal.errorMessage) throw new Error(terminal.errorMessage);
+            } else {
+              throw cause;
+            }
           }
         } else {
           await client.prompt(input.prompt);
@@ -705,9 +740,15 @@ export class RpcControlDriver implements ControlDriver {
   }
 
   async *importAccount(): AsyncIterable<ControlEvent> {
+    const runtime = bootRuntime();
+    const chats = new WebChatImportCoordinator(runtime, this.sessionsRoot());
     const wizard = await startAccountImportWizard({
-      accounts: new AccountsManager(() => undefined),
+      accounts: runtime.accounts,
       openBrowser: async (url) => { await open(url); },
+      chatImport: {
+        scan: async (input) => chats.scan(input),
+        apply: async (input) => chats.apply(input),
+      },
     });
     try {
       yield asEvent("account.import.ready", {

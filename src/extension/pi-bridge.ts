@@ -1,5 +1,6 @@
 import type {
   ExtensionAPI,
+  ExtensionCommandContext,
   ExtensionContext,
   ToolCallEvent,
   ToolCallEventResult,
@@ -60,6 +61,9 @@ import {
   PERMISSION_ENTRY_TYPE,
   restorePermissionTier,
 } from "./permissions.ts";
+import { registerCompactionCompatibility } from "./compaction-compat.ts";
+import type { AccountImportCompleteHandler } from "./account-import-wizard.ts";
+import { prepareWorkspaceSwitch } from "./workspace-switch.ts";
 
 export interface BridgeProbeSnapshot {
   compactionsObserved: number;
@@ -75,7 +79,10 @@ export interface BridgeOptions {
     ctx: ExtensionContext,
   ) => Promise<void> | void;
   onSessionReady?: (ctx: ExtensionContext) => Promise<void> | void;
-  startAccountImport?: () => Promise<{ url: URL; browserOpened: boolean }>;
+  onReinstall?: (ctx: ExtensionCommandContext) => Promise<void> | void;
+  startAccountImport?: (
+    onImported: AccountImportCompleteHandler,
+  ) => Promise<{ url: URL; browserOpened: boolean }>;
   gateExecutorFor?: (cwd: string) => GateExecutor;
 }
 
@@ -330,6 +337,7 @@ export function registerPicodeBridge(
   runtime: PicodeRuntime,
   options: BridgeOptions = {},
 ): { snapshot(): BridgeProbeSnapshot } {
+  registerCompactionCompatibility(pi);
   const now = options.now ?? (() => performance.now());
   const accountAdapter = new PiAccountAdapter(pi);
   const slices = new SliceSessionCoordinator(
@@ -357,6 +365,34 @@ export function registerPicodeBridge(
   let compactionsObserved = 0;
   let historyTransitionsObserved = 0;
   const toolIntentLatencyMs: number[] = [];
+
+  const openAccountImport = async (ctx: ExtensionContext): Promise<void> => {
+    if (options.startAccountImport === undefined) {
+      ctx.ui.notify("Picode account import service is unavailable in this host.", "error");
+      return;
+    }
+    const wizard = await options.startAccountImport(async (completion) => {
+      const listed = runtime.accounts.list();
+      if (!listed.ok) throw new Error(listed.error.message);
+      const active = listed.value.find(
+        (account) => completion.importedAccountIds.includes(account.id) && account.status === "active",
+      );
+      if (active === undefined || completion.activeAccountChanged === false) return;
+      const credentials = runtime.accounts.credentialsFor(active.id);
+      if (!credentials.ok) throw new Error(credentials.error.message);
+      const applied = accountAdapter.apply(
+        active,
+        credentials.value,
+        ctx.modelRegistry.getProvider(active.provider) !== undefined,
+      );
+      if (!applied.ok) throw new Error(applied.error.message);
+      ctx.ui.notify(`已将 ${active.label} 加载到当前 Pi 会话。`, "info");
+    });
+    ctx.ui.notify(
+      `${wizard.browserOpened ? "Account import opened" : "Browser did not open; use this link"}: ${wizard.url}`,
+      wizard.browserOpened ? "info" : "warning",
+    );
+  };
 
   pi.on("tool_call", async (event, ctx): Promise<ToolCallEventResult | undefined> => {
     const started = now();
@@ -424,6 +460,23 @@ export function registerPicodeBridge(
   });
   pi.on("session_start", async (event, ctx) => {
     if (event.reason === "resume" || event.reason === "fork") historyTransitionsObserved += 1;
+    const listedAccounts = runtime.accounts.list();
+    if (listedAccounts.ok) {
+      for (const account of listedAccounts.value) {
+        if (account.status !== "active" || account.chatCompatible === false) continue;
+        const credentials = runtime.accounts.credentialsFor(account.id);
+        if (!credentials.ok) {
+          ctx.ui.notify?.(`Active account ${account.label} could not be restored: ${credentials.error.message}`, "warning");
+          continue;
+        }
+        const knownProvider = ["anthropic", "openai", "openai-codex", "cursor"].includes(account.provider) ||
+          ctx.modelRegistry?.getProvider(account.provider) !== undefined;
+        const restored = accountAdapter.apply(account, credentials.value, knownProvider);
+        if (!restored.ok) {
+          ctx.ui.notify?.(`Active account ${account.label} could not be restored: ${restored.error.message}`, "warning");
+        }
+      }
+    }
     const branch = ctx.sessionManager.getBranch();
     runtime.harness.switchTo(restoreHarnessTier(branch));
     promptOverride = restorePromptOverride(branch);
@@ -697,6 +750,44 @@ export function registerPicodeBridge(
       ctx.compact();
     },
   });
+  pi.registerCommand("workspace", {
+    description: "Force Picode into another absolute workspace and start a fresh Pi session",
+    handler: async (args, ctx) => {
+      const target = args.trim().replace(/^(["'])(.*)\1$/u, "$2");
+      if (target === "") {
+        ctx.ui.notify("usage: /workspace <absolute-directory>", "error");
+        return;
+      }
+      const launchId = process.env.PICODE_LAUNCH_ID;
+      if (launchId === undefined) {
+        ctx.ui.notify("Forced workspace switching requires starting Pi through the `picode` launcher.", "error");
+        return;
+      }
+      const confirmed = await ctx.ui.confirm(
+        "Force workspace switch",
+        `Current: ${ctx.cwd}\nTarget: ${target}\n\nThis changes project context and starts a fresh Pi session. The current conversation context will not carry over. Picode will write a managed boundary into the target AGENTS.md and permanently deny writes to the previous workspace for this workspace lineage. Continue?`,
+      );
+      if (!confirmed) {
+        ctx.ui.notify("Workspace switch cancelled.", "info");
+        return;
+      }
+      await ctx.waitForIdle();
+      const prepared = await prepareWorkspaceSwitch({
+        launchId,
+        fromWorkspace: ctx.cwd,
+        toWorkspace: target,
+      });
+      if (!prepared.ok) {
+        ctx.ui.notify(prepared.error.message, "error");
+        return;
+      }
+      ctx.ui.notify(
+        `Workspace boundary saved. Restarting Picode in ${prepared.value.targetWorkspace}`,
+        "info",
+      );
+      ctx.shutdown();
+    },
+  });
   pi.registerCommand("slice", {
     description: "Seal a Task Capsule and continue in a fresh Pi session",
     handler: async (args, ctx) => {
@@ -845,16 +936,22 @@ export function registerPicodeBridge(
       else pi.sendUserMessage(result.message, delivery);
     },
   });
+  pi.registerCommand("reinstall", {
+    description: "Offer missing Picode recommended components again",
+    handler: async (_args, ctx) => {
+      if (options.onReinstall === undefined) {
+        ctx.ui.notify("Picode reinstall service is unavailable in this host.", "error");
+        return;
+      }
+      await options.onReinstall(ctx);
+    },
+  });
   pi.registerCommand("accounts", {
     description: "List, select, label, or import Picode accounts",
     handler: async (args, ctx) => {
       const argv = args.trim() === "" ? [] : args.trim().split(/\s+/);
       if (argv[0] === "import" && options.startAccountImport !== undefined) {
-        const wizard = await options.startAccountImport();
-        ctx.ui.notify(
-          `${wizard.browserOpened ? "Account import opened" : "Browser did not open; use this link"}: ${wizard.url}`,
-          wizard.browserOpened ? "info" : "warning",
-        );
+        await openAccountImport(ctx);
         return;
       }
       if (argv[0] === "login") {
@@ -922,6 +1019,10 @@ export function registerPicodeBridge(
       const output = await handleAccountsCommand(runtime.accounts, argv);
       ctx.ui.notify(output, output.startsWith("error:") ? "error" : "info");
     },
+  });
+  pi.registerCommand("import", {
+    description: "Open the Picode Web import wizard",
+    handler: async (_args, ctx) => openAccountImport(ctx),
   });
   pi.registerCommand("subagent-model", {
     description: "Choose the model used by pi-subagents, or inherit the current chat model",
@@ -1129,6 +1230,7 @@ export function registerPicodeBridge(
           timeoutMs: input.timeoutMs ?? 120_000,
           requiresTests: false,
         },
+        checkpoint: (checkpoint) => { pi.appendEntry(TDD_STATE_ENTRY_TYPE, checkpoint); },
         targetPassed: (evidence) => admit("tdd.green", evidence),
         snapshotNow: () => candidateSnapshot(pi, ctx.cwd),
       });

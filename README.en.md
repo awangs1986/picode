@@ -93,9 +93,26 @@ session while destructive operations and Git ownership actions such as commit,
 merge, and push still ask; it does not disable the OS sandbox. The first approval
 dialog also offers “Allow routine operations for this session”.
 
+Run `/reinstall` in the TUI to check the recommended components again. Picode
+checks `mattpocock/skills`, Herdr, and CodebaseMemoryProvider separately and asks
+only about missing items. Enabling an optional capability does not start a
+resident process.
+
 Native Pi tools are never hidden. Long-tail capabilities are discovered through
 `search_tools` and activated only when needed, keeping the full schema out of the
 permanent context.
+
+To leave one project completely and move to another, run this in the TUI:
+
+```text
+/workspace D:\path\to\new-project
+```
+
+This is a forced boundary change, not `cd`. Picode warns that conversation
+context will not carry over, waits for the current turn, writes a managed block
+to the target's canonical `AGENTS.md`, then restarts vendored Pi in a fresh
+session. Guard permanently rejects writes to prior workspaces in that lineage;
+Standard/TDD also compile those roots into the Landstrip sandbox policy.
 
 ## Run
 
@@ -148,7 +165,7 @@ patterns, and lessons within their applicable scope and licenses:
 - **pi-subagents**: delegation, asynchronous work, lifecycle artifacts, Worktree isolation, and Watchdog review.
 - **pi-landstrip**: cross-platform sandbox provider seam; policy remains owned by Picode Guard. Windows Harness sessions use the system PowerShell host within the same sandbox boundary to avoid Git Bash/AppContainer launch failures.
 - **pi-mcp-adapter**: external MCP search, description, calls, and approval arbitration.
-- **mattpocock/skills + Picode `/plan`**: a pinned software-engineering Skills snapshot ships with Picode; the first explicit `/plan` materializes the `grill-with-docs` dependency closure and reloads the session, while startup never loads the whole collection. Picode has no separate Plan/Goal plugin and never prompts for an external install.
+- **mattpocock/skills + Picode `/plan`**: a pinned software-engineering Skills snapshot ships with Picode; the first explicit `/plan` materializes the `grill-with-docs` dependency closure and reloads the session, while startup never loads the whole collection. Picode has no separate Plan/Goal plugin; users can explicitly run `/reinstall` to check the three recommendations.
 - **pi-web-access**: web search and fetch extension available to the Simple tier.
 - **pi-cache-optimizer**: provider cache compatibility and hit-rate diagnostics; prompt rewriting is disabled.
 - **pi-lens**: LSP diagnostics and impact assistance.

@@ -14,7 +14,7 @@ import { saveConfig } from "../store/config.ts";
 import { PiActiveToolAdapter } from "./pi-tool-adapter.ts";
 import { registerMcpApprovalBridge } from "./mcp-approval-bridge.ts";
 import { configureLandstripForSession } from "./landstrip-config.ts";
-import { piAgentDir } from "../shared/paths.ts";
+import { piAgentDir, piSessionsDir } from "../shared/paths.ts";
 import { configureSubagentsForSession } from "./subagent-config.ts";
 import { registerSubagentEnvelopeBridge } from "./subagent-envelope-bridge.ts";
 import { startDebugApi } from "../api/server.ts";
@@ -26,9 +26,23 @@ import {
 import { CapabilityReadinessRegistry, filterToolNamesForReadiness } from "../engine/readiness.ts";
 import { ensureTunSsrfCompatibility } from "./web-ssrf-config.ts";
 import { registerSubagentControlCommand } from "./subagent-control-command.ts";
+import { WebChatImportCoordinator } from "./web-chat-import.ts";
+import {
+  formatRecommendedReinstallReport,
+  runRecommendedReinstall,
+} from "./reinstall-command.ts";
+import { findMattPocockSkills } from "./plan-command.ts";
+import {
+  bundledSkillNames,
+  materializeMattPocockSkills,
+  mattPocockInstallRoot,
+} from "./mattpocock-bundle.ts";
+import { registerInputCursorBlink } from "./input-cursor-blink.ts";
+import { registerModelContinuity } from "./model-continuity.ts";
 
 /** Real Pi extension entry. Keep this file as a thin composition adapter. */
 export default function picodeExtension(pi: ExtensionAPI): void {
+  registerInputCursorBlink(pi);
   registerSubagentControlCommand(pi);
   const disposeWindowsShellProvider = registerWindowsPowerShellProvider(pi);
   pi.on("session_shutdown", () => { disposeWindowsShellProvider(); });
@@ -71,6 +85,7 @@ export default function picodeExtension(pi: ExtensionAPI): void {
         permissionTier: runtime.guard.permissionTier(),
         cwd: ctx.cwd,
         agentDir: piAgentDir(),
+        deniedWriteRoots: runtime.guard.forbiddenWriteRoots(),
       });
       if (!configured.ok) ctx.ui.notify(configured.error.message, "error");
       else if (process.platform === "win32" && tier !== "simple") {
@@ -105,6 +120,7 @@ export default function picodeExtension(pi: ExtensionAPI): void {
         permissionTier,
         cwd: ctx.cwd,
         agentDir: piAgentDir(),
+        deniedWriteRoots: runtime.guard.forbiddenWriteRoots(),
       });
       if (!configured.ok) ctx.ui.notify(configured.error.message, "error");
     },
@@ -142,9 +158,45 @@ export default function picodeExtension(pi: ExtensionAPI): void {
       runtime.config = completed.value;
       ctx.ui.notify("Picode setup saved. Optional capabilities remain stopped until used.", "info");
     },
-    startAccountImport: () => startAccountImportWizard({
-      accounts: runtime.accounts,
-      openBrowser: async (url) => { await open(url); },
-    }),
+    onReinstall: async (ctx) => {
+      const result = await runRecommendedReinstall({
+        locale: runtime.config.locale,
+        catalog: runtime.guard.catalog,
+        confirm: (title, message) => ctx.ui.confirm(title, message),
+        mattPocockInstalled: () => findMattPocockSkills(ctx.cwd).installed,
+        installMattPocock: () => {
+          const installed = materializeMattPocockSkills(bundledSkillNames(), mattPocockInstallRoot());
+          return installed.ok ? ok(undefined) : installed;
+        },
+        persistCapabilities: saveCapabilitySettings,
+      });
+      if (!result.ok) {
+        ctx.ui.notify(`Picode reinstall failed: ${result.error.message}`, "error");
+        return;
+      }
+      ctx.ui.notify(formatRecommendedReinstallReport(result.value, runtime.config.locale), "info");
+      if (result.value.installed.includes("mattpocock-skills")) await ctx.reload();
+    },
+    startAccountImport: (onImported) => {
+      const chats = new WebChatImportCoordinator(runtime, piSessionsDir());
+      return startAccountImportWizard({
+        accounts: runtime.accounts,
+        openBrowser: async (url) => { await open(url); },
+        onImported,
+        chatImport: {
+          scan: async (input) => chats.scan(input),
+          apply: async (input) => chats.apply(input),
+        },
+      });
+    },
+  });
+  registerModelContinuity(pi, {
+    store: {
+      current: () => runtime.config,
+      persist: async (model) => {
+        runtime.config = { ...runtime.config, lastConversationModel: model };
+        return (await saveConfig(runtime.config)).ok;
+      },
+    },
   });
 }

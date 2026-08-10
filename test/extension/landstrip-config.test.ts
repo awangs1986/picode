@@ -43,4 +43,20 @@ describe("configureLandstripForSession", () => {
       expect(settings.landstrip.permission).toBe("allow");
     });
   });
+
+  it("adds every forbidden previous workspace to the OS sandbox deny-write policy", async () => {
+    await withTempPicodeDir(async (dir) => {
+      const result = await configureLandstripForSession({
+        harnessTier: "standard",
+        permissionTier: "full",
+        cwd: "C:/repo-new",
+        agentDir: dir,
+        deniedWriteRoots: ["C:/repo-old"],
+      });
+
+      expect(result.ok).toBe(true);
+      const sandbox = JSON.parse(readFileSync(`${dir}/sandbox.json`, "utf8"));
+      expect(sandbox.filesystem.denyWrite).toContain("C:/repo-old");
+    });
+  });
 });

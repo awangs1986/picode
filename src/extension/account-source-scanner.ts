@@ -12,6 +12,12 @@ export interface AccountImportCandidate {
   summary: string;
   credentials: AccountCredentials;
   defaultModel?: string;
+  piProvider: string;
+  authKind: "api_key" | "oauth" | "session";
+  chatCompatible: boolean;
+  endpoint?: { baseUrl?: string; api?: string; model?: string };
+  metadata?: Record<string, unknown>;
+  warnings: string[];
 }
 
 type SourceKind = "codex" | "cursor" | "claude" | "custom";
@@ -56,7 +62,7 @@ function candidate(input: Omit<AccountImportCandidate, "id" | "summary">): Accou
   return {
     ...input,
     id,
-    summary: `${input.provider} · ${input.label} · ${input.source}`,
+    summary: `${input.provider} · ${input.label} · ${input.authKind} · ${input.source}`,
   };
 }
 
@@ -66,6 +72,76 @@ function flatten(value: unknown): unknown[] {
   if (row === undefined) return [value];
   if (Array.isArray(row.accounts)) return row.accounts.flatMap(flatten);
   return [value];
+}
+
+interface CodexConfigProjection {
+  baseUrl?: string;
+  defaultModel?: string;
+  providerName?: string;
+}
+
+function tomlString(value: string): string | undefined {
+  const trimmed = value.trim();
+  const doubleQuoted = trimmed.match(/^"((?:\\.|[^"\\])*)"\s*(?:#.*)?$/);
+  if (doubleQuoted?.[1] !== undefined) {
+    try {
+      return JSON.parse(`"${doubleQuoted[1]}"`) as string;
+    } catch {
+      return undefined;
+    }
+  }
+  const singleQuoted = trimmed.match(/^'([^']*)'\s*(?:#.*)?$/);
+  return singleQuoted?.[1];
+}
+
+/** Bounded projection of the Codex settings that affect account routing. */
+function parseCodexConfig(text: string): CodexConfigProjection {
+  const root = new Map<string, string>();
+  const providerSections = new Map<string, Map<string, string>>();
+  let section: string | undefined;
+  for (const rawLine of text.split(/\r?\n/u)) {
+    const sectionMatch = rawLine.match(/^\s*\[([^\]]+)]\s*(?:#.*)?$/);
+    if (sectionMatch?.[1] !== undefined) {
+      section = sectionMatch[1].trim();
+      continue;
+    }
+    const assignment = rawLine.match(/^\s*([A-Za-z0-9_.-]+)\s*=\s*(.+)$/);
+    if (assignment?.[1] === undefined || assignment[2] === undefined) continue;
+    const value = tomlString(assignment[2]);
+    if (value === undefined) continue;
+    if (section === undefined) {
+      root.set(assignment[1], value);
+      continue;
+    }
+    const providerMatch = section.match(/^model_providers\.([A-Za-z0-9_.-]+)$/);
+    if (providerMatch?.[1] === undefined) continue;
+    const provider = providerSections.get(providerMatch[1]) ?? new Map<string, string>();
+    provider.set(assignment[1], value);
+    providerSections.set(providerMatch[1], provider);
+  }
+  const providerName = root.get("model_provider");
+  const provider = providerName === undefined ? undefined : providerSections.get(providerName);
+  const baseUrl = root.get("openai_base_url") ?? provider?.get("base_url");
+  const defaultModel = root.get("model");
+  return {
+    ...(baseUrl === undefined ? {} : { baseUrl }),
+    ...(defaultModel === undefined ? {} : { defaultModel }),
+    ...(providerName === undefined ? {} : { providerName }),
+  };
+}
+
+function mergeCodexConfig(authText: string, configText: string | undefined): string {
+  if (configText === undefined) return authText;
+  const parsed = JSON.parse(authText) as unknown;
+  const row = object(parsed);
+  if (row === undefined || Array.isArray(row.accounts)) return authText;
+  const config = parseCodexConfig(configText);
+  return JSON.stringify({
+    ...row,
+    ...(config.baseUrl === undefined ? {} : { baseUrl: config.baseUrl }),
+    ...(config.defaultModel === undefined ? {} : { model: config.defaultModel }),
+    ...(config.providerName === undefined ? {} : { label: `Codex · ${config.providerName}` }),
+  });
 }
 
 export function parseAccountJson(kind: SourceKind, text: string, source: string): AccountImportCandidate[] {
@@ -88,6 +164,7 @@ export function parseAccountJson(kind: SourceKind, text: string, source: string)
       const isApiKey = firstString(row, [["OPENAI_API_KEY"], ["apiKey"], ["api_key"]]) !== undefined;
       result.push(candidate({
         provider: isApiKey && baseUrl !== undefined ? "openai" : "openai-codex",
+        piProvider: isApiKey && baseUrl !== undefined ? "openai" : "openai-codex",
         label: firstString(row, [["email"], ["name"], ["label"]]) ?? "Codex",
         source,
         credentials: {
@@ -97,6 +174,16 @@ export function parseAccountJson(kind: SourceKind, text: string, source: string)
           ...(expiresAt === undefined ? {} : { expiresAt }),
         },
         ...(defaultModel === undefined ? {} : { defaultModel }),
+        authKind: isApiKey ? "api_key" : "oauth",
+        chatCompatible: true,
+        endpoint: {
+          ...(baseUrl === undefined ? {} : { baseUrl }),
+          api: "openai-responses",
+          ...(defaultModel === undefined ? {} : { model: defaultModel }),
+        },
+        warnings: refreshToken === undefined && !isApiKey
+          ? ["This Codex OAuth snapshot has no refresh token; chat may stop when it expires."]
+          : [],
       }));
       continue;
     }
@@ -112,6 +199,7 @@ export function parseAccountJson(kind: SourceKind, text: string, source: string)
       const expiresAt = firstNumber(row, [["claudeAiOauth", "expiresAt"], ["expiresAt"]]);
       result.push(candidate({
         provider: "anthropic",
+        piProvider: "anthropic",
         label: firstString(row, [
           ["oauthAccount", "emailAddress"], ["oauthAccount", "email"], ["email"], ["label"],
         ]) ?? "Claude",
@@ -121,6 +209,11 @@ export function parseAccountJson(kind: SourceKind, text: string, source: string)
           ...(refreshToken === undefined ? {} : { refreshToken }),
           ...(expiresAt === undefined ? {} : { expiresAt }),
         },
+        authKind: "oauth",
+        chatCompatible: true,
+        warnings: refreshToken === undefined
+          ? ["This Claude OAuth snapshot has no refresh token; chat may stop when it expires."]
+          : [],
       }));
       continue;
     }
@@ -131,11 +224,21 @@ export function parseAccountJson(kind: SourceKind, text: string, source: string)
       ]);
       if (accessToken === undefined) continue;
       const refreshToken = firstString(row, [["refresh"], ["refreshToken"], ["refresh_token"]]);
+      const sdkApiKey = firstString(row, [
+        ["CURSOR_API_KEY"], ["apiKey"], ["api_key"], ["cursor", "key"],
+      ]) !== undefined;
       result.push(candidate({
         provider: "cursor",
+        piProvider: "cursor",
         label: firstString(row, [["email"], ["label"], ["name"]]) ?? "Cursor",
         source,
         credentials: { accessToken, ...(refreshToken === undefined ? {} : { refreshToken }) },
+        authKind: sdkApiKey ? "api_key" : "oauth",
+        chatCompatible: sdkApiKey,
+        metadata: { credentialKind: sdkApiKey ? "cursor_sdk_api_key" : "cursor_ide_cli_oauth" },
+        warnings: sdkApiKey ? [] : [
+          "Cursor Desktop/CLI OAuth is retained for account backup only. Cursor chat requires a Cursor SDK API Key.",
+        ],
       }));
       continue;
     }
@@ -146,32 +249,71 @@ export function parseAccountJson(kind: SourceKind, text: string, source: string)
     const defaultModel = firstString(row, [["model"], ["defaultModel"]]);
     result.push(candidate({
       provider,
+      piProvider: provider,
       label: firstString(row, [["label"], ["name"], ["email"]]) ?? provider,
       source,
       credentials: { accessToken, ...(baseUrl === undefined ? {} : { baseUrl }) },
       ...(defaultModel === undefined ? {} : { defaultModel }),
+      authKind: "api_key",
+      chatCompatible: true,
+      endpoint: {
+        ...(baseUrl === undefined ? {} : { baseUrl }),
+        ...(defaultModel === undefined ? {} : { model: defaultModel }),
+      },
+      warnings: [],
     }));
   }
   return result;
 }
 
+export interface LocalAccountScanOptions {
+  home?: string;
+  env?: NodeJS.ProcessEnv;
+}
+
 /** Small-file credential discovery only; never traverses chat/session trees. */
-export async function scanLocalAccountCandidates(): Promise<AccountImportCandidate[]> {
-  const home = homedir();
+export async function scanLocalAccountCandidates(options: LocalAccountScanOptions = {}): Promise<AccountImportCandidate[]> {
+  const home = options.home ?? homedir();
+  const env = options.env ?? process.env;
+  const appData = env["APPDATA"];
+  const xdgConfig = env["XDG_CONFIG_HOME"] ?? join(home, ".config");
   const sources: Array<{ kind: SourceKind; path: string }> = [
-    { kind: "codex", path: join(process.env["CODEX_HOME"] ?? join(home, ".codex"), "auth.json") },
-    { kind: "claude", path: join(process.env["CLAUDE_CONFIG_DIR"] ?? join(home, ".claude"), ".credentials.json") },
+    { kind: "codex", path: join(env["CODEX_HOME"] ?? join(home, ".codex"), "auth.json") },
+    { kind: "claude", path: join(env["CLAUDE_CONFIG_DIR"] ?? join(home, ".claude"), ".credentials.json") },
     { kind: "cursor", path: join(home, ".cursor", "auth.json") },
     { kind: "cursor", path: join(home, ".cursor", "cli-config.json") },
+    ...(appData === undefined ? [] : [{ kind: "cursor" as const, path: join(appData, "Cursor", "auth.json") }]),
+    { kind: "cursor", path: join(xdgConfig, "Cursor", "auth.json") },
+    { kind: "cursor", path: join(home, "Library", "Application Support", "Cursor", "auth.json") },
   ];
   const found: AccountImportCandidate[] = [];
-  for (const source of sources) {
+  for (const source of [...new Map(sources.map((item) => [item.path, item])).values()]) {
     if (!existsSync(source.path)) continue;
     try {
-      found.push(...parseAccountJson(source.kind, readFileSync(source.path, "utf8"), source.path));
+      const sourceText = readFileSync(source.path, "utf8");
+      const text = source.kind === "codex"
+        ? mergeCodexConfig(
+          sourceText,
+          existsSync(join(source.path, "..", "config.toml"))
+            ? readFileSync(join(source.path, "..", "config.toml"), "utf8")
+            : undefined,
+        )
+        : sourceText;
+      found.push(...parseAccountJson(source.kind, text, source.path));
     } catch {
       // One corrupt/unsupported source must not hide other candidates.
     }
   }
-  return found;
+  const cursorApiKey = env["CURSOR_API_KEY"]?.trim();
+  if (cursorApiKey !== undefined && cursorApiKey !== "") {
+    found.push(...parseAccountJson("cursor", JSON.stringify({ CURSOR_API_KEY: cursorApiKey }), "environment:CURSOR_API_KEY"));
+  }
+  const unique = new Map<string, AccountImportCandidate>();
+  for (const item of found) {
+    const identity = createHash("sha256")
+      .update(`${item.provider}\0${item.credentials.accessToken}`)
+      .digest("hex");
+    if (!unique.has(identity)) unique.set(identity, item);
+  }
+  return [...unique.values()];
 }

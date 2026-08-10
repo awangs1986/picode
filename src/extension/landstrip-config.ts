@@ -48,6 +48,7 @@ export async function configureLandstripForSession(input: {
   permissionTier: PermissionTier;
   cwd: string;
   agentDir: string;
+  deniedWriteRoots?: string[];
 }): Promise<Result<void>> {
   if (input.harnessTier === "simple") return ok(undefined);
   const sandboxPath = join(input.agentDir, "sandbox.json");
@@ -80,7 +81,12 @@ export async function configureLandstripForSession(input: {
           "/dev/null",
         ],
         allowWrite: policy.writableRoots,
-        denyWrite: [...policy.secretZones, sandboxPath, settingsPath],
+        denyWrite: [
+          ...policy.secretZones,
+          ...(input.deniedWriteRoots ?? []),
+          sandboxPath,
+          settingsPath,
+        ],
       },
       windows: { appContainerMode: "standard", allowLoopback: false },
     };

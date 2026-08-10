@@ -19,6 +19,11 @@ export interface PicodeConfig {
   locale: "zh" | "en";
   /** Optional provider/model used by pi-subagents; undefined inherits the parent model. */
   subagentModel?: string;
+  /** Most recently active conversation model; seeds a brand-new project/session only. */
+  lastConversationModel?: {
+    provider: string;
+    modelId: string;
+  };
 }
 
 export const DEFAULT_CONFIG: PicodeConfig = {
@@ -94,7 +99,12 @@ function normalizeConfig(value: unknown): PicodeConfig | undefined {
       typeof merged.onboarding.completed === "boolean" &&
       Array.isArray(merged.residentCapabilities) &&
       merged.residentCapabilities.every((item) => typeof item === "string") &&
-      (merged.subagentModel === undefined || typeof merged.subagentModel === "string")
+      (merged.subagentModel === undefined || typeof merged.subagentModel === "string") &&
+      (merged.lastConversationModel === undefined ||
+        (typeof merged.lastConversationModel === "object" &&
+          merged.lastConversationModel !== null &&
+          typeof merged.lastConversationModel.provider === "string" &&
+          typeof merged.lastConversationModel.modelId === "string"))
     ? merged
     : undefined;
 }

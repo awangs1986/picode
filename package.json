@@ -12,6 +12,7 @@
   },
   "files": [
     "bin/",
+    "scripts/patch-vendored-pi.mjs",
     "src/",
     "vendor/",
     "prompts/",
@@ -24,6 +25,7 @@
     ]
   },
   "scripts": {
+    "postinstall": "node scripts/patch-vendored-pi.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
@@ -45,6 +47,7 @@
     "@earendil-works/pi-coding-agent": "0.84.0",
     "open": "10.2.0",
     "pi-cache-optimizer": "2.8.0",
+    "pi-cursor-sdk": "0.1.61",
     "pi-landstrip": "0.18.26",
     "pi-lens": "3.8.74",
     "pi-mcp-adapter": "2.21.0",

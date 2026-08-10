@@ -190,4 +190,27 @@ describe("TddSessionController", () => {
     expect(restored?.state()).toBe("green");
     expect(restored?.mayWrite("src/runtime.ts")).toBe(true);
   });
+
+  it("checkpoints passing target evidence before an interrupted reviewer can lose it", async () => {
+    const controller = new TddSessionController(new QueueExecutor([failed, passed]));
+    controller.begin();
+    await controller.proveRed({ gateId: "runtime", command: "npm test", timeoutMs: 1_000 });
+    const checkpoints: unknown[] = [];
+
+    await expect(controller.runGate(
+      { gateId: "runtime", command: "npm test", timeoutMs: 1_000 },
+      { contentDigest: "candidate" },
+      {
+        review: async () => { throw new Error("simulated process interruption during review"); },
+        integrationContract: { gateId: "integration", command: "npm run smoke", timeoutMs: 1_000 },
+        snapshotNow: async () => ({ contentDigest: "candidate" }),
+        checkpoint: (checkpoint) => { checkpoints.push(checkpoint); },
+      },
+    )).rejects.toThrow("simulated process interruption");
+
+    expect(checkpoints.at(-1)).toMatchObject({
+      run: { state: "gate" },
+      lastEvidence: { status: "passed", gateId: "runtime" },
+    });
+  });
 });

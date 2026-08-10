@@ -38,4 +38,5 @@ export const dataPaths = {
   apiLock: () => join(picodeDir(), "api.lock"),
   apiToken: () => join(picodeDir(), "api-token"),
   apiPort: () => join(picodeDir(), "api-port"),
+  workspaceFence: () => join(picodeDir(), "workspace-fence.json"),
 };
