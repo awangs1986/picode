@@ -93,6 +93,12 @@ session while destructive operations and Git ownership actions such as commit,
 merge, and push still ask; it does not disable the OS sandbox. The first approval
 dialog also offers “Allow routine operations for this session”.
 
+While the agent is working, `/insert <message>` adds a same-turn interjection
+without cancelling the current tool. It is delivered after that tool finishes
+and before the next model request. If the turn has already ended, it safely
+starts a normal prompt instead. Pi's native Follow-up (`Alt+Enter` by default)
+remains the option for work that should wait until the current run is finished.
+
 Run `/reinstall` in the TUI to check the recommended components again. Picode
 checks `mattpocock/skills`, Herdr, and CodebaseMemoryProvider separately and asks
 only about missing items. Enabling an optional capability does not start a

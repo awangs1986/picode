@@ -39,10 +39,12 @@ import {
 } from "./mattpocock-bundle.ts";
 import { registerInputCursorBlink } from "./input-cursor-blink.ts";
 import { registerModelContinuity } from "./model-continuity.ts";
+import { registerInterjection } from "./interjection.ts";
 
 /** Real Pi extension entry. Keep this file as a thin composition adapter. */
 export default function picodeExtension(pi: ExtensionAPI): void {
   registerInputCursorBlink(pi);
+  registerInterjection(pi);
   registerSubagentControlCommand(pi);
   const disposeWindowsShellProvider = registerWindowsPowerShellProvider(pi);
   pi.on("session_shutdown", () => { disposeWindowsShellProvider(); });

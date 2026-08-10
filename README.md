@@ -88,6 +88,11 @@ Standard/TDD 会话可用 `/permissions readonly|auto|full` 调整授权密度�
 commit/merge/push 等 Git 所有权操作，并且不会关闭 OS 沙箱。第一次审批时也
 可以直接选择“Allow routine operations for this session”。
 
+Agent 工作期间可输入 `/insert <补充指令>`：当前工具不会被取消，补充指令会在
+工具完成后、下一次模型调用前插入同一回合。若回合已经结束，它会自动成为新的
+普通消息而不会丢失。需要等当前工作全部结束后再执行的消息仍使用 Pi 原生
+Follow-up（默认 `Alt+Enter`）。
+
 如需重新检查推荐组件，在 TUI 输入 `/reinstall`。Picode 会依次检测
 `mattpocock/skills`、Herdr 和 CodebaseMemoryProvider，只对缺失项分别询问；
 已安装项不会重复提示。启用可选能力不等于启动常驻进程。

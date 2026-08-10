@@ -52,6 +52,8 @@
 
 **Task Narrative Revision** — 用户 steer、rewind、fork 或恢复改变任务叙事时递增的版本。
 
+**Interjection** — 用户在 Agent 工作时通过 `/insert <message>` 追加的同回合指令。它不取消当前工具；由 Pi 的 steering 安全缝在当前 assistant 工具调用完成后、下一次模型请求前，作为独立 custom-user 会话事件按 FIFO 交付。若提交时回合恰好结束，则自动启动普通新回合，消息不得滞留或丢失。它不同于等待整个 Agent Run 结束的 Follow-up，也不同于 Abort。
+
 **TaskIngress** — Devloop/task 接收 TUI、CLI、Agent Inbox、Telegram 或未来远程输入并创建唯一 Task 权威的深 Interface；负责去重和失败语义。来源 Adapter 不得自行写 Task 状态、直接向子端口发 prompt，或在失败后回退到 legacy 双写链。
 
 **Control Interface** — TUI 和自动化 CLI 共同调用的组合层契约；只编排 Store、Engine、Guard 与 Devloop，不拥有领域事实。CLI 是 P0–P4 唯一公开自动化入口，提供版本化 JSON/JSONL、稳定退出码和非交互授权失败语义；不得解析 TUI 输出。
