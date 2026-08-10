@@ -13,6 +13,35 @@ function event(kind: string, payload: unknown): ControlEvent {
   return { version: 1, kind, payload };
 }
 
+function assistantText(entry: unknown): string | undefined {
+  if (typeof entry !== "object" || entry === null) return undefined;
+  const row = entry as { type?: unknown; message?: unknown };
+  if (row.type !== "message" || typeof row.message !== "object" || row.message === null) return undefined;
+  const message = row.message as { role?: unknown; content?: unknown };
+  if (message.role !== "assistant") return undefined;
+  if (typeof message.content === "string") return message.content.trim() || undefined;
+  if (!Array.isArray(message.content)) return undefined;
+  const text = message.content.flatMap((item) => {
+    if (typeof item !== "object" || item === null) return [];
+    const block = item as { type?: unknown; text?: unknown };
+    return block.type === "text" && typeof block.text === "string" ? [block.text] : [];
+  }).join("\n").trim();
+  return text || undefined;
+}
+
+function entryId(entry: unknown): string | undefined {
+  if (typeof entry !== "object" || entry === null) return undefined;
+  const id = (entry as { id?: unknown }).id;
+  return typeof id === "string" ? id : undefined;
+}
+
+function newAssistantText(entries: unknown[], previousEntryIds: Set<string>): string | undefined {
+  return entries.filter((entry) => {
+    const id = entryId(entry);
+    return id === undefined || !previousEntryIds.has(id);
+  }).map(assistantText).filter((text): text is string => text !== undefined).at(-1);
+}
+
 /**
  * Control adapter for `/server` inside the Pi TUI.
  *
@@ -73,6 +102,8 @@ export class TuiControlDriver extends RpcControlDriver {
         await this.setSessionModel(this.identity().sessionId, input.provider, input.model);
       }
       const identity = this.identity();
+      const previousEntries = this.context.sessionManager.getEntries();
+      const previousEntryIds = new Set(previousEntries.map(entryId).filter((id): id is string => id !== undefined));
       this.tuiRuns.set(runId, identity.sessionId);
       yield event("run.started", { runId, executionEpoch: 1, ...identity });
       const content = input.images === undefined || input.images.length === 0
@@ -82,8 +113,12 @@ export class TuiControlDriver extends RpcControlDriver {
           ...input.images.map((image) => ({ type: "image" as const, data: image.data, mimeType: image.mimeType })),
         ];
       this.pi.sendUserMessage(content);
-      await Promise.resolve();
-      const completion = this.context.waitForIdle();
+      const startDeadline = Date.now() + Math.min(input.timeoutMs ?? 10_000, 10_000);
+      while (this.context.isIdle() && newAssistantText(this.context.sessionManager.getEntries(), previousEntryIds) === undefined) {
+        if (Date.now() >= startDeadline) throw new Error("Timeout waiting for TUI turn to start");
+        await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+      }
+      const completion = this.context.isIdle() ? Promise.resolve() : this.context.waitForIdle();
       if (input.timeoutMs === undefined) await completion;
       else {
         let timer: ReturnType<typeof setTimeout> | undefined;
@@ -102,7 +137,10 @@ export class TuiControlDriver extends RpcControlDriver {
         }
       }
       if (this.tuiCancelledRuns.has(runId)) yield event("run.cancelled", { runId });
-      else yield event("run.completed", { runId, executionEpoch: 1, ...this.identity() });
+      else {
+        const text = newAssistantText(this.context.sessionManager.getEntries(), previousEntryIds);
+        yield event("run.completed", { runId, executionEpoch: 1, ...this.identity(), ...(text === undefined ? {} : { text }) });
+      }
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause);
       yield event(/timeout/i.test(message) ? "run.timeout" : "run.error", { runId, message });

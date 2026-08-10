@@ -8,8 +8,13 @@ async function collect(stream: AsyncIterable<unknown>): Promise<unknown[]> {
   return values;
 }
 
-function fixture() {
-  const sendUserMessage = vi.fn();
+function fixture(options: { delayedTurn?: boolean } = {}) {
+  let idle = true;
+  const entries: Array<Record<string, unknown>> = [];
+  const sendUserMessage = vi.fn(() => {
+    if (options.delayedTurn === true) setTimeout(() => { idle = false; }, 5);
+    else idle = false;
+  });
   const abort = vi.fn();
   const setThinkingLevel = vi.fn();
   const model = { provider: "openai", id: "gpt-test", name: "Test" };
@@ -21,8 +26,17 @@ function fixture() {
   } as unknown as ExtensionAPI;
   const context = {
     cwd: "D:\\repo",
-    isIdle: () => true,
-    waitForIdle: vi.fn(async () => undefined),
+    isIdle: () => idle,
+    waitForIdle: vi.fn(async () => {
+      if (idle) return;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      entries.push({
+        id: "assistant-1",
+        type: "message",
+        message: { role: "assistant", content: [{ type: "text", text: "real model reply" }] },
+      });
+      idle = true;
+    }),
     abort,
     model,
     modelRegistry: {
@@ -32,6 +46,7 @@ function fixture() {
     sessionManager: {
       getSessionId: () => "session-1",
       getSessionFile: () => "D:\\sessions\\session-1.jsonl",
+      getEntries: () => entries,
     },
   } as unknown as ExtensionCommandContext;
   const driver = new TuiControlDriver({ packageRoot: "D:\\package", piEntry: "pi.js", cwd: context.cwd }, pi, context);
@@ -53,6 +68,22 @@ describe("TUI-bound remote Control authority", () => {
       { kind: "run.started", payload: { sessionId: "session-1" } },
       { kind: "run.completed", payload: { sessionId: "session-1" } },
     ]);
+  });
+
+  it("waits for a delayed TUI turn and returns the real assistant text", async () => {
+    const { driver, sendUserMessage } = fixture({ delayedTurn: true });
+    const events = await collect(driver.run({
+      prompt: "real prompt",
+      session: "session-1",
+      cwd: "D:\\repo",
+      nonInteractive: false,
+    }));
+
+    expect(sendUserMessage).toHaveBeenCalledWith("real prompt");
+    expect(events).toContainEqual(expect.objectContaining({
+      kind: "run.completed",
+      payload: expect.objectContaining({ text: "real model reply" }),
+    }));
   });
 
   it("rejects another Chat, another workspace, and remote policy changes", async () => {
