@@ -1,4 +1,4 @@
-import type { IlinkClient, IlinkCredentials, IlinkMessage } from "./weixin-ilink-client.ts";
+import { IlinkSessionExpiredError, type IlinkClient, type IlinkCredentials, type IlinkMessage } from "./weixin-ilink-client.ts";
 import type { WeixinStateV1 } from "./weixin-state.ts";
 import { WeixinStateStore } from "./weixin-state.ts";
 
@@ -19,6 +19,7 @@ export interface WeixinTransportDeps {
   /** Host-owned one-time pairing decision for a previously unseen sender. */
   authorizeSender?(senderId: string): Promise<boolean>;
   onError?(error: Error): void;
+  onHealthy?(): void;
   retryDelayMs?: number;
 }
 
@@ -73,9 +74,11 @@ export class WeixinTransport {
         state = { ...state, syncBuf: update.syncBuf };
         const saved = await this.deps.store.write(state);
         if (!saved.ok) throw new Error(saved.error.message);
+        this.deps.onHealthy?.();
       } catch (cause) {
         if (signal.aborted) break;
         this.report(cause);
+        if (cause instanceof IlinkSessionExpiredError) break;
         await this.waitForRetry(signal);
       }
     }

@@ -23,6 +23,7 @@ export interface WeixinControllerDeps {
   store?: WeixinStateStore;
   persistCapabilities(settings: PersistedCapabilitySettings[]): Promise<Result<void>>;
   runTurn(input: { sessionId: string; prompt: string }): Promise<string>;
+  compactReply(input: { sessionId: string; text: string }): Promise<string>;
   renderQr?(content: string): Promise<string>;
   sleep?(milliseconds: number): Promise<void>;
 }
@@ -106,6 +107,7 @@ export class WeixinController {
 
   private async login(ui: WeixinCommandUi): Promise<void> {
     this.assertTrusted();
+    await this.shutdown();
     let qr = await this.client.requestQr();
     let baseUrl: string | undefined;
     ui.notify(`Scan this QR code in Weixin:\n${await this.renderQr(qr.content)}\n${qr.content}`, "info");
@@ -140,6 +142,7 @@ export class WeixinController {
           recentMessageIds: [],
         });
         if (!saved.ok) throw new Error(saved.error.message);
+        this.lastError = undefined;
         ui.notify("Weixin iLink login saved in the Picode Account Vault. Run /weixin start.", "info");
         return;
       }
@@ -177,13 +180,17 @@ export class WeixinController {
       token: vaultCredentials.value.accessToken,
       baseUrl: vaultCredentials.value.baseUrl ?? "https://ilinkai.weixin.qq.com",
     };
+    this.lastError = undefined;
     const saved = await this.store.write({ ...current, boundSessionId: context.sessionId, boundSessionFile: context.sessionFile });
     if (!saved.ok) throw new Error(saved.error.message);
     this.transport = new WeixinTransport({
       client: this.client,
       store: this.store,
       credentials: () => this.credentials(),
-      handleMessage: ({ sessionId, text }) => this.deps.runTurn({ sessionId, prompt: text }),
+      handleMessage: async ({ sessionId, text }) => {
+        const fullReply = await this.deps.runTurn({ sessionId, prompt: text });
+        return this.deps.compactReply({ sessionId, text: fullReply });
+      },
       authorizeSender: async (senderId) => {
         const allowed = await context.ui.confirm(
           "Weixin sender pairing",
@@ -196,6 +203,7 @@ export class WeixinController {
         return allowed;
       },
       onError: (error) => { this.lastError = error.message; },
+      onHealthy: () => { this.lastError = undefined; },
     });
     await this.transport.start();
     context.ui.notify("Weixin iLink started and bound exclusively to the current Chat.", "info");

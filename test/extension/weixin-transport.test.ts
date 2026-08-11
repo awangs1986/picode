@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { IlinkClient, IlinkCredentials } from "../../src/extension/weixin-ilink-client.ts";
+import { IlinkSessionExpiredError, type IlinkClient, type IlinkCredentials } from "../../src/extension/weixin-ilink-client.ts";
 import { WeixinStateStore } from "../../src/extension/weixin-state.ts";
 import { WeixinTransport } from "../../src/extension/weixin-transport.ts";
 
@@ -139,6 +139,30 @@ describe("WeixinTransport", () => {
     expect(client.sendText).toHaveBeenNthCalledWith(2, credentials, expect.objectContaining({ clientId: "picode-weixin-m-send-retry-0" }));
     const saved = await store.read();
     expect(saved.ok && saved.value).toMatchObject({ syncBuf: "s1", recentMessageIds: ["m-send-retry"] });
+  });
+
+  it("stops instead of retrying forever when the iLink login session expires", async () => {
+    const client = {
+      getUpdates: vi.fn().mockRejectedValue(new IlinkSessionExpiredError("getupdates")),
+      sendText: vi.fn(),
+    } as unknown as IlinkClient;
+    const onError = vi.fn();
+    const store = tempState();
+    await store.write({ version: 1, accountRefId: "weixin-ilink:bot-1", boundSessionId: "chat-1", allowedUserIds: ["owner-1"], syncBuf: "", contextTokens: {}, recentMessageIds: [] });
+    const transport = new WeixinTransport({
+      client,
+      credentials: () => credentials,
+      store,
+      handleMessage: vi.fn(),
+      onError,
+      retryDelayMs: 1,
+    });
+
+    await transport.start();
+    await vi.waitFor(() => expect(transport.isRunning()).toBe(false));
+
+    expect(client.getUpdates).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining("run /weixin login") }));
   });
 
   it("ignores unapproved senders and duplicate messages", async () => {
