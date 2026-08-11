@@ -16,6 +16,7 @@ export interface WeixinTransportDeps {
   credentials(): IlinkCredentials;
   store: WeixinStateStore;
   handleMessage(input: WeixinInbound): Promise<string>;
+  transformReply?(input: { sessionId: string; text: string }): Promise<string>;
   /** Host-owned one-time pairing decision for a previously unseen sender. */
   authorizeSender?(senderId: string): Promise<boolean>;
   onError?(error: Error): void;
@@ -110,10 +111,14 @@ export class WeixinTransport {
     if (!admittedSave.ok) throw new Error(admittedSave.error.message);
     const sessionId = state.boundSessionId;
     if (sessionId === undefined) return admitted;
-    const reply = await this.retry(
+    const fullReply = await this.retry(
       () => this.deps.handleMessage({ sessionId, senderId: message.senderId, text: message.text }),
       signal,
     );
+    const transformReply = this.deps.transformReply;
+    const reply = transformReply === undefined
+      ? fullReply
+      : await this.retry(() => transformReply({ sessionId, text: fullReply }), signal);
     const replyChunks = chunks(reply);
     for (const [index, text] of replyChunks.entries()) {
       await this.retry(() => this.deps.client.sendText(credentials, {

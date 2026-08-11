@@ -187,10 +187,8 @@ export class WeixinController {
       client: this.client,
       store: this.store,
       credentials: () => this.credentials(),
-      handleMessage: async ({ sessionId, text }) => {
-        const fullReply = await this.deps.runTurn({ sessionId, prompt: text });
-        return this.deps.compactReply({ sessionId, text: fullReply });
-      },
+      handleMessage: ({ sessionId, text }) => this.deps.runTurn({ sessionId, prompt: text }),
+      transformReply: ({ sessionId, text }) => this.deps.compactReply({ sessionId, text }),
       authorizeSender: async (senderId) => {
         const allowed = await context.ui.confirm(
           "Weixin sender pairing",

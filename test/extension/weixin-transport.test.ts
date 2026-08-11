@@ -107,6 +107,41 @@ describe("WeixinTransport", () => {
     expect(saved.ok && saved.value).toMatchObject({ syncBuf: "", recentMessageIds: [] });
   });
 
+  it("retries reply compaction without rerunning the completed Pi turn", async () => {
+    const client = {
+      getUpdates: vi.fn()
+        .mockResolvedValueOnce({ syncBuf: "s1", messages: [{ messageId: "m-compact-retry", senderId: "owner-1", text: "状态", contextToken: "ctx-compact" }] })
+        .mockImplementation(async (_credentials, syncBuf, signal: AbortSignal) => {
+          await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+          return { syncBuf, messages: [] };
+        }),
+      sendText: vi.fn().mockResolvedValue(undefined),
+    } as unknown as IlinkClient;
+    const handleMessage = vi.fn().mockResolvedValue("完整 TUI 回答");
+    const transformReply = vi.fn()
+      .mockRejectedValueOnce(new Error("temporary compaction failure"))
+      .mockResolvedValueOnce("精简微信回答");
+    const store = tempState();
+    await store.write({ version: 1, accountRefId: "weixin-ilink:bot-1", boundSessionId: "chat-1", allowedUserIds: ["owner-1"], syncBuf: "", contextTokens: {}, recentMessageIds: [] });
+    const transport = new WeixinTransport({
+      client,
+      credentials: () => credentials,
+      store,
+      handleMessage,
+      transformReply,
+      retryDelayMs: 1,
+    });
+
+    await transport.start();
+    await vi.waitFor(() => expect(client.sendText).toHaveBeenCalledTimes(1));
+    await transport.stop();
+
+    expect(handleMessage).toHaveBeenCalledTimes(1);
+    expect(transformReply).toHaveBeenCalledTimes(2);
+    expect(transformReply).toHaveBeenCalledWith({ sessionId: "chat-1", text: "完整 TUI 回答" });
+    expect(client.sendText).toHaveBeenCalledWith(credentials, expect.objectContaining({ text: "精简微信回答" }));
+  });
+
   it("retries outbound delivery without rerunning the completed Pi turn", async () => {
     const client = {
       getUpdates: vi.fn()
