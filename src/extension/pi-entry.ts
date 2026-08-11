@@ -47,6 +47,7 @@ import { fileURLToPath } from "node:url";
 import { hostname } from "node:os";
 import { advertisedIpv4 } from "../serve/network.ts";
 import { TuiControlDriver } from "./tui-control-driver.ts";
+import { WeixinController } from "./weixin-controller.ts";
 
 /** Real Pi extension entry. Keep this file as a thin composition adapter. */
 function remoteAdvertisedHost(): string {
@@ -64,6 +65,7 @@ export default function picodeExtension(pi: ExtensionAPI): void {
   const toolAdapter = new PiActiveToolAdapter(pi);
   const loadedSuitePackages = new Set<string>();
   const runtime = bootRuntime({ toolAdapter });
+  const packageRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
   // HTTP/SSE is an internal diagnostic transport, not the public control plane.
   // Normal TUI/CLI startup therefore opens no debug port.
   if (process.env["PICODE_DEBUG_API"] === "1") {
@@ -72,8 +74,51 @@ export default function picodeExtension(pi: ExtensionAPI): void {
     });
   }
   let activeContext: ExtensionContext | undefined;
+  let weixinCommandContext: ExtensionCommandContext | undefined;
   let remoteCommandContext: ExtensionCommandContext | undefined;
   let remoteServe: RemoteServeHandle | undefined;
+  const weixin = new WeixinController({
+    runtime,
+    persistCapabilities: saveCapabilitySettings,
+    runTurn: async ({ sessionId, prompt }) => {
+      const context = weixinCommandContext;
+      if (context === undefined || context.sessionManager.getSessionId() !== sessionId) {
+        throw new Error(`Chat ${sessionId} is no longer active in the Pi TUI`);
+      }
+      const driver = new TuiControlDriver({
+        packageRoot,
+        piEntry: join(packageRoot, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "cli.js"),
+        cwd: context.cwd,
+        env: { ...process.env },
+      }, pi, context);
+      for await (const event of driver.run({ prompt, session: sessionId, nonInteractive: true })) {
+        if (event.kind === "run.completed") {
+          const payload = event.payload as { text?: unknown };
+          if (typeof payload.text !== "string" || payload.text.trim() === "") {
+            throw new Error("Pi completed without a text reply");
+          }
+          return payload.text;
+        }
+        if (event.kind === "run.error" || event.kind === "run.timeout" || event.kind === "run.cancelled") {
+          const payload = event.payload as { message?: unknown };
+          throw new Error(typeof payload.message === "string" ? payload.message : `Pi turn ended as ${event.kind}`);
+        }
+      }
+      throw new Error("Pi turn ended without a completion event");
+    },
+  });
+  pi.registerCommand("weixin", {
+    description: "Connect the current Chat to a Weixin iLink Bot private conversation",
+    handler: async (args, ctx) => {
+      weixinCommandContext = ctx;
+      const sessionFile = ctx.sessionManager.getSessionFile();
+      await weixin.execute(args, {
+        sessionId: ctx.sessionManager.getSessionId(),
+        ...(sessionFile === undefined ? {} : { sessionFile }),
+        ui: ctx.ui,
+      });
+    },
+  });
   registerMcpApprovalBridge(pi.events, runtime, () => activeContext);
   registerSubagentEnvelopeBridge(pi.events, runtime);
   let capabilitySettingsRestored = false;
@@ -143,6 +188,7 @@ export default function picodeExtension(pi: ExtensionAPI): void {
     },
     onSessionReady: async (ctx) => {
       activeContext = ctx;
+      await weixin.onSessionChanged(ctx.sessionManager.getSessionId());
       runtime.bindRemoteMessageSender(async (sessionId, message) => {
         if (activeContext === undefined || activeContext.sessionManager.getSessionId() !== sessionId) {
           return err("api/session-not-active", `session ${sessionId} is not the active Pi session`);
@@ -181,7 +227,6 @@ export default function picodeExtension(pi: ExtensionAPI): void {
       }
       if (remoteServe === undefined) {
         remoteCommandContext = ctx;
-        const packageRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
         const advertisedHost = remoteAdvertisedHost();
         const driver = new TuiControlDriver({
           packageRoot,
@@ -239,6 +284,7 @@ export default function picodeExtension(pi: ExtensionAPI): void {
     const handle = remoteServe;
     remoteServe = undefined;
     if (handle !== undefined) void handle.close();
+    void weixin.shutdown();
   });
   registerModelContinuity(pi, {
     store: {

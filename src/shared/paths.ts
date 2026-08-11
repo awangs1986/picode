@@ -46,4 +46,5 @@ export const dataPaths = {
   serveRequests: () => join(picodeDir(), "serve", "requests.json"),
   serveInfo: () => join(picodeDir(), "serve", "active.json"),
   workspaceFence: () => join(picodeDir(), "workspace-fence.json"),
+  weixinState: () => join(picodeDir(), "weixin", "state.json"),
 };
