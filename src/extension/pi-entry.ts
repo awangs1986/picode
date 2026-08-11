@@ -48,6 +48,7 @@ import { hostname } from "node:os";
 import { advertisedIpv4 } from "../serve/network.ts";
 import { TuiControlDriver } from "./tui-control-driver.ts";
 import { WeixinController } from "./weixin-controller.ts";
+import { compactWeixinReply } from "./weixin-reply-compactor.ts";
 
 /** Real Pi extension entry. Keep this file as a thin composition adapter. */
 function remoteAdvertisedHost(): string {
@@ -105,6 +106,18 @@ export default function picodeExtension(pi: ExtensionAPI): void {
         }
       }
       throw new Error("Pi turn ended without a completion event");
+    },
+    compactReply: async ({ sessionId, text }) => {
+      const context = weixinCommandContext;
+      if (context === undefined || context.sessionManager.getSessionId() !== sessionId) {
+        throw new Error(`Chat ${sessionId} is no longer active in the Pi TUI`);
+      }
+      const model = context.model;
+      if (model === undefined) throw new Error("The active Pi TUI has no selected model for Weixin reply compaction");
+      return compactWeixinReply(
+        text,
+        (compactContext) => context.modelRegistry.complete(model, compactContext),
+      );
     },
   });
   pi.registerCommand("weixin", {

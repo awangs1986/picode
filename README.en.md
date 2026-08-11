@@ -85,8 +85,9 @@ guidance level for the current session:
 
 ## One-chat Weixin remote transport (tier 3)
 
-Picode bundles a disabled-by-default Tencent iLink Bot text adapter. It connects one
-current Pi Chat to a Weixin private conversation and does not create another Agent Runtime.
+Picode bundles a disabled-by-default Tencent iLink Bot text adapter. Each Weixin message enters
+one current Pi Chat exactly like TUI input and does not create another Agent Runtime. The full
+answer stays in the TUI, then the active model compacts it once before the reply is sent to Weixin.
 
 ```text
 /weixin enable

@@ -82,8 +82,8 @@ flowchart TD
 
 ## 微信远程单对话（第三级插件）
 
-Picode 随包提供一个默认停用的腾讯 iLink Bot 文本适配器。它只把当前一个 Pi 对话连接到
-微信私聊，不创建第二套 Agent Runtime。首次使用：
+Picode 随包提供一个默认停用的腾讯 iLink Bot 文本适配器。微信消息会像 TUI 输入一样进入
+当前一个 Pi 对话，不创建第二套 Agent Runtime；完整回答留在 TUI，再经当前模型精简一次后回复微信。首次使用：
 
 ```text
 /weixin enable

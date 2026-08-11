@@ -1,4 +1,4 @@
-import type { IlinkClient, IlinkCredentials, IlinkMessage } from "./weixin-ilink-client.ts";
+import { IlinkSessionExpiredError, type IlinkClient, type IlinkCredentials, type IlinkMessage } from "./weixin-ilink-client.ts";
 import type { WeixinStateV1 } from "./weixin-state.ts";
 import { WeixinStateStore } from "./weixin-state.ts";
 
@@ -16,9 +16,11 @@ export interface WeixinTransportDeps {
   credentials(): IlinkCredentials;
   store: WeixinStateStore;
   handleMessage(input: WeixinInbound): Promise<string>;
+  transformReply?(input: { sessionId: string; text: string }): Promise<string>;
   /** Host-owned one-time pairing decision for a previously unseen sender. */
   authorizeSender?(senderId: string): Promise<boolean>;
   onError?(error: Error): void;
+  onHealthy?(): void;
   retryDelayMs?: number;
 }
 
@@ -73,9 +75,11 @@ export class WeixinTransport {
         state = { ...state, syncBuf: update.syncBuf };
         const saved = await this.deps.store.write(state);
         if (!saved.ok) throw new Error(saved.error.message);
+        this.deps.onHealthy?.();
       } catch (cause) {
         if (signal.aborted) break;
         this.report(cause);
+        if (cause instanceof IlinkSessionExpiredError) break;
         await this.waitForRetry(signal);
       }
     }
@@ -107,10 +111,14 @@ export class WeixinTransport {
     if (!admittedSave.ok) throw new Error(admittedSave.error.message);
     const sessionId = state.boundSessionId;
     if (sessionId === undefined) return admitted;
-    const reply = await this.retry(
+    const fullReply = await this.retry(
       () => this.deps.handleMessage({ sessionId, senderId: message.senderId, text: message.text }),
       signal,
     );
+    const transformReply = this.deps.transformReply;
+    const reply = transformReply === undefined
+      ? fullReply
+      : await this.retry(() => transformReply({ sessionId, text: fullReply }), signal);
     const replyChunks = chunks(reply);
     for (const [index, text] of replyChunks.entries()) {
       await this.retry(() => this.deps.client.sendText(credentials, {

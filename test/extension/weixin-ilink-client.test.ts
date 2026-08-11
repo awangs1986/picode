@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { IlinkClient } from "../../src/extension/weixin-ilink-client.ts";
+import { IlinkClient, IlinkSessionExpiredError } from "../../src/extension/weixin-ilink-client.ts";
 
 function jsonResponse(value: unknown): Response {
   return new Response(JSON.stringify(value), { status: 200, headers: { "content-type": "application/json" } });
@@ -50,6 +50,20 @@ describe("IlinkClient", () => {
       context_token: "ctx-1", item_list: [{ type: 1, text_item: { text: "完成" } }],
     });
     expect(new Headers(fetch.mock.calls[1]?.[1]?.headers).get("authorization")).toBe("Bearer secret");
+  });
+
+  it("classifies an expired getupdates session as requiring a fresh login", async () => {
+    const client = new IlinkClient({
+      fetch: vi.fn<typeof globalThis.fetch>().mockResolvedValueOnce(jsonResponse({
+        ret: 0,
+        errcode: -14,
+        errmsg: "session timeout",
+      })),
+    });
+
+    await expect(client.getUpdates({
+      accountId: "bot-1", token: "expired", baseUrl: "https://ilinkai.weixin.qq.com", userId: "owner-1",
+    }, "before")).rejects.toBeInstanceOf(IlinkSessionExpiredError);
   });
 
   it("rejects a redirected credential host outside Tencent iLink", async () => {

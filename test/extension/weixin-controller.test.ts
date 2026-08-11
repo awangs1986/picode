@@ -33,7 +33,14 @@ describe("WeixinController", () => {
       await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
       return { syncBuf: sync, messages: [] };
     }) } as unknown as IlinkClient;
-    const controller = new WeixinController({ runtime, client, store, persistCapabilities, runTurn: vi.fn() });
+    const controller = new WeixinController({
+      runtime,
+      client,
+      store,
+      persistCapabilities,
+      runTurn: vi.fn(),
+      compactReply: vi.fn(),
+    });
     const ui = { notify: vi.fn(), confirm: vi.fn() };
     const context = { sessionId: "chat-1", sessionFile: "chat.jsonl", ui };
 
@@ -43,8 +50,63 @@ describe("WeixinController", () => {
     await controller.execute("start", context);
     expect(runtime.guard.catalog.get(WEIXIN_CAPABILITY_ID)?.setting).toBe("trusted");
     expect(controller.status().running).toBe(true);
+    expect(controller.status().lastError).toBeUndefined();
     const saved = await store.read();
     expect(saved.ok ? saved.value : undefined).toMatchObject({ boundSessionId: "chat-1", boundSessionFile: "chat.jsonl" });
     await controller.shutdown();
+  });
+
+  it("injects inbound text into the bound TUI turn and sends one compacted reply", async () => {
+    const root = mkdtempSync(join(tmpdir(), "picode-weixin-controller-")); roots.push(root);
+    process.env["PICODE_DIR"] = root;
+    const runtime = createRuntime();
+    expect(runtime.guard.catalog.userSetState(WEIXIN_CAPABILITY_ID, "trusted").ok).toBe(true);
+    const store = new WeixinStateStore(join(root, "weixin.json"));
+    await store.write({
+      version: 1, accountRefId: "weixin-ilink:bot-1", ilinkAccountId: "bot-1", ilinkUserId: "owner-1",
+      allowedUserIds: ["owner-1"], syncBuf: "", contextTokens: {}, recentMessageIds: [],
+    });
+    await runtime.accounts.importCredentials({
+      stableId: "bot-1", provider: "weixin-ilink", label: "Weixin bot-1", authKind: "session",
+      chatCompatible: false, credentials: { accessToken: "secret", baseUrl: "https://ilinkai.weixin.qq.com" },
+    });
+    const client = {
+      getUpdates: vi.fn()
+        .mockResolvedValueOnce({ syncBuf: "s1", messages: [{ messageId: "m1", senderId: "owner-1", text: "你好", contextToken: "ctx" }] })
+        .mockImplementation(async (_credentials, syncBuf, signal: AbortSignal) => {
+          await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+          return { syncBuf, messages: [] };
+        }),
+      sendText: vi.fn().mockResolvedValue(undefined),
+    } as unknown as IlinkClient;
+    const runTurn = vi.fn().mockResolvedValue("这是保留在 TUI 中的完整回答，包含详细步骤和验证结果。");
+    const compactReply = vi.fn().mockResolvedValue("你好，已经处理完成。");
+    const controller = new WeixinController({
+      runtime,
+      client,
+      store,
+      persistCapabilities: vi.fn().mockResolvedValue({ ok: true, value: undefined }),
+      runTurn,
+      compactReply,
+    });
+    const context = {
+      sessionId: "chat-1",
+      sessionFile: "chat.jsonl",
+      ui: { notify: vi.fn(), confirm: vi.fn() },
+    };
+
+    await controller.execute("start", context);
+    await vi.waitFor(() => expect(client.sendText).toHaveBeenCalledTimes(1));
+    await controller.shutdown();
+
+    expect(runTurn).toHaveBeenCalledWith({ sessionId: "chat-1", prompt: "你好" });
+    expect(compactReply).toHaveBeenCalledWith({
+      sessionId: "chat-1",
+      text: "这是保留在 TUI 中的完整回答，包含详细步骤和验证结果。",
+    });
+    expect(client.sendText).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      peerId: "owner-1",
+      text: "你好，已经处理完成。",
+    }));
   });
 });

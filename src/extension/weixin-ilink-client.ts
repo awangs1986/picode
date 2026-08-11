@@ -28,6 +28,13 @@ export interface IlinkClientOptions {
   randomUin?: () => number;
 }
 
+export class IlinkSessionExpiredError extends Error {
+  constructor(endpoint: string) {
+    super(`iLink ${endpoint} session expired; run /weixin login`);
+    this.name = "IlinkSessionExpiredError";
+  }
+}
+
 function object(value: unknown): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new Error("invalid iLink response");
@@ -182,6 +189,9 @@ export class IlinkClient {
   private assertSuccess(response: Record<string, unknown>, endpoint: string): void {
     const ret = typeof response["ret"] === "number" ? response["ret"] : 0;
     const errcode = typeof response["errcode"] === "number" ? response["errcode"] : 0;
+    if (ret === -14 || errcode === -14) {
+      throw new IlinkSessionExpiredError(endpoint);
+    }
     if (ret !== 0 || errcode !== 0) {
       throw new Error(`iLink ${endpoint} failed: ret=${ret} errcode=${errcode} ${string(response["errmsg"])}`.trim());
     }
