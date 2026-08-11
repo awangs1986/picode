@@ -20,6 +20,7 @@ import { SUITE_ENTRIES } from "./suite.ts";
 import { systemPromptInjection } from "./prompts.ts";
 import { enrichUnknownToolError } from "./unknown-tool-hook.ts";
 import { ONBOARDING_MANIFESTS } from "./onboarding-runner.ts";
+import { WEIXIN_CAPABILITY_MANIFEST } from "./weixin-manifest.ts";
 import {
   RuntimeEnvelopeIngress,
   type ExecutionIdentity,
@@ -196,6 +197,7 @@ export function createRuntime(opts: RuntimeOptions = {}): PicodeRuntime {
   for (const manifest of ONBOARDING_MANIFESTS) {
     guard.catalog.register(manifest, "disabled");
   }
+  guard.catalog.register(WEIXIN_CAPABILITY_MANIFEST, "disabled");
 
   const runtime: PicodeRuntime = {
     store,

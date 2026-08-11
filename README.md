@@ -80,6 +80,20 @@ flowchart TD
 /system prompt full
 ```
 
+## 微信远程单对话（第三级插件）
+
+Picode 随包提供一个默认停用的腾讯 iLink Bot 文本适配器。它只把当前一个 Pi 对话连接到
+微信私聊，不创建第二套 Agent Runtime。首次使用：
+
+```text
+/weixin enable
+/weixin login
+/weixin start
+```
+
+切换对话或退出 TUI 会自动停止；`/weixin disable` 后没有轮询或网络活动。详见
+[微信 iLink 插件指南](docs/WEIXIN-ILINK.zh.md)。
+
 不带级别时会显示选择菜单。该命令不改变 Harness、工具、权限、沙箱或 Gate；
 下一次切换 Harness 会清除手动覆盖并恢复新档位默认值。
 
@@ -233,4 +247,5 @@ GUI、远程协作和更丰富的扩展市场会在核心 Pi Workflow 稳定后�
 ## 许可证和致谢
 
 Picode 以 MIT 许可证发布。感谢 Pi Agent 及其生态项目提供可组合的 Runtime、TUI
-和扩展接口；Picode 是围绕 Pi 的独立 folk/衍生开发路线。
+和扩展接口；微信文本协议适配参考了 MIT 许可的 NousResearch/hermes-agent。
+Picode 是围绕 Pi 的独立 folk/衍生开发路线。

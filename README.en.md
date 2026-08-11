@@ -83,6 +83,21 @@ guidance level for the current session:
 /system prompt full
 ```
 
+## One-chat Weixin remote transport (tier 3)
+
+Picode bundles a disabled-by-default Tencent iLink Bot text adapter. It connects one
+current Pi Chat to a Weixin private conversation and does not create another Agent Runtime.
+
+```text
+/weixin enable
+/weixin login
+/weixin start
+```
+
+Switching Chat or exiting the TUI stops it automatically; `/weixin disable` leaves no
+poller or network activity. The detailed operating guide is currently available in
+[Chinese](docs/WEIXIN-ILINK.zh.md).
+
 With no level, the command opens a three-choice menu. It does not change the
 Harness, tools, permissions, sandbox, or Gates. The next Harness switch clears
 the manual override and restores that tier's default.
@@ -234,5 +249,6 @@ documents and ADRs before changing core architecture, permissions, Gates, or fil
 ## License and acknowledgements
 
 Picode is released under the MIT License. Thanks to Pi Agent and its ecosystem for the
-composable runtime, TUI, and extension interfaces. Picode is an independent folk project
-built around Pi.
+composable runtime, TUI, and extension interfaces. The Weixin text protocol adapter draws
+on the MIT-licensed NousResearch/hermes-agent implementation. Picode is an independent
+folk project built around Pi.
