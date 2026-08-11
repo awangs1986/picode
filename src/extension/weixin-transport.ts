@@ -67,20 +67,16 @@ export class WeixinTransport {
         const credentials = this.deps.credentials();
         const update = await this.deps.client.getUpdates(credentials, state.syncBuf, signal);
         if (signal.aborted) break;
-        state = { ...state, syncBuf: update.syncBuf };
         for (const message of update.messages) {
-          if (signal.aborted) break;
-          state = await this.process(credentials, state, message);
+          state = await this.process(credentials, state, message, signal);
         }
+        state = { ...state, syncBuf: update.syncBuf };
         const saved = await this.deps.store.write(state);
         if (!saved.ok) throw new Error(saved.error.message);
       } catch (cause) {
         if (signal.aborted) break;
-        this.deps.onError?.(cause instanceof Error ? cause : new Error(String(cause)));
-        await new Promise<void>((resolve) => {
-          const timer = setTimeout(resolve, this.deps.retryDelayMs ?? 2_000);
-          signal.addEventListener("abort", () => { clearTimeout(timer); resolve(); }, { once: true });
-        });
+        this.report(cause);
+        await this.waitForRetry(signal);
       }
     }
   }
@@ -89,6 +85,7 @@ export class WeixinTransport {
     credentials: IlinkCredentials,
     state: WeixinStateV1,
     message: IlinkMessage,
+    signal: AbortSignal,
   ): Promise<WeixinStateV1> {
     if (state.recentMessageIds.includes(message.messageId)) {
       return state;
@@ -100,24 +97,65 @@ export class WeixinTransport {
       }
       allowedUserIds = [...new Set([...allowedUserIds, message.senderId])];
     }
-    const recentMessageIds = [...state.recentMessageIds, message.messageId].slice(-MAX_RECENT_MESSAGES);
     const contextTokens = message.contextToken === undefined
       ? state.contextTokens
       : { ...state.contextTokens, [message.senderId]: message.contextToken };
-    const next = { ...state, allowedUserIds, recentMessageIds, contextTokens };
-    // Persist admission and its context token before executing the model turn.
-    const saved = await this.deps.store.write(next);
-    if (!saved.ok) throw new Error(saved.error.message);
+    const admitted = { ...state, allowedUserIds, contextTokens };
+    // Persist authorization and the reply context, but do not mark the message
+    // complete until both the Pi turn and outbound delivery have succeeded.
+    const admittedSave = await this.deps.store.write(admitted);
+    if (!admittedSave.ok) throw new Error(admittedSave.error.message);
     const sessionId = state.boundSessionId;
-    if (sessionId === undefined) return next;
-    const reply = await this.deps.handleMessage({ sessionId, senderId: message.senderId, text: message.text });
-    for (const text of chunks(reply)) {
-      await this.deps.client.sendText(credentials, {
+    if (sessionId === undefined) return admitted;
+    const reply = await this.retry(
+      () => this.deps.handleMessage({ sessionId, senderId: message.senderId, text: message.text }),
+      signal,
+    );
+    const replyChunks = chunks(reply);
+    for (const [index, text] of replyChunks.entries()) {
+      await this.retry(() => this.deps.client.sendText(credentials, {
         peerId: message.senderId,
         text,
+        clientId: `picode-weixin-${message.messageId}-${index}`,
         ...(contextTokens[message.senderId] === undefined ? {} : { contextToken: contextTokens[message.senderId] }),
-      });
+      }), signal);
     }
-    return next;
+    const completed = {
+      ...admitted,
+      recentMessageIds: [...state.recentMessageIds, message.messageId].slice(-MAX_RECENT_MESSAGES),
+    };
+    const completedSave = await this.deps.store.write(completed);
+    if (!completedSave.ok) throw new Error(completedSave.error.message);
+    return completed;
+  }
+
+  private async retry<T>(operation: () => Promise<T>, signal: AbortSignal): Promise<T> {
+    while (!signal.aborted) {
+      try {
+        return await operation();
+      } catch (cause) {
+        if (signal.aborted) break;
+        this.report(cause);
+        await this.waitForRetry(signal);
+      }
+    }
+    throw new Error("Weixin transport stopped");
+  }
+
+  private report(cause: unknown): void {
+    this.deps.onError?.(cause instanceof Error ? cause : new Error(String(cause)));
+  }
+
+  private async waitForRetry(signal: AbortSignal): Promise<void> {
+    if (signal.aborted) return;
+    await new Promise<void>((resolve) => {
+      const finish = (): void => {
+        clearTimeout(timer);
+        signal.removeEventListener("abort", finish);
+        resolve();
+      };
+      const timer = setTimeout(finish, this.deps.retryDelayMs ?? 2_000);
+      signal.addEventListener("abort", finish, { once: true });
+    });
   }
 }

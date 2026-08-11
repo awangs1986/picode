@@ -1,7 +1,7 @@
 # Hermes Weixin → Picode 适配评估
 
-> 日期：2026-08-11  
-> 核对基线：NousResearch/hermes-agent `a1bfbccc02d5bfdaef1568facfca2cc1456c59f0`  
+> 日期：2026-08-11
+> 核对基线：NousResearch/hermes-agent `a1bfbccc02d5bfdaef1568facfca2cc1456c59f0`
 > 范围：仅设计评估，不包含实现。
 
 ## 结论
