@@ -43,7 +43,7 @@ picode 命令 = 启动自带的 pi（预装扩展套件，PI_CODING_AGENT_DIR=~/
 | Harness 档位 | **挂在会话**，`/harness` 随时切换；Task 记录所处档位供审计 | Q1（2026-08-07） |
 | Simple 档 | 接近原生 pi 体验：不加载沙箱/MCP/扩展工具，**唯一默认工具 = pi-web-access**；零污染不做逐字节严格验收 | Q2/Q12（2026-08-07） |
 | AI Review | pi-subagents watchdog 收编：二档 = watchdog 普通配置；三档 = 强模型对抗审查 + scope 监控 + LSP；Completion Label 仍由 Devloop verify/ 签发 | Q13（2026-08-07） |
-| 抗失真（P0–P4） | Slice/Capsule + pi 原生 auto-compact 保底 + watchdog scope-drift 监测 | Q11（2026-08-07） |
+| 抗失真（P0–P4） | Slice/Capsule + **Picode Context Governor 请求前硬预算** + pi 原生 auto-compact 持久化 + watchdog scope-drift 监测 | Q11（2026-08-07）；019ff330 红证据（2026-08-12） |
 | 缓存 | **全局策略（含 Simple 档）**，方案 v2 = Reasonix 结构/诊断 + pi-cache-optimizer 兼容面（关闭提示词重写）；归因信号集六项、缓存未复用/未缓存 Token 五类（含 unknown/provider-side）；auto-compact 也开新 Cache Epoch | Q5 + §3.3 v2（R3 校正） |
 | `/plan` | Picode 自有兼容入口；首次使用时从随包固定快照按需物化 `grill-with-docs` 及其依赖，然后重载当前 Pi 会话并交给该工作流 | 不联网、不弹外部安装提示；不再加载 pi-plan-mode/pi-goal |
 | LSP/诊断 | pi-lens 只在 TDD 档进入候选工具面，并按 Readiness 暴露可用子能力（待核 C#/GDScript）；Standard 使用 watchdog 内置 LSP 诊断兜底 | Q23（2026-08-07）+ 工具完善计划 |
@@ -59,7 +59,7 @@ picode 命令 = 启动自带的 pi（预装扩展套件，PI_CODING_AGENT_DIR=~/
 | 配置 | JSON（读取兼容 JSONC）；全局 `~/.picode/config.json` + 项目 `.picode/`；MCP 用生态标准 `.mcp.json` | ADR-0002 修订、ADR-0005 |
 | 提示词 | Simple **零注入**；Standard 追加稳定 Lean 行为核；TDD 追加自包含 Developer-TDD 行为核。两者都保留 Pi Base Prompt；Task/Capsule/Gate 事实只走受控 Context Event，不写入静态行为核 | `prompts/README.md`（2026-08-07 最终接入）；PICODE-HARNESS-PROMPT-DESIGN.md 仅作历史设计参考 |
 | Devloop 契约 | Capsule v1 外壳（schemaVersion/taskRevision/workspaceSnapshot/SourceRef/verificationRefs/digest + sealed/superseded 生命周期）+ 强制分节模板、Slice 三通道输入与软/硬阈值确定性裁决、TDD 状态机 `spec→red→green→refactor→gate→done` + 预算、Evidence 双层格式 | MODULES.md §3（Q15–Q18 + R3） |
-| 显式压缩/纠偏 | **整体推迟到 P5**（与手机/桌面远程端同期）；设计文档保留为 P5 规格 | Q3（2026-08-07）、PICODE-COMPRESS-SKILL-DESIGN.md |
+| 显式压缩/纠偏 | 用户命令 `/pi-compress`、`/pi-correct` 仍推迟到 P5；防止 Provider 超限的 Context Governor 属于 P0 运行时安全，不可关闭 | Q3（2026-08-07）、019ff330 红证据（2026-08-12）、PICODE-COMPRESS-SKILL-DESIGN.md |
 | 开发方式 | 不做迭代式 MVP：设计完毕 → 一次搭齐基础架构 → 作者自行完成实现 | Q7（2026-08-07） |
 | 导入 | Import Contract（manifest + 会话 IR + 工具痕迹五级判定）；转换器住核心外 | PICODE-FOREIGN-TOOL-CONTRACT-COMPATIBILITY.md |
 | 安全细节 | 会话级 `/permissions readonly|auto|full`、Guard 唯一事前授权、approval_fingerprint（成分/重算点/Grant 分级）、Git 所有权、秘密禁区；landstrip 只承接 OS 沙箱，不重复询问 | MODULES.md §2 |
@@ -126,7 +126,9 @@ picode doctor
 
 **供应商层**：pin 采用 **pi-cache-optimizer**（provider 兼容面：OpenAI 系 `prompt_cache_key` 兜底、代理 session affinity、Anthropic TTL 顺序守卫、compat doctor/fix、持久化计数）；**关闭其提示词重写**（`PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE=1`），前缀结构由 Picode 套件纪律控制。Spike：其 footer 与 Picode 部件的显示整合。
 
-**压缩经济学**：Reasonix 分层压缩（60% 软提醒 → 剪陈旧工具结果 → 占位符 → 付费摘要 → 强制）与固定尾部预算防循环，记入 P5 显式压缩模块实现参考；P0 的 pi 原生 auto-compact 阈值对齐"接近上限才触发"。
+**压缩经济学**：Reasonix 分层压缩（60% 软提醒 → 剪陈旧工具结果 → 占位符 → 付费摘要 → 强制）与固定尾部预算防循环，仍是 P5 显式压缩模块实现参考。P0 另有不可关闭的 **Context Governor**：在 Pi 的每次 `context` 事件（即每次 Provider 调用前，包括工具结果追加后的同一 Agent loop）计算完整预算；预算包含 system prompt、活动工具 schema、消息/Reasoning、工具结果、上一轮 `totalTokens`（含 cacheRead）之后的新尾部，以及输出预留和安全边际。达到阈值时必须先编译有界活动上下文，原始超预算请求不得发送；持久 JSONL 不改写，Agent settle 后再请求 pi durable compaction。普通 auto-compact 设置可关闭，但这道防卡死保护不可关闭。
+
+未经验证的第三方 OpenAI Responses endpoint 不得直接以模型卡片声明的 1M 作为有效窗口。P0 默认使用保守的 320K effective window；后续只有 endpoint 级验证证据才能提高。官方 endpoint 或已有验证值使用各自有效窗口。
 
 ### 3.4 三级工具与 search_tools 发现（2026-08-07 已确认，R4 收敛持久状态）
 
@@ -282,7 +284,7 @@ Bridge 可行性 Gate 通过后，再执行下面的供应商与平台 Spike：
 
 | 期 | 主题 | 范围 | 验收界碑 |
 |---|---|---|---|
-| **P0** | 骨架与地基 | **先完成 §4.1 Bridge 可行性 Gate**；再建单包仓库 + 边界检查脚本；vendored pi 启动器（`bin/picode.mjs`，数据目录初始化 + 套件核对）；`shared/`（Result、版本化事件契约、文件锁 + 原子写、路径规范化）；四模块空壳 + 接口 + 组合根注入；供应商与平台 Spike 1–14 全部收口（结论写回文档，失败项触发设计修订）；pi 原生 auto-compact 阈值对齐；建立严格 GateRunner（测试零匹配必须红、每个关键 Gate 有可控红探针），并把 V2 malformed/部分 UTF-8/重复终态/cancel-late fixture 移入共享契约语料 | `picode` 命令能启动 vendored pi + 空套件；Bridge 四项有真实原型证据；边界脚本和 GateRunner 自证红测通过；不存在“0 tests = green”；Spike 结论无未决 |
+| **P0** | 骨架与地基 | **先完成 §4.1 Bridge 可行性 Gate**；再建单包仓库 + 边界检查脚本；vendored pi 启动器；四模块空壳 + 接口 + 组合根注入；供应商与平台 Spike；**Context Governor 在每次 Provider 请求前执行完整预算并强制缩减，原超预算请求不得发送**；建立严格 GateRunner，并把 V2 failure fixtures 移入共享契约语料 | `picode` 能启动 vendored pi；Bridge 有真实原型证据；019ff330 类工具结果突增会在请求前被缩减到有效窗口内；即使普通 auto-compact 关闭也不会把已知超预算请求送给 Provider；GateRunner 自证红测通过 |
 | **P1** | 单人可用核心 | Adapter Extension 组合根实装；在任何 observer、状态投影或 UI 消费前完成统一 Envelope 解码与 Admission，以 `executionEpoch + runId/requestId + terminal state` 隔离 cancel 后迟到结果；账号管理（单一 Account Vault + OAuth + `/accounts`）；`/accounts import` 临时 Web Wizard（自动打开浏览器 + TUI 链接回退 + 本机扫描/JSON/自定义 API）；Execution Epoch 记账；Guard 三档预设 + approval_fingerprint + Grant 分级；缓存方案 v2 全量（部件 + 六信号归因 + pi-cache-optimizer 集成）；Simple 档（pi-web-access）；首次启动引导（§3.7）；固定工具语义 ID vocabulary（契约文档 P1）；能力目录 + search_tools + 三级驻留（含 ActiveCapabilityLease）；Capability 持久格式采用 `{enabled, trustedDigest?}`；移植 V2 P1-03 的可定位错误/锁毒化恢复行为，不保留 Rust owner | 日常单会话开发可用：从 TUI 打开 Wizard 完成账号导入/登录/切号、Simple 档聊天、缓存部件真数据、search_tools 全链路（搜→Activate→Guard→租约）；坏 frame 可记录/重放但不污染状态；重复终态和 cancel 后任意迟到结果均不能到达 observer；Wizard 认证、超时、取消与浏览器打开失败 Gate 全绿 |
 | **P2** | 二档 Harness 与执行治理 | `/harness` 换档；landstrip、pi-mcp-adapter、pi-subagents；Picode `/plan` 兼容入口（委托 mattpocock/skills）；Slice/Capsule v1；Worktree 规则；§3.2 第一方无头 CLI；TaskIngress 唯一任务入口；扩展/MCP/Subagent 返回统一走 Envelope/Admission | 二档全链路；外部 Agent 只经 CLI 创建/恢复会话、发送并等待回复、观察 Tool/Gate/Evidence、处理授权失败与取消；CLI 不依赖 TUI 且不解析终端输出；真实中型仓库完成一次跨模块 Slice 接续实验 |
 | **P3-A** | TDD 三档 | 三档提示词（Claude Code 移植 + 语义适配）；TDD 状态机 + 预算（**数值本期定稿**）+ Gate/Evidence + Completion Label（verify/ 唯一签发）；pi-lens 接入（三档默认）+ 对抗审查（watchdog 强配置） | TDD 档跑通一个真实小项目（recorded RED → green → gate → Completion Label）；Flaky 不制造无限修复循环 |

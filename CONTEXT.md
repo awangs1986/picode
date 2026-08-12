@@ -82,6 +82,12 @@
 
 **Built-in Feature** — Picode 出厂自带的可选功能（如上下文压缩）；用户可开关，无信任流程，界面上属于"功能"分区。Codebase Memory 只有稳定 Provider Interface/Adapter 属于内建，实际三方运行时不属于 Built-in Feature。
 
+**Context Governor** — Devloop/context 的确定性请求编译器。它在每次 Provider 调用前把 system、工具 schema、历史、Reasoning、Tool Result、cacheRead 后新增尾部、输出预留和安全边际放进同一预算；接近 endpoint 有效上限时强制生成有界 active context，完整 transcript 不变。它是防卡死硬保护，不是用户可关闭的 `/pi-compress` 功能。
+
+**Active Context** — 某一次 Provider 请求实际获得的有界消息集合。它是从完整 Pi transcript 编译出的临时投影，不是第二份会话权威。工具轨迹可在这里被 envelope 化或折叠，但原 JSONL 仍可审计和恢复。
+
+**Effective Context Window** — Picode 有证据认为某个 provider/endpoint/model 组合实际可接受的窗口。它可以低于模型卡片声明值；未经验证的第三方 Responses endpoint 使用保守上限，不能用“模型理论支持 1M”替代 endpoint 证据。
+
 **Adapter Extension** — Picode 一方编写、随产品分发的 pi 扩展胶水；只把 pi 事件与意图翻译到 Module 接口，零业务逻辑、零自有状态；对用户不可见，不可单独停用。
 
 **External Extension** — 用户从外部来源安装的能力包（三方 pi 扩展、MCP、Skills、Hooks）；受能力目录治理。`Discovered` 表示目录中存在；持久化用户设置记录 Enabled/Disabled 与 Trusted/Untrusted；运行轴独立记录 Stopped/Running。不得把这些状态实现成一条会让 Enabled 自动进入 Running、或让 Trusted 自动扩大权限的线性状态机。

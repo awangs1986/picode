@@ -157,6 +157,22 @@ Task Capsule 的生命周期与事实内容由 **Devloop/task** 唯一拥有；
 Devloop/context 只把已校验 Capsule 渲染进 Context Package，不得改写、补齐或
 另存一份 Capsule 权威。Store 只提供文件写入纪律和索引，不解释 Capsule 语义。
 
+### 3.0 Context Governor（请求边界硬不变量）
+
+Context Governor 位于 `Devloop/context`，不是第五个模块。它只拥有“本次 Provider
+请求允许看见的活动上下文”编译语义；Pi JSONL 仍是完整会话权威，Engine/Adapter
+只负责把 Pi 的逐请求 `context` event 交给 Governor。
+
+- 预算必须同时计入 system、活动工具 schema、历史消息、Reasoning、Tool Result、
+  provider 上轮 `totalTokens`（含 cacheRead）之后新增尾部、输出预留和安全边际。
+- cacheRead 是成本优化，不是上下文豁免；不得只看本轮 uncached input。
+- 达到 trigger 后依次压缩大型工具结果（保留 head/tail、摘要元数据、SHA-256、
+  toolCallId/toolName）、移除旧 Reasoning、折叠旧叙事；完整原文继续留在 transcript。
+- 编译后仍超过 hard budget 时必须 abort/fail-closed，绝不发送原始请求。
+- 该保护独立于用户可关闭的普通 auto-compact；settle 后再请求持久化 compaction，
+  失败只保留 pending，不得让下一轮恢复为原始超预算请求。
+- 未验证第三方 endpoint 使用保守 effective window；提高窗口必须有 endpoint 级证据。
+
 ### 3.1 Capsule schema（契约，R3 补入 v1 外壳）
 
 强制分节模板（Factory.ai 式填空，防静默丢失），JSON 存

@@ -31,6 +31,16 @@ export { issueCompletionLabel } from "./verify/completion.ts";
 export type { CompletionLabel } from "./verify/completion.ts";
 export { renderForeignResumeCapsule } from "./context/foreign-resume.ts";
 export type { ForeignResumeInput } from "./context/foreign-resume.ts";
+export { ContextGovernor } from "./context/context-governor.ts";
+export type {
+  ContextBudgetBreakdown,
+  ContextGovernorBudget,
+  ContextGovernorInput,
+  ContextGovernorMessage,
+  ContextGovernorResult,
+  ContextGovernorStats,
+  ContextGovernorTool,
+} from "./context/context-governor.ts";
 export { TaskIngress } from "./task/ingress.ts";
 export type { TaskIngressInput, TaskRecord, TaskRef } from "./task/ingress.ts";
 export { isTaskControlState } from "./task/control.ts";

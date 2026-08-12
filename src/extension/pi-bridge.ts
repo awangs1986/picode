@@ -64,6 +64,7 @@ import {
   restorePermissionTier,
 } from "./permissions.ts";
 import { registerCompactionCompatibility } from "./compaction-compat.ts";
+import { registerContextGovernor } from "./context-governor.ts";
 import type { AccountImportCompleteHandler } from "./account-import-wizard.ts";
 import { prepareWorkspaceSwitch } from "./workspace-switch.ts";
 
@@ -351,6 +352,7 @@ export function registerPicodeBridge(
   options: BridgeOptions = {},
 ): { snapshot(): BridgeProbeSnapshot } {
   registerCompactionCompatibility(pi);
+  registerContextGovernor(pi);
   const now = options.now ?? (() => performance.now());
   const accountAdapter = new PiAccountAdapter(pi);
   const slices = new SliceSessionCoordinator(
