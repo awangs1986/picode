@@ -105,6 +105,8 @@ describe("Picode vendored Pi launch contract", () => {
       "C:/pkg/picode/src/extension/pi-entry.ts",
       "--extension",
       "C:/shared/node_modules/pi-cursor-sdk/src/index.ts",
+      "--tui-mode",
+      "fullscreen",
       "--resume",
       "session.jsonl",
     ]);
@@ -118,6 +120,20 @@ describe("Picode vendored Pi launch contract", () => {
       PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE: "1",
       PI_HARDWARE_CURSOR: "1",
     });
+
+    const explicitRegular = buildPiLaunch({
+      packageRoot: "C:/pkg/picode",
+      picodeDir: "C:/Users/dev/.picode",
+      piEntry: "C:/pkg/pi/dist/cli.js",
+      userArgs: ["--tui-mode", "regular"],
+      parentEnv: {},
+    });
+    expect(explicitRegular.args.slice(-4)).toEqual([
+      "--tui-mode",
+      "fullscreen",
+      "--tui-mode",
+      "regular",
+    ]);
   });
 
   it("prints RPC protocol help instead of starting the stdin server", async () => {

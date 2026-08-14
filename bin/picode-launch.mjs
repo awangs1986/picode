@@ -57,6 +57,10 @@ export function buildPiLaunch({ packageRoot, picodeDir, piEntry, cursorSdkExtens
       piEntry,
       "--extension", join(packageRoot, "src", "extension", "pi-entry.ts"),
       "--extension", cursorSdkExtension,
+      // Pi 0.84's native fullscreen renderer owns a bounded, mouse-scrollable
+      // transcript and fixed input dock. Keep this before user arguments so an
+      // explicit `--tui-mode regular` remains the final authority.
+      "--tui-mode", "fullscreen",
       ...userArgs,
     ],
     env: {
