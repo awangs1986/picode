@@ -736,6 +736,8 @@ export async function startRemoteServe(options: RemoteServeOptions): Promise<Rem
       }
     });
     socket.on("message", (raw: RawData) => {
+      let requestId = "";
+      let pendingKey: string | undefined;
       void (async () => {
         const now = Date.now();
         if (now - rateWindowStartedAt >= rateWindowMs) {
@@ -759,6 +761,7 @@ export async function startRemoteServe(options: RemoteServeOptions): Promise<Rem
           socket.send(JSON.stringify({ version: 1, id: "", error: { code: "control/request-invalid", message: "invalid RPC request" } }));
           return;
         }
+        requestId = parsed.id;
         const completed = requests.find(device.deviceId, parsed.id);
         if (completed !== undefined) {
           socket.send(JSON.stringify({ version: 1, id: parsed.id, result: { duplicate: true, terminal: completed.terminal } }));
@@ -793,6 +796,7 @@ export async function startRemoteServe(options: RemoteServeOptions): Promise<Rem
           return;
         }
         pending.add(key);
+        pendingKey = key;
         buffers.set(parsed.id, []);
 
         const sendServeTerminal = async (message: RpcMessage): Promise<void> => {
@@ -881,7 +885,11 @@ export async function startRemoteServe(options: RemoteServeOptions): Promise<Rem
         }
         await rpc.receive(parsed);
       })().catch(() => {
-        socket.send(JSON.stringify({ version: 1, id: "", error: { code: "serve/internal", message: "internal Host error" } }));
+        if (pendingKey !== undefined) pending.delete(pendingKey);
+        if (requestId !== "") buffers.delete(requestId);
+        if (socket.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify({ version: 1, id: requestId, error: { code: "serve/internal", message: "internal Host error" } }));
+        }
       });
     });
 

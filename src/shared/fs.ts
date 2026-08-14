@@ -4,9 +4,11 @@ import {
   existsSync,
   mkdirSync,
   openSync,
+  readFileSync,
   renameSync,
   rmSync,
   statSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
@@ -49,8 +51,39 @@ export function atomicWriteFile(
 
 const STALE_LOCK_MS = 30_000;
 
+interface LockRecord {
+  pid: number;
+  at: number;
+  ownerId?: string;
+}
+
+function readLockRecord(lockPath: string): LockRecord | undefined {
+  try {
+    const parsed = JSON.parse(readFileSync(lockPath, "utf8")) as Partial<LockRecord>;
+    return typeof parsed.pid === "number" && typeof parsed.at === "number"
+      ? parsed as LockRecord
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (cause) {
+    return typeof cause === "object" && cause !== null && "code" in cause &&
+      String((cause as { code?: unknown }).code) === "EPERM";
+  }
+}
+
+function lockIsOwnedBy(lockPath: string, ownerId: string): boolean {
+  return readLockRecord(lockPath)?.ownerId === ownerId;
+}
+
 /**
- * 排他锁：独占创建 lockfile，含 pid 与时间戳；超龄锁视为残留并清除。
+ * 排他锁：独占创建 lockfile，含 pid、owner 与心跳；只有超龄且持有进程已死的锁才会清除。
  * Spike 8：Windows 下 rename/独占创建语义的并发实测。
  */
 export async function withFileLock<T>(
@@ -61,19 +94,25 @@ export async function withFileLock<T>(
   const timeoutMs = opts.timeoutMs ?? 5_000;
   const retryMs = opts.retryMs ?? 50;
   const deadline = Date.now() + timeoutMs;
+  const ownerId = randomBytes(16).toString("hex");
 
   mkdirSync(dirname(lockPath), { recursive: true });
 
   for (;;) {
     try {
       const fd = openSync(lockPath, "wx");
-      writeFileSync(fd, JSON.stringify({ pid: process.pid, at: Date.now() }));
+      writeFileSync(fd, JSON.stringify({ pid: process.pid, at: Date.now(), ownerId }));
       closeSync(fd);
       break;
-    } catch {
+    } catch (cause) {
+      const code = typeof cause === "object" && cause !== null && "code" in cause
+        ? String((cause as { code?: unknown }).code)
+        : "";
+      if (code !== "EEXIST") throw cause;
       if (existsSync(lockPath)) {
         const age = Date.now() - statSync(lockPath).mtimeMs;
-        if (age > STALE_LOCK_MS) {
+        const holder = readLockRecord(lockPath);
+        if (age > STALE_LOCK_MS && (holder === undefined || !processIsAlive(holder.pid))) {
           rmSync(lockPath, { force: true });
           continue;
         }
@@ -85,9 +124,22 @@ export async function withFileLock<T>(
     }
   }
 
+  const heartbeat = setInterval(() => {
+    if (!lockIsOwnedBy(lockPath, ownerId)) return;
+    try {
+      const now = new Date();
+      utimesSync(lockPath, now, now);
+    } catch {
+      // The finally block still verifies ownership. A failed heartbeat never
+      // authorizes another process to steal a live PID's lock.
+    }
+  }, Math.max(1_000, Math.floor(STALE_LOCK_MS / 3)));
+  heartbeat.unref();
+
   try {
     return await fn();
   } finally {
-    rmSync(lockPath, { force: true });
+    clearInterval(heartbeat);
+    if (lockIsOwnedBy(lockPath, ownerId)) rmSync(lockPath, { force: true });
   }
 }

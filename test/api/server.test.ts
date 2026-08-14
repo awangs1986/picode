@@ -38,7 +38,7 @@ function httpGet(
 function httpPost(
   port: number,
   path: string,
-  body: string,
+  body: string | Buffer,
   headers: Record<string, string>,
 ): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
@@ -120,6 +120,30 @@ describe("ensureApiToken", () => {
 });
 
 describe("createDebugApi HTTP", () => {
+  it("rejects oversized and malformed UTF-8 request bodies before JSON parsing", async () => {
+    await withTempPicodeDir(async () => {
+      const runtime = createRuntime();
+      const token = ensureApiToken();
+      const server = createDebugApi(runtime);
+      const port = await listenServer(server);
+      try {
+        const oversized = await httpPost(port, "/v1/commands", "x".repeat(1024 * 1024 + 1), {
+          authorization: `Bearer ${token}`,
+        });
+        expect(oversized.status).toBe(413);
+        expect(JSON.parse(oversized.body).error).toBe("request_body_too_large");
+
+        const invalidUtf8 = await httpPost(port, "/v1/commands", Buffer.from([0xc3, 0x28]), {
+          authorization: `Bearer ${token}`,
+        });
+        expect(invalidUtf8.status).toBe(400);
+        expect(JSON.parse(invalidUtf8.body).error).toBe("invalid_utf8");
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    });
+  });
+
   it("routes remote messages through TaskIngress before accepting steer work", async () => {
     await withTempPicodeDir(async () => {
       const runtime = createRuntime();

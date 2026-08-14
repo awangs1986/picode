@@ -55,11 +55,25 @@ describe("withFileLock", () => {
     });
   });
 
+  it("never steals an old lock while its owning process is still alive", async () => {
+    await withTempPicodeDir(async (dir) => {
+      const lockPath = join(dir, "live-old.lock");
+      writeFileSync(lockPath, JSON.stringify({ pid: process.pid, at: 0, ownerId: "live-owner" }), "utf8");
+      const old = new Date(Date.now() - 60_000);
+      utimesSync(lockPath, old, old);
+
+      await expect(
+        withFileLock(lockPath, () => "must-not-run", { timeoutMs: 100, retryMs: 20 }),
+      ).rejects.toThrow(/file lock timeout/);
+      expect(existsSync(lockPath)).toBe(true);
+    });
+  });
+
   it("clears stale locks older than 30s", async () => {
     await withTempPicodeDir(async (dir) => {
       const lockPath = join(dir, "stale.lock");
       mkdirSync(dir, { recursive: true });
-      writeFileSync(lockPath, JSON.stringify({ pid: 1, at: 0 }), "utf8");
+      writeFileSync(lockPath, JSON.stringify({ pid: 999999, at: 0 }), "utf8");
       const old = new Date(Date.now() - 60_000);
       utimesSync(lockPath, old, old);
 

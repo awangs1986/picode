@@ -6,6 +6,7 @@ import type {
   OperationIntent,
   PermissionTier,
   Result,
+  TaskContext,
 } from "../shared/types.ts";
 import { CapabilityCatalog } from "./catalog.ts";
 import { computeFingerprint } from "./fingerprint.ts";
@@ -82,11 +83,11 @@ export class Guard implements GuardPort {
     return computeFingerprint(intent);
   }
 
-  searchCapabilities(query: string): CapabilityManifest[] {
-    return this.catalog.search(query);
+  searchCapabilities(query: string, context?: TaskContext): CapabilityManifest[] {
+    return this.catalog.search(query, context);
   }
 
-  checkActivatable(capabilityId: string): Result<void> {
-    return this.catalog.checkActivatable(capabilityId);
+  checkActivatable(capabilityId: string, context?: TaskContext): Result<void> {
+    return this.catalog.checkActivatable(capabilityId, context);
   }
 }

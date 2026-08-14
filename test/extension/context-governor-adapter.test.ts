@@ -10,6 +10,42 @@ import { ok } from "../../src/shared/types.ts";
 type Handler = (event: never, ctx: ExtensionContext) => unknown;
 
 describe("Context Governor Pi adapter", () => {
+  it("protects a real provider even when its declared window is below 32K", async () => {
+    const handlers = new Map<string, Handler>();
+    const pi = {
+      on(name: string, handler: Handler) { handlers.set(name, handler); },
+      getActiveTools: () => [],
+      getAllTools: () => [],
+    } as unknown as ExtensionAPI;
+    const setStatus = vi.fn();
+    const ctx = {
+      model: {
+        id: "small-real-model",
+        provider: "openai",
+        api: "openai-responses",
+        contextWindow: 16_000,
+        maxTokens: 1_000,
+      },
+      modelRegistry: { getApiKeyAndHeaders: vi.fn(async () => ({ ok: true, apiKey: "redacted" })) },
+      getSystemPrompt: () => "Pi",
+      compact: vi.fn(),
+      abort: vi.fn(),
+      ui: { setStatus },
+    } as unknown as ExtensionContext;
+    registerContextGovernor(pi);
+
+    const transformed = await handlers.get("context")?.({
+      type: "context",
+      messages: [{
+        role: "toolResult", toolCallId: "small-window-log", toolName: "bash", isError: false,
+        content: [{ type: "text", text: "x".repeat(100_000) }],
+      }],
+    } as never, ctx) as { messages: unknown[] } | undefined;
+
+    expect(transformed?.messages).toBeDefined();
+    expect(setStatus).toHaveBeenCalledWith("picode-context", expect.stringContaining("compacted"));
+  });
+
   it("rewrites the real per-request context and schedules durable compaction after settle", async () => {
     const handlers = new Map<string, Handler>();
     const pi = {

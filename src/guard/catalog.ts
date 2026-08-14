@@ -6,6 +6,7 @@ import type {
   CapabilitySettingState,
   PersistedCapabilitySettings,
   Result,
+  TaskContext,
 } from "../shared/types.ts";
 import { err, ok } from "../shared/types.ts";
 
@@ -49,9 +50,11 @@ export class CapabilityCatalog {
    * search_tools 的查询本体。disabled（三级）不出现在结果里——
    * 模型完全不可见，而不是"搜到但标灰"。
    */
-  search(query: string): CapabilityManifest[] {
+  search(query: string, context?: TaskContext): CapabilityManifest[] {
     const needle = query.trim().toLowerCase();
-    const visible = [...this.records.values()].filter((r) => r.setting !== "disabled");
+    const visible = [...this.records.values()].filter(
+      (r) => r.setting !== "disabled" && visibleInHarness(r.manifest, context),
+    );
     if (needle === "") return visible.map((r) => r.manifest);
     return visible
       .filter((r) => {
@@ -64,9 +67,9 @@ export class CapabilityCatalog {
   }
 
   /** Activate 前置检查：必须 Enabled + Trusted（本目录里即 trusted 态） */
-  checkActivatable(capabilityId: string): Result<void> {
+  checkActivatable(capabilityId: string, context?: TaskContext): Result<void> {
     const record = this.records.get(capabilityId);
-    if (!record || record.setting === "disabled") {
+    if (!record || record.setting === "disabled" || !visibleInHarness(record.manifest, context)) {
       // 对模型而言 disabled 能力不存在；报错不泄露其存在性
       return err("guard/capability-unknown", `no capability: ${capabilityId}`);
     }
@@ -144,6 +147,11 @@ export class CapabilityCatalog {
       refreshSetting(record);
     }
   }
+}
+
+function visibleInHarness(manifest: CapabilityManifest, context: TaskContext | undefined): boolean {
+  return context === undefined || manifest.harnessTiers === undefined ||
+    manifest.harnessTiers.includes(context.harnessTier);
 }
 
 function refreshSetting(record: CapabilityRecord): void {

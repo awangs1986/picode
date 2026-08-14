@@ -7,6 +7,7 @@ import {
 import { makeManifest } from "../helpers/fixtures.ts";
 import { ok, err } from "../../src/shared/types.ts";
 import type { GuardPort, TaskContext } from "../../src/shared/types.ts";
+import { createRuntime, searchToolsHandler } from "../../src/extension/index.ts";
 
 const ctx: TaskContext = { sessionId: "s1", harnessTier: "standard", currentTurn: 1 };
 
@@ -49,6 +50,26 @@ describe("formatSearchResults", () => {
 });
 
 describe("handleSearchTools", () => {
+  it("hides suite capabilities outside the current Harness tier", async () => {
+    const runtime = createRuntime();
+    const search = searchToolsHandler(runtime);
+
+    expect(await search(
+      { action: "search", query: "sandbox" },
+      { sessionId: "simple-session", harnessTier: "simple", currentTurn: 1 },
+    )).toBe("no matching capabilities");
+    expect(await search(
+      { action: "activate", capabilityId: "pi-landstrip" },
+      { sessionId: "simple-session", harnessTier: "simple", currentTurn: 1 },
+    )).toContain("cannot activate: no capability");
+
+    runtime.harness.switchTo("standard");
+    expect(await search(
+      { action: "search", query: "sandbox" },
+      { sessionId: "standard-session", harnessTier: "standard", currentTurn: 1 },
+    )).toContain("pi-landstrip");
+  });
+
   it("search action calls guard.searchCapabilities and formats results", async () => {
     const manifest = makeManifest({
       id: "fs-tools",
@@ -64,7 +85,7 @@ describe("handleSearchTools", () => {
       ctx,
     );
 
-    expect(searchSpy).toHaveBeenCalledWith("file");
+    expect(searchSpy).toHaveBeenCalledWith("file", ctx);
     expect(out).toContain("fs-tools");
     expect(out).toContain("FS");
   });

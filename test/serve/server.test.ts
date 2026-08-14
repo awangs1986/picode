@@ -344,6 +344,33 @@ describe("P5 Serve Mode transport adapter", () => {
     });
   });
 
+  it("releases an in-flight request id after an exceptional request path", async () => {
+    await withTempPicodeDir(async () => {
+      const handle = await startRemoteServe({
+        driver: driver(), bind: "127.0.0.1", advertisedHost: "127.0.0.1", port: 0, hostName: "Test Picode",
+      });
+      try {
+        const device = await pair(handle, "Retry client");
+        const socket = await openSocket(handle.port, device.deviceToken);
+        const messages: Array<Record<string, unknown>> = [];
+        socket.on("message", (raw) => messages.push(JSON.parse(raw.toString()) as Record<string, unknown>));
+
+        socket.send(JSON.stringify({ version: 1, id: "retry-id", method: "lease.acquire", params: {} }));
+        await waitUntil(() => messages.some((message) => message.id === "retry-id" && "error" in message));
+        socket.send(JSON.stringify({ version: 1, id: "retry-id", method: "lease.acquire", params: { session: "s-1" } }));
+        await waitUntil(() => messages.some((message) => message.id === "retry-id" && "result" in message));
+
+        expect(messages.some((message) =>
+          message.id === "retry-id" &&
+          (message.error as { code?: string } | undefined)?.code === "control/request-in-flight"
+        )).toBe(false);
+        socket.close();
+      } finally {
+        await handle.close();
+      }
+    });
+  });
+
   it("uses the Host Guard lease authority instead of a transport-local map", async () => {
     await withTempPicodeDir(async () => {
       const writerLeases = new ChatWriterLeases();

@@ -34,19 +34,26 @@ function explicitRootMention(command: string, root: string): boolean {
 
 export class WorkspaceFence {
   private readonly roots: string[];
+  private readonly unreadable: boolean;
 
   constructor(path = dataPaths.workspaceFence()) {
     if (!existsSync(path)) {
       this.roots = [];
+      this.unreadable = false;
       return;
     }
     try {
-      const parsed = JSON.parse(readFileSync(path, "utf8")) as WorkspaceFenceFile;
-      this.roots = parsed.version === 1 && Array.isArray(parsed.deniedWriteRoots)
-        ? parsed.deniedWriteRoots.filter((root): root is string => typeof root === "string")
-        : [];
+      const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<WorkspaceFenceFile>;
+      if (parsed.version !== 1 || typeof parsed.activeWorkspace !== "string" ||
+        !Array.isArray(parsed.deniedWriteRoots) ||
+        parsed.deniedWriteRoots.some((root) => typeof root !== "string")) {
+        throw new Error("invalid workspace fence schema");
+      }
+      this.roots = parsed.deniedWriteRoots as string[];
+      this.unreadable = false;
     } catch {
       this.roots = [];
+      this.unreadable = true;
     }
   }
 
@@ -57,6 +64,12 @@ export class WorkspaceFence {
   decide(intent: OperationIntent): Decision | undefined {
     if (intent.category === "fs-read" || intent.category === "git-read" || intent.category === "capability-read") {
       return undefined;
+    }
+    if (this.unreadable) {
+      return {
+        verdict: "deny",
+        reason: "workspace-fence: authority is unreadable; all writes are denied until it is repaired",
+      };
     }
     const cwd = intent.cwd;
     for (const root of this.roots) {

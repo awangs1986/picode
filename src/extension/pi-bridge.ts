@@ -1222,7 +1222,7 @@ export function registerPicodeBridge(
           guard: runtime.guard,
           readiness: (id, activationContext) => suiteReadiness(id, ctx.cwd, activationContext.harnessTier),
           activate: async (id, activationContext) => {
-            const gate = runtime.guard.checkActivatable(id);
+            const gate = runtime.guard.checkActivatable(id, activationContext);
             return gate.ok ? runtime.engine.activate(id, activationContext) : gate;
           },
         },

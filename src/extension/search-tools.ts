@@ -59,7 +59,7 @@ export async function handleSearchTools(
   ctx: TaskContext,
 ): Promise<string> {
   if (input.action === "search") {
-    const manifests = deps.guard.searchCapabilities(input.query ?? "");
+    const manifests = deps.guard.searchCapabilities(input.query ?? "", ctx);
     const reports = deps.readiness === undefined ? [] : await Promise.all(manifests.map(async (manifest) => [manifest.id, await deps.readiness!(manifest.id, ctx)] as const));
     return formatSearchResults(manifests, new Map(reports));
   }

@@ -74,10 +74,10 @@ export function registerContextGovernor(
   pi.on("context", async (event, ctx) => {
     const model = ctx.model;
     if (model === undefined) return undefined;
-    // Tiny/custom fixture models often declare a synthetic window smaller than
-    // Pi's own immutable prompt. There is no history budget for Picode to
-    // govern in that situation, so leave the custom provider contract intact.
-    if (model.contextWindow < 32_768) return undefined;
+    // The bundled scripted provider deliberately declares a tiny synthetic
+    // window for deterministic tests. Real providers, including small local
+    // models, must never bypass the request-boundary budget guard.
+    if (model.provider === "picode-scripted-test" || model.api === "picode-scripted-test") return undefined;
     const baseUrl = await effectiveBaseUrl(ctx);
     const currentRouteKey = routeKey(model, baseUrl);
     const loadedProfile = await options.store?.loadEndpointContextProfile(currentRouteKey);

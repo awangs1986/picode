@@ -45,14 +45,19 @@ function canonicalDirectory(path: string): Result<string> {
   }
 }
 
-function loadFence(): WorkspaceFenceState | undefined {
+function loadFence(): Result<WorkspaceFenceState | undefined> {
   const path = workspaceFencePath();
-  if (!existsSync(path)) return undefined;
+  if (!existsSync(path)) return ok(undefined);
   try {
-    const parsed = JSON.parse(readFileSync(path, "utf8")) as WorkspaceFenceState;
-    return parsed.version === 1 && Array.isArray(parsed.deniedWriteRoots) ? parsed : undefined;
-  } catch {
-    return undefined;
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<WorkspaceFenceState>;
+    if (parsed.version !== 1 || typeof parsed.activeWorkspace !== "string" ||
+      !Array.isArray(parsed.deniedWriteRoots) ||
+      parsed.deniedWriteRoots.some((root) => typeof root !== "string")) {
+      return err("workspace/fence-unreadable", `workspace fence has an invalid schema: ${path}`);
+    }
+    return ok(parsed as WorkspaceFenceState);
+  } catch (cause) {
+    return err("workspace/fence-unreadable", `workspace fence cannot be parsed: ${path}`, cause);
   }
 }
 
@@ -98,8 +103,9 @@ export async function prepareWorkspaceSwitch(input: {
   const requestPath = workspaceSwitchRequestPath(input.launchId);
   try {
     const previous = loadFence();
+    if (!previous.ok) return previous;
     const deniedWriteRoots = [...new Set([
-      ...(previous?.deniedWriteRoots ?? []).filter((path) => path !== target.value),
+      ...(previous.value?.deniedWriteRoots ?? []).filter((path) => path !== target.value),
       from.value,
     ])];
     const state: WorkspaceFenceState = {

@@ -56,11 +56,11 @@ export class WorktreeRegistry {
   private load(): WorktreeFile {
     const path = this.path();
     if (!existsSync(path)) return { version: 1, writers: [], managed: [] };
-    try {
-      return JSON.parse(readFileSync(path, "utf8")) as WorktreeFile;
-    } catch {
-      return { version: 1, writers: [], managed: [] };
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<WorktreeFile>;
+    if (parsed.version !== 1 || !Array.isArray(parsed.writers) || !Array.isArray(parsed.managed)) {
+      throw new Error(`invalid worktree registry: ${path}`);
     }
+    return parsed as WorktreeFile;
   }
 
   private async mutate<T>(fn: (file: WorktreeFile) => Result<T>): Promise<Result<T>> {

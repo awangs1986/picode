@@ -192,7 +192,7 @@ export function createRuntime(opts: RuntimeOptions = {}): PicodeRuntime {
   // 套件 manifest 全量登记进能力目录（设置轴初值：出厂套件 = trusted，
   // 装载与否由档位策略决定，三级纪律只约束用户装的 External Extension）
   for (const entry of SUITE_ENTRIES) {
-    guard.catalog.register(entry.manifest, "trusted");
+    guard.catalog.register({ ...entry.manifest, harnessTiers: [...entry.tiers] }, "trusted");
   }
   for (const manifest of ONBOARDING_MANIFESTS) {
     guard.catalog.register(manifest, "disabled");
@@ -263,7 +263,7 @@ export async function requestActivate(
   capabilityId: string,
   ctx: TaskContext,
 ): ReturnType<Engine["activate"]> {
-  const gate = runtime.guard.checkActivatable(capabilityId);
+  const gate = runtime.guard.checkActivatable(capabilityId, ctx);
   if (!gate.ok) return gate;
   return runtime.engine.activate(capabilityId, ctx);
 }

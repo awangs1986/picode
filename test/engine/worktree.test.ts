@@ -6,6 +6,18 @@ import { dataPaths } from "../../src/shared/paths.ts";
 import { withTempPicodeDir } from "../helpers/temp-dir.ts";
 
 describe("WorktreeRegistry", () => {
+  it("refuses writer claims when the registry authority is corrupt", async () => {
+    await withTempPicodeDir(async () => {
+      mkdirSync(dataPaths.tasks(), { recursive: true });
+      writeFileSync(join(dataPaths.tasks(), "worktrees.json"), "{broken", "utf8");
+      const registry = new WorktreeRegistry();
+
+      const result = await registry.claimWriter("ws-1", "task-a");
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error.code).toBe("engine/worktree-registry-io");
+    });
+  });
+
   it("claimWriter succeeds on first claim", async () => {
     await withTempPicodeDir(async () => {
       const registry = new WorktreeRegistry();

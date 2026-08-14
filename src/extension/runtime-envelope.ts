@@ -43,10 +43,34 @@ function identityKey(identity: ExecutionIdentity): string {
 }
 
 export class RuntimeEnvelopeIngress {
-  private readonly terminalExecutions = new Set<string>();
-  private readonly seenEvents = new Set<string>();
+  private readonly terminalExecutions = new Map<string, true>();
+  private readonly seenEvents = new Map<string, true>();
+  private readonly maxSeenEvents: number;
+  private readonly maxTerminalExecutions: number;
 
-  constructor(private readonly maxBytes = 1024 * 1024) {}
+  constructor(
+    private readonly maxBytes = 1024 * 1024,
+    limits: { maxSeenEvents?: number; maxTerminalExecutions?: number } = {},
+  ) {
+    this.maxSeenEvents = Math.max(1, limits.maxSeenEvents ?? 16_384);
+    this.maxTerminalExecutions = Math.max(1, limits.maxTerminalExecutions ?? 4_096);
+  }
+
+  retentionStats(): { seenEvents: number; terminalExecutions: number } {
+    return {
+      seenEvents: this.seenEvents.size,
+      terminalExecutions: this.terminalExecutions.size,
+    };
+  }
+
+  private remember<K>(map: Map<K, true>, key: K, limit: number): void {
+    map.set(key, true);
+    while (map.size > limit) {
+      const oldest = map.keys().next().value as K | undefined;
+      if (oldest === undefined) break;
+      map.delete(oldest);
+    }
+  }
 
   dispatch(
     raw: string | Uint8Array,
@@ -136,8 +160,10 @@ export class RuntimeEnvelopeIngress {
         eventId: event.eventId,
       };
     }
-    this.seenEvents.add(eventKey);
-    if (terminalKinds.has(event.kind)) this.terminalExecutions.add(key);
+    this.remember(this.seenEvents, eventKey, this.maxSeenEvents);
+    if (terminalKinds.has(event.kind)) {
+      this.remember(this.terminalExecutions, key, this.maxTerminalExecutions);
+    }
     return { admitted: true, identity, event };
   }
 }

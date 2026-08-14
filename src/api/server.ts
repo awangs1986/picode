@@ -75,6 +75,13 @@ export function ensureApiToken(): string {
 }
 
 type Json = Record<string, unknown> | unknown[];
+const MAX_DEBUG_API_BODY_BYTES = 1024 * 1024;
+
+class DebugApiBodyError extends Error {
+  constructor(readonly code: "request_body_too_large" | "invalid_utf8") {
+    super(code);
+  }
+}
 
 const sendJson = (res: ServerResponse, status: number, body: Json): void => {
   res.writeHead(status, { "content-type": "application/json" });
@@ -82,16 +89,40 @@ const sendJson = (res: ServerResponse, status: number, body: Json): void => {
 };
 
 async function readBody(req: IncomingMessage): Promise<string> {
+  const declaredLength = Number(req.headers["content-length"] ?? 0);
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_DEBUG_API_BODY_BYTES) {
+    throw new DebugApiBodyError("request_body_too_large");
+  }
   const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(chunk as Buffer);
-  return Buffer.concat(chunks).toString("utf8");
+  let received = 0;
+  for await (const chunk of req) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    received += buffer.byteLength;
+    if (received > MAX_DEBUG_API_BODY_BYTES) throw new DebugApiBodyError("request_body_too_large");
+    chunks.push(buffer);
+  }
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
+  } catch {
+    throw new DebugApiBodyError("invalid_utf8");
+  }
 }
 
 export function createDebugApi(runtime: PicodeRuntime): Server {
   const token = ensureApiToken();
 
   return createServer((req, res) => {
-    void route(runtime, token, req, res);
+    void route(runtime, token, req, res).catch((error: unknown) => {
+      if (res.headersSent) {
+        res.destroy();
+        return;
+      }
+      if (error instanceof DebugApiBodyError) {
+        sendJson(res, error.code === "request_body_too_large" ? 413 : 400, { error: error.code });
+        return;
+      }
+      sendJson(res, 500, { error: "internal_error" });
+    });
   });
 }
 

@@ -97,6 +97,8 @@ export interface CapabilityManifest {
   supportsProxyCall: boolean;
   /** suite=套件出厂 · user=用户全局 · task=TOOLS.md 任务绑定 */
   origin: "suite" | "user" | "task";
+  /** Suite capabilities are invisible and ineligible outside these Harness tiers. */
+  harnessTiers?: HarnessTier[];
   /** 该能力覆盖的稳定语义 ID（fs.read@1 等）；resolveLive 的判据 */
   semanticOperations?: string[];
 }
@@ -420,9 +422,9 @@ export interface GuardPort {
   /** 批准时记录指纹；启动前重算校验（MODULES.md §2.2） */
   fingerprintOf(intent: OperationIntent): string;
   /** search_tools 的目录查询；结果已按设置轴过滤（disabled 不可见） */
-  searchCapabilities(query: string): CapabilityManifest[];
+  searchCapabilities(query: string, context?: TaskContext): CapabilityManifest[];
   /** Activate 前置检查：该能力是否已 Enabled + Trusted */
-  checkActivatable(capabilityId: string): Result<void>;
+  checkActivatable(capabilityId: string, context?: TaskContext): Result<void>;
 }
 
 export interface EnginePort {

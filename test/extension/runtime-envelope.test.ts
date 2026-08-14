@@ -146,4 +146,24 @@ describe("RuntimeEnvelopeIngress", () => {
       eventId: "same",
     });
   });
+
+  it("keeps replay-protection memory within the configured retention bounds", () => {
+    const ingress = new RuntimeEnvelopeIngress(1024 * 1024, {
+      maxSeenEvents: 8,
+      maxTerminalExecutions: 4,
+    });
+
+    for (let index = 0; index < 20; index += 1) {
+      ingress.admit(
+        JSON.stringify({ version: 1, eventId: `event-${index}`, kind: "tool.result", payload: {} }),
+        { executionEpoch: 1, runId: `active-${index}` },
+      );
+      ingress.admit(
+        JSON.stringify({ version: 1, eventId: `terminal-${index}`, kind: "run.completed", payload: {} }),
+        { executionEpoch: 1, runId: `closed-${index}` },
+      );
+    }
+
+    expect(ingress.retentionStats()).toEqual({ seenEvents: 8, terminalExecutions: 4 });
+  });
 });
