@@ -151,7 +151,7 @@ Automatic compaction may be disabled, but the request-boundary Context Governor 
 
 `Enabled ≠ Running`, and `Trusted ≠ elevated permission`. Existence, trust, runtime state, and permission are separate facts.
 
-Major integrations include `pi-subagents`, `pi-landstrip`, `pi-mcp-adapter`, `pi-lens`, `pi-web-access`, `pi-cache-optimizer`, `pi-sticky-input`, `mattpocock/skills`, and optional Herdr/CodebaseMemoryProvider/Weixin adapters. Their versions and boundaries are pinned and documented.
+Major integrations include `pi-subagents`, `pi-landstrip`, `pi-mcp-adapter`, `pi-lens`, `pi-web-access`, `pi-cache-optimizer`, `mattpocock/skills`, and optional Herdr/CodebaseMemoryProvider/Weixin adapters. Their versions and boundaries are pinned and documented.
 
 ## Permissions and workspaces
 

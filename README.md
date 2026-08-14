@@ -159,7 +159,6 @@ Picode 把上下文当作编译产物，而不是无限增长的聊天字符串�
 - `pi-lens`：按语言服务 Readiness 暴露 LSP 能力；
 - `pi-web-access`：Web 搜索和抓取；
 - `pi-cache-optimizer`：Provider 缓存兼容与诊断，禁止改写 Picode 提示词；
-- `pi-sticky-input`：默认 TUI 增量重绘，不进入模型上下文；
 - `mattpocock/skills`：`/plan` 首次使用时只物化 `grill-with-docs` 依赖闭包；
 - Herdr、CodebaseMemoryProvider、微信 iLink：可选或默认停用的外部能力。
 

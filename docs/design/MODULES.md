@@ -27,15 +27,6 @@ Guard 跟安全需求走、Devloop 是产品核心价值、Store 最稳定）。
 依赖纪律：模块间只经接口通信 + 一条内部事件总线做生命周期通知；
 Adapter Extension 是组合根，模块不感知宿主形态（pi 进程 / P5 serve）。
 
-### 1.0.1 默认 TUI 扩展
-
-`pi-sticky-input` 是随安装包固定源码的 UI-only 默认扩展。组合根必须在首个
-`session_start` 前注册它，使其能够给当前 Pi TUI 安装有界历史视口和增量行重绘；
-不能等到会话内能力激活阶段。它不属于模型能力，不进入 Guard Catalog、工具 Schema、
-Prompt 或 ActiveCapabilityLease。无法识别 Pi TUI 布局时必须回退上游 renderer，不能使
-会话启动失败。来源版本和本地兼容补丁记录在
-`vendor/pi-sticky-input/PICODE-PROVENANCE.json`。
-
 **Pi Session Lifecycle** 位于 Engine：隐藏 Pi 首次 assistant turn 前延迟落盘的
 实现细节。CLI、Slice 与导入 Adapter 只能通过该 interface 创建、seed、持久化、
 解析和重新打开 Session；任何成功返回的 Session identity 都必须对应真实可恢复的
