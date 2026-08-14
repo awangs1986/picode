@@ -22,6 +22,8 @@ export { decide } from "./policy.ts";
 export { compileSandboxPolicy, DEFAULT_SECRET_ZONES } from "./sandbox-policy.ts";
 export type { CompiledSandboxPolicy, RuleVerdict } from "./sandbox-policy.ts";
 export { WorkspaceFence } from "./workspace-fence.ts";
+export { ChatWriterLeases } from "./chat-writer-lease.ts";
+export type { ChatWriterLease, ChatWriterOwner } from "./chat-writer-lease.ts";
 
 export interface GuardDecisionRecord {
   intent: OperationIntent;

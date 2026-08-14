@@ -49,6 +49,7 @@ import { advertisedIpv4 } from "../serve/network.ts";
 import { TuiControlDriver } from "./tui-control-driver.ts";
 import { WeixinController } from "./weixin-controller.ts";
 import { compactWeixinReply } from "./weixin-reply-compactor.ts";
+import { ChatWriterLeases } from "../guard/chat-writer-lease.ts";
 
 /** Real Pi extension entry. Keep this file as a thin composition adapter. */
 function remoteAdvertisedHost(): string {
@@ -66,6 +67,7 @@ export default function picodeExtension(pi: ExtensionAPI): void {
   const toolAdapter = new PiActiveToolAdapter(pi);
   const loadedSuitePackages = new Set<string>();
   const runtime = bootRuntime({ toolAdapter });
+  const writerLeases = new ChatWriterLeases();
   const packageRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
   // HTTP/SSE is an internal diagnostic transport, not the public control plane.
   // Normal TUI/CLI startup therefore opens no debug port.
@@ -254,6 +256,7 @@ export default function picodeExtension(pi: ExtensionAPI): void {
           port: Number(process.env["PICODE_SERVE_PORT"] ?? "7878"),
           hostName: process.env["PICODE_SERVE_NAME"] ?? hostname(),
           newChatWorkspace: ctx.cwd,
+          writerLeases,
         });
       } else {
         await remoteServe.rotatePairing();

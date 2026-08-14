@@ -41,6 +41,24 @@ export type {
   ContextGovernorStats,
   ContextGovernorTool,
 } from "./context/context-governor.ts";
+export { ContextBudgetMeter } from "./context/context-budget-meter.ts";
+export type {
+  ContextBudgetMeasurement,
+  ContextBudgetMeterInput,
+  ContextMeterMessage,
+  ContextMeterTool,
+} from "./context/context-budget-meter.ts";
+export { retainToolOutput } from "./context/tool-output-retention.ts";
+export type {
+  ToolOutputContentBlock,
+  ToolOutputRetentionInput,
+  ToolOutputRetentionResult,
+} from "./context/tool-output-retention.ts";
+export { renderToolResult } from "./context/tool-result-renderer.ts";
+export type {
+  SemanticToolResult,
+  SemanticToolResultInput,
+} from "./context/tool-result-renderer.ts";
 export { TaskIngress } from "./task/ingress.ts";
 export type { TaskIngressInput, TaskRecord, TaskRef } from "./task/ingress.ts";
 export { isTaskControlState } from "./task/control.ts";

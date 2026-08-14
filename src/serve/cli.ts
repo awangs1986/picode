@@ -2,6 +2,7 @@ import { hostname } from "node:os";
 import type { ControlDriver } from "../control/index.ts";
 import { startRemoteServe } from "./server.ts";
 import { advertisedIpv4 } from "./network.ts";
+import { ChatWriterLeases } from "../guard/chat-writer-lease.ts";
 
 export const SERVE_HELP = `Usage: picode serve [options]
 
@@ -54,6 +55,7 @@ export async function runServeCli(input: {
     advertisedHost: bind,
     port,
     hostName,
+    writerLeases: new ChatWriterLeases(),
     ...(newChatWorkspace === undefined ? {} : { newChatWorkspace }),
   });
   input.stdout(`[picode serve] ${handle.endpoint}`);

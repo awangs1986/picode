@@ -10,6 +10,10 @@ import type {
   SourceToolSignature,
   SourceRef,
   StorePort,
+  ContextArtifactInput,
+  ContextArtifactRef,
+  ContextCompilationManifest,
+  EndpointContextProfile,
   TaskCapsule,
   TaskTodoState,
 } from "../shared/types.ts";
@@ -82,6 +86,71 @@ export class Store implements StorePort {
     }
   }
 
+  async saveContextArtifact(input: ContextArtifactInput): Promise<Result<ContextArtifactRef>> {
+    const sha256 = createHash("sha256").update(input.text).digest("hex");
+    const sessionKey = createHash("sha256").update(input.sessionId).digest("hex").slice(0, 24);
+    const artifactId = createHash("sha256")
+      .update(`${input.sessionId}\0${input.toolCallId}\0${sha256}`)
+      .digest("hex")
+      .slice(0, 32);
+    const path = join(dataPaths.artifacts(), "context", sessionKey, `${artifactId}.txt`);
+    try {
+      await withFileLock(`${path}.lock`, () => {
+        if (existsSync(path)) {
+          if (readFileSync(path, "utf8") !== input.text) {
+            throw new Error(`context artifact collision: ${artifactId}`);
+          }
+          return;
+        }
+        atomicWriteFile(path, input.text, { mode: 0o600 });
+      });
+      return ok({
+        artifactId,
+        sessionId: input.sessionId,
+        toolCallId: input.toolCallId,
+        toolName: input.toolName,
+        path,
+        bytes: Buffer.byteLength(input.text, "utf8"),
+        sha256,
+      });
+    } catch (cause) {
+      return err("store/artifact-write-failed", `failed to persist context artifact ${artifactId}`, cause);
+    }
+  }
+
+  async saveContextCompilation(manifest: ContextCompilationManifest): Promise<Result<string>> {
+    const sessionKey = createHash("sha256").update(manifest.sessionId).digest("hex").slice(0, 24);
+    const revisionKey = createHash("sha256")
+      .update(`${manifest.sessionRevision}\0${manifest.inputDigest}`)
+      .digest("hex")
+      .slice(0, 32);
+    const path = join(dataPaths.catalog(), "context-compilations", sessionKey, `${revisionKey}.json`);
+    try {
+      await withFileLock(`${path}.lock`, () => {
+        atomicWriteFile(path, JSON.stringify(manifest, null, 2), { mode: 0o600 });
+      });
+      return ok(path);
+    } catch (cause) {
+      return err("store/context-compilation-write-failed", "failed to persist context compilation manifest", cause);
+    }
+  }
+
+  async loadEndpointContextProfile(routeKey: string): Promise<Result<EndpointContextProfile>> {
+    const key = createHash("sha256").update(routeKey).digest("hex");
+    return new StateFile(
+      join(dataPaths.metrics(), "endpoint-context", `${key}.json`),
+      isEndpointContextProfile,
+    ).read();
+  }
+
+  async saveEndpointContextProfile(profile: EndpointContextProfile): Promise<Result<void>> {
+    const key = createHash("sha256").update(profile.routeKey).digest("hex");
+    return new StateFile(
+      join(dataPaths.metrics(), "endpoint-context", `${key}.json`),
+      isEndpointContextProfile,
+    ).write(profile);
+  }
+
   resolveHistorical(sig: SourceToolSignature): HistoricalCompatibility {
     this.compiler ??= new ImportCompiler();
     return this.compiler.resolveHistorical(sig);
@@ -129,6 +198,34 @@ export class Store implements StorePort {
   async saveCapsule(capsule: TaskCapsule): Promise<Result<void>> {
     const path = join(dataPaths.tasks(), capsule.taskId, "capsules", `${capsule.capsuleId}.json`);
     return new StateFile(path, isTaskCapsule).write(capsule);
+  }
+
+  loadCapsule(taskId: string, capsuleId: string): Promise<Result<TaskCapsule>> {
+    return new StateFile(
+      join(dataPaths.tasks(), taskId, "capsules", `${capsuleId}.json`),
+      isTaskCapsule,
+    ).read();
+  }
+
+  async loadLatestSealedCapsule(taskId: string): Promise<Result<TaskCapsule | undefined>> {
+    const root = join(dataPaths.tasks(), taskId, "capsules");
+    if (!existsSync(root)) return ok(undefined);
+    try {
+      const sealed: TaskCapsule[] = [];
+      for (const file of readdirSync(root).filter((name) => name.endsWith(".json")).sort()) {
+        const loaded = await new StateFile(join(root, file), isTaskCapsule).read();
+        if (!loaded.ok) {
+          if (loaded.error.code === "store/state-missing") continue;
+          return loaded;
+        }
+        if (loaded.value.status === "sealed") sealed.push(loaded.value);
+      }
+      sealed.sort((left, right) =>
+        left.createdAt.localeCompare(right.createdAt) || left.capsuleId.localeCompare(right.capsuleId));
+      return ok(sealed.at(-1));
+    } catch (cause) {
+      return err("store/capsule-index-failed", `failed to index Capsules for task ${taskId}`, cause);
+    }
   }
 
   loadTaskTodos(taskId: string): Promise<Result<TaskTodoState>> {
@@ -190,6 +287,8 @@ function isTaskCapsule(value: unknown): value is TaskCapsule {
     Array.isArray(row.verbatimFacts) && Array.isArray(row.decisions) &&
     Array.isArray(row.filesTouched) && Array.isArray(row.openQuestions) &&
     Array.isArray(row.nextSteps) && Array.isArray(row.verificationRefs) &&
+    (row.filesTouchedOmitted === undefined ||
+      (Number.isInteger(row.filesTouchedOmitted) && row.filesTouchedOmitted > 0)) &&
     typeof row.narrative === "string" &&
     (row.status === "draft" ? row.digest === undefined : typeof row.digest === "string");
 }
@@ -202,4 +301,14 @@ function isTaskTodoState(value: unknown): value is TaskTodoState {
   return row.items.every((item) => typeof item === "object" && item !== null &&
     typeof item.id === "string" && typeof item.content === "string" &&
     ["pending", "in_progress", "completed"].includes(String(item.status)));
+}
+
+function isEndpointContextProfile(value: unknown): value is EndpointContextProfile {
+  if (typeof value !== "object" || value === null) return false;
+  const row = value as Partial<EndpointContextProfile>;
+  return row.schemaVersion === "picode.endpoint-context/v1" &&
+    typeof row.routeKey === "string" &&
+    (row.verifiedContextWindow === undefined || (Number.isInteger(row.verifiedContextWindow) && row.verifiedContextWindow > 0)) &&
+    (row.observedSuccessInputTokens === undefined || (Number.isInteger(row.observedSuccessInputTokens) && row.observedSuccessInputTokens > 0)) &&
+    (row.observedOverflowInputTokens === undefined || (Number.isInteger(row.observedOverflowInputTokens) && row.observedOverflowInputTokens > 0));
 }

@@ -8,6 +8,7 @@ import { isRemoteControlCommand } from "../../src/serve/command-catalog.ts";
 import { startRemoteServe } from "../../src/serve/server.ts";
 import { dataPaths } from "../../src/shared/paths.ts";
 import { withTempPicodeDir } from "../helpers/temp-dir.ts";
+import { ChatWriterLeases } from "../../src/guard/chat-writer-lease.ts";
 
 function driver(): ControlDriver {
   return {
@@ -337,6 +338,41 @@ describe("P5 Serve Mode transport adapter", () => {
         await waitUntil(() => secondMessages.some((message) => message.id === "lease-reacquire" && "result" in message));
         expect(secondMessages).toContainEqual(expect.objectContaining({ id: "lease-reacquire", result: expect.objectContaining({ held: true, inherited: false }) }));
         second.close();
+      } finally {
+        await handle.close();
+      }
+    });
+  });
+
+  it("uses the Host Guard lease authority instead of a transport-local map", async () => {
+    await withTempPicodeDir(async () => {
+      const writerLeases = new ChatWriterLeases();
+      const tuiOwner = { kind: "tui" as const, id: "host-tui" };
+      expect(writerLeases.acquire("s-1", tuiOwner, 60_000).ok).toBe(true);
+      const handle = await startRemoteServe({
+        driver: driver(),
+        bind: "127.0.0.1",
+        advertisedHost: "127.0.0.1",
+        port: 0,
+        hostName: "Test Picode",
+        writerLeases,
+      });
+      try {
+        const device = await pair(handle, "Phone A");
+        const socket = await openSocket(handle.port, device.deviceToken);
+        const messages: Array<Record<string, unknown>> = [];
+        socket.on("message", (raw) => messages.push(JSON.parse(raw.toString()) as Record<string, unknown>));
+        socket.send(JSON.stringify({ version: 1, id: "blocked", method: "run.start", params: { prompt: "go", session: "s-1" } }));
+        await waitUntil(() => messages.some((message) => message.id === "blocked" && "error" in message));
+        expect(messages).toContainEqual(expect.objectContaining({
+          id: "blocked",
+          error: expect.objectContaining({ code: "serve/writer-lease-held" }),
+        }));
+
+        expect(writerLeases.release("s-1", tuiOwner)).toBe(true);
+        socket.send(JSON.stringify({ version: 1, id: "allowed", method: "run.start", params: { prompt: "go", session: "s-1" } }));
+        await waitUntil(() => messages.some((message) => message.id === "allowed" && message.event === "run.completed"));
+        socket.close();
       } finally {
         await handle.close();
       }

@@ -30,11 +30,11 @@ export function capsuleDigest(capsule: TaskCapsule): string {
   return createHash("sha256").update(stable(immutable)).digest("hex");
 }
 
-export function createCapsule(input: CapsuleDraftInput): TaskCapsule {
+export function createCapsule(input: CapsuleDraftInput, capsuleId: string = randomUUID()): TaskCapsule {
   return {
     ...input,
     schemaVersion: "picode.capsule/v1",
-    capsuleId: randomUUID(),
+    capsuleId,
     status: "draft",
     createdAt: new Date().toISOString(),
   };
@@ -132,6 +132,9 @@ export function renderCapsule(capsule: TaskCapsule): string {
     "",
     `## Files Touched`,
     ...capsule.filesTouched.map((f) => `- ${f}`),
+    ...(capsule.filesTouchedOmitted === undefined
+      ? []
+      : [`- … ${capsule.filesTouchedOmitted} additional changed files omitted; the workspace snapshot remains authoritative.`]),
     "",
     `## Open Questions`,
     ...capsule.openQuestions.map((q) => `- ${q}`),

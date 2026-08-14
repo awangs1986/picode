@@ -153,4 +153,89 @@ describe("ContextGovernor", () => {
     expect(result.action).toBe("compact");
     expect(result.after.totalTokens).toBeLessThanOrEqual(result.budget.hardInputTokens);
   });
+
+  it("retains authoritative Picode context while folding old narrative", () => {
+    const governor = new ContextGovernor();
+    const protectedContext: ContextGovernorMessage = {
+      role: "custom",
+      customType: "picode.context-event",
+      content: "<picode_task_state>Gate RED and acceptance A-17</picode_task_state>",
+      display: false,
+      timestamp: 2,
+    };
+    const oldNarrative = Array.from({ length: 160 }, (_, index) => ({
+      role: index % 2 === 0 ? "user" : "assistant",
+      content: [{ type: "text", text: `old-${index}-${"x".repeat(420)}` }],
+      timestamp: index + 3,
+    } satisfies ContextGovernorMessage));
+    const messages = [user("original goal"), protectedContext, ...oldNarrative, user("current turn")];
+
+    const result = governor.prepareRequest({
+      messages,
+      systemPrompt: "Pi",
+      tools: [],
+      declaredContextWindow: 32_768,
+      maxOutputTokens: 4_096,
+      thirdPartyGateway: false,
+    });
+
+    expect(result.action).toBe("compact");
+    expect(result.messages).toContainEqual(protectedContext);
+    expect(JSON.stringify(result.messages)).toContain("Gate RED and acceptance A-17");
+  });
+
+  it("compiles identical oversized input deterministically", () => {
+    const governor = new ContextGovernor();
+    const messages = [
+      user("old"),
+      ...Array.from({ length: 120 }, (_, index) => ({
+        role: index % 2 === 0 ? "assistant" : "user",
+        content: [{ type: "text", text: `row-${index}-${"z".repeat(500)}` }],
+        timestamp: index + 5,
+      } satisfies ContextGovernorMessage)),
+      user("now"),
+    ];
+    const input = {
+      messages,
+      systemPrompt: "Pi",
+      tools: [],
+      declaredContextWindow: 32_768,
+      maxOutputTokens: 4_096,
+      thirdPartyGateway: false,
+    };
+
+    const first = governor.prepareRequest(input);
+    const second = governor.prepareRequest(input);
+
+    expect(first.action).toBe("compact");
+    expect(second.messages).toEqual(first.messages);
+  });
+
+  it("emits a replayable compilation manifest with replacement provenance", () => {
+    const governor = new ContextGovernor();
+    const result = governor.prepareRequest({
+      sessionId: "session-manifest",
+      sessionRevision: "12:leaf-a",
+      messages: [user("work"), assistantWithCall("call-manifest"), toolResult("call-manifest", "output\n".repeat(80_000))],
+      systemPrompt: "Pi",
+      tools: [],
+      declaredContextWindow: 64_000,
+      maxOutputTokens: 8_000,
+      thirdPartyGateway: false,
+    });
+
+    expect(result.action).toBe("compact");
+    expect(result.manifest).toMatchObject({
+      schemaVersion: "picode.context-compilation/v1",
+      compilerVersion: 1,
+      sessionId: "session-manifest",
+      sessionRevision: "12:leaf-a",
+      action: "compact",
+    });
+    expect(result.manifest?.inputDigest).toMatch(/^[a-f0-9]{64}$/);
+    expect(result.manifest?.outputDigest).toMatch(/^[a-f0-9]{64}$/);
+    expect(result.manifest?.replacements).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "tool-result", sourceIndex: 2, toolCallId: "call-manifest" }),
+    ]));
+  });
 });

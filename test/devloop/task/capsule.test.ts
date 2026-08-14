@@ -146,6 +146,17 @@ describe("Capsule v1 lifecycle", () => {
     expect(md).toContain("[evidence:ev-42]");
   });
 
+  it("renders an explicit notice when the bounded file list omits changed files", () => {
+    const cap = sealedCapsule({
+      filesTouched: ["src/first.ts"],
+      filesTouchedOmitted: 7,
+    });
+    const md = renderCapsule(cap);
+    expect(md).toContain("src/first.ts");
+    expect(md).toContain("7 additional changed files omitted");
+    expect(md).toContain("workspace snapshot remains authoritative");
+  });
+
   it("preserves Unicode intent and narrative byte-for-byte", () => {
     const cap = sealedCapsule({
       intent: "继续下一阶段：验证缓存模块",

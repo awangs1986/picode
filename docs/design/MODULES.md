@@ -27,6 +27,15 @@ Guard 跟安全需求走、Devloop 是产品核心价值、Store 最稳定）。
 依赖纪律：模块间只经接口通信 + 一条内部事件总线做生命周期通知；
 Adapter Extension 是组合根，模块不感知宿主形态（pi 进程 / P5 serve）。
 
+**Pi Session Lifecycle** 位于 Engine：隐藏 Pi 首次 assistant turn 前延迟落盘的
+实现细节。CLI、Slice 与导入 Adapter 只能通过该 interface 创建、seed、持久化、
+解析和重新打开 Session；任何成功返回的 Session identity 都必须对应真实可恢复的
+Pi JSONL。调用方不得手写 JSONL 或依赖 Pi 的 `flushed` 私有状态。
+
+**Chat Writer Lease** 位于 Guard：它是“一 Chat 同时一个写入者”的唯一短期
+所有权 module，负责 acquire、heartbeat、expiry、release 与连接清理。TUI、CLI、
+Remote Serve 都只能共享或调用该 authority；传输 Adapter 不得维护自己的 lease Map。
+
 ### 1.1 CLI-first Control Interface Seam
 
 Control Interface 位于组合层，不是第五个领域模块。增强 Pi TUI 与第一方无头 CLI
@@ -70,6 +79,8 @@ Chat、Task、Guard、Account 或 Model 事实。它可以组合 Control、Store
   模型和 Thinking 切换都回到该 TUI；不得另启 Pi RPC writer。
 - `command.execute` 只开放查询命令。写 Chat 只能走带 Chat Writer Lease 的专用
   RPC；权限、Harness、能力、Worktree 和账号变更保持 PC-only。
+- Remote Serve 由组合根注入 Guard 的 Chat Writer Lease authority；WebSocket
+  只把 lease 协议翻译为 Guard 操作，不自行判断 owner 或过期规则。
 - Android/网页客户端只持有投影和请求权。设备令牌只存 Host 哈希，Host 私钥、
   凭据、缓存、日志和 scripted demo 均不属于可合并或可返回的数据面。
 
@@ -173,6 +184,25 @@ Context Governor 位于 `Devloop/context`，不是第五个模块。它只拥有
   失败只保留 pending，不得让下一轮恢复为原始超预算请求。
 - 未验证第三方 endpoint 使用保守 effective window；提高窗口必须有 endpoint 级证据。
 
+请求编译前还有一条更早、更便宜的摄取路径：Adapter 在 Pi 接受 `tool_result`
+时先调用 Devloop 的语义渲染器，为 bash/test、search、Git、Web 与 MCP 返回追加
+有界证据头；未知工具保持原样。纯文本结果超过 64 KiB 时，Store 以 SHA-256
+内容寻址保存完整 **Tool Result Artifact**，活动会话只保留 head/tail、摘要、路径
+与读取提示。即使 Artifact 写入失败，也只返回有界错误说明，不能把超大原文重新
+塞回请求。
+
+预算由可重放的 `ContextBudgetMeter` 计算：有 Provider usage 时以最近成功回合的
+`totalTokens`（含 cacheRead）为锚点并加入后续消息增量；没有时使用保守 UTF-8
+估算。相同 session revision + prefix envelope 必须得到相同结果。发生编译时，
+Store 只保存可重建的 **Context Compilation Manifest**（输入/输出 digest、替换
+位置、toolCallId、前后摘要、Token 与 effective window），不建立第二份会话。
+Provider/endpoint/model 的成功容量证据保存在独立 Endpoint Context Profile；URL
+凭据不得进入 route key。
+
+Task State、TDD State 和 sealed Capsule 属于 protected context：普通叙事折叠不得
+删除或摘要覆盖它们。只有在 emergency history fold 中才允许重排其位置，同时必须
+逐条原样保留。
+
 ### 3.1 Capsule schema（契约，R3 补入 v1 外壳）
 
 强制分节模板（Factory.ai 式填空，防静默丢失），JSON 存
@@ -199,7 +229,8 @@ digest                     sealed 内容的稳定摘要；注入前必须校验
 intent            本 Slice 目标原文
 verbatimFacts[]   命令/路径/错误串/验收标准；禁改写；带通用 SourceRef
 decisions[]       已定决策 + 一句话理由
-filesTouched[]
+filesTouched[]     从 Git 工作区采集；Capsule 最多携带 200 条，tracked 优先
+filesTouchedOmitted? 超限时记录未展开数量；不得静默截断或把依赖目录当业务变更
 openQuestions[]
 nextSteps[]
 narrative         唯一允许摘要的自由段
@@ -218,6 +249,17 @@ narrative         唯一允许摘要的自由段
 切片动作 = 从权威源重建事实 → 生成并 seal Capsule → 新会话/子代理
 （context fresh）→ 校验 digest/revision/snapshot 后注入。软硬阈值在 P2 通过
 真实中型仓库实验校准，避免切得过碎导致交接开销和缓存失效。
+新会话必须在 `/slice` 返回成功前形成可重新打开的 Pi JSONL；仅存在于当前
+进程内存中的 Session 不得作为成功结果。后续无头进程必须能按返回路径恢复，
+并读到 Task Binding 与 Capsule。Capsule 的文件清单排除未跟踪依赖缓存目录，
+超出有界载荷的部分用 `filesTouchedOmitted` 明示，完整代码身份仍由
+`workspaceSnapshot` 负责。
+
+直接调用 pi-subagents 时，省略 `context` 默认写成 `fresh`；只有用户/模型显式
+指定 `fork` 才继承完整父会话。Fresh 直接委派会从 Store 选择当前 Task 最新的
+sealed Capsule，经过 taskRevision、digest 与 workspaceSnapshot 校验后附在 child
+task 中。Draft、superseded、版本/快照不符的 Capsule 不得注入；管理动作保持无
+上下文副作用，scripted workflow 仍交由 pi-subagents 自己按 fresh 语义编排。
 
 ### 3.3 TDD 状态机与预算
 

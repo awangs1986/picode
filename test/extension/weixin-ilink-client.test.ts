@@ -72,4 +72,18 @@ describe("IlinkClient", () => {
       accountId: "bot-1", token: "secret", baseUrl: "https://attacker.example", userId: "owner-1",
     }, "")).rejects.toThrow("untrusted iLink host");
   });
+
+  it("keeps a valid text update even when Tencent omits message_id", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(jsonResponse({
+      ret: 0,
+      get_updates_buf: "next",
+      msgs: [{ from_user_id: "owner-1", context_token: "ctx-no-id", item_list: [{ type: 1, text_item: { text: "没有 ID" } }] }],
+    }));
+    const client = new IlinkClient({ fetch });
+    const result = await client.getUpdates({ accountId: "bot-1", token: "secret", baseUrl: "https://ilinkai.weixin.qq.com", userId: "owner-1" }, "before");
+
+    expect(result.messages).toEqual([
+      expect.objectContaining({ messageId: expect.stringMatching(/^synthetic:/), senderId: "owner-1", text: "没有 ID" }),
+    ]);
+  });
 });

@@ -5,9 +5,11 @@ import { createHash } from "node:crypto";
 import type { HarnessTier } from "../shared/types.ts";
 import type { TaskStateHeader } from "../devloop/index.ts";
 import type { PicodeRuntime } from "./index.ts";
+import { PiSessionLifecycle } from "../engine/pi-session-lifecycle.ts";
 
 export const TASK_BINDING_ENTRY_TYPE = "picode.task-binding";
 export const TASK_CAPSULE_MESSAGE_TYPE = "picode.task-capsule";
+export const MAX_CAPSULE_FILES_TOUCHED = 200;
 
 export interface TaskBinding {
   taskId: string;
@@ -56,6 +58,19 @@ export class SliceSessionCoordinator {
 
   currentTaskRevision(): number | undefined {
     return this.binding?.taskRevision;
+  }
+
+  async capsuleInjectionBinding(cwd: string): Promise<{
+    taskId: string;
+    taskRevision: number;
+    workspace?: WorkspaceSnapshotRef;
+  } | undefined> {
+    if (this.binding === undefined) return undefined;
+    try {
+      return { ...this.binding, workspace: await this.snapshotOf(cwd) };
+    } catch {
+      return { ...this.binding };
+    }
   }
 
   async syncHarnessTier(tier: HarnessTier): Promise<void> {
@@ -166,7 +181,23 @@ export class SliceSessionCoordinator {
     const todos = await this.runtime.store.loadTaskTodos(binding.taskId);
     const taskJson = JSON.stringify(task.value);
     const workspaceSnapshot = await this.snapshotOf(ctx.cwd);
-    const filesTouched = await this.filesTouchedOf(ctx.cwd);
+    const sourceSessionId = sessionIdOf(ctx);
+    const capsuleId = createHash("sha256")
+      .update(`${binding.taskId}\0${binding.taskRevision}\0${sourceSessionId}\0${normalizedIntent}`)
+      .digest("hex")
+      .slice(0, 32);
+    const existing = await this.runtime.store.loadCapsule(binding.taskId, capsuleId);
+    if (existing.ok) {
+      await this.startFreshSession(existing.value, ctx);
+      return;
+    }
+    if (existing.error.code !== "store/state-missing") {
+      ctx.ui.notify(existing.error.message, "error");
+      return;
+    }
+    const changedFiles = await this.filesTouchedOf(ctx.cwd);
+    const filesTouched = changedFiles.slice(0, MAX_CAPSULE_FILES_TOUCHED);
+    const filesTouchedOmitted = Math.max(0, changedFiles.length - filesTouched.length);
     const verificationRefs = this.runtime.store.loadTaskVerificationRefs(binding.taskId);
     const todoFacts = todos.ok
       ? todos.value.items.filter((item) => item.status !== "completed")
@@ -191,17 +222,18 @@ export class SliceSessionCoordinator {
         },
       }, {
         text: `Workspace: ${ctx.cwd}`,
-        source: { kind: "session", id: sessionIdOf(ctx) },
+        source: { kind: "session", id: sourceSessionId },
       }, ...todoFacts.map((text) => ({
         text,
-        source: { kind: "session" as const, id: sessionIdOf(ctx), locator: "task-todos" },
+        source: { kind: "session" as const, id: sourceSessionId, locator: "task-todos" },
       }))],
       decisions: [],
       filesTouched,
+      ...(filesTouchedOmitted === 0 ? {} : { filesTouchedOmitted }),
       openQuestions,
       nextSteps: [normalizedIntent],
       narrative: "Fresh context continuation created explicitly by the user.",
-    }));
+    }, capsuleId));
     if (!sealed.ok) {
       ctx.ui.notify(sealed.error.message, "error");
       return;
@@ -238,6 +270,7 @@ export class SliceSessionCoordinator {
           display: true,
           details: { capsuleId: capsule.capsuleId },
         }, { triggerTurn: false });
+        PiSessionLifecycle.persistSeed(replacementCtx.sessionManager);
         replacementCtx.ui.notify("Fresh Slice session is ready; submit your next instruction when ready.", "info");
       },
     });

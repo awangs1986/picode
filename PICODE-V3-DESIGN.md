@@ -128,6 +128,14 @@ picode doctor
 
 **压缩经济学**：Reasonix 分层压缩（60% 软提醒 → 剪陈旧工具结果 → 占位符 → 付费摘要 → 强制）与固定尾部预算防循环，仍是 P5 显式压缩模块实现参考。P0 另有不可关闭的 **Context Governor**：在 Pi 的每次 `context` 事件（即每次 Provider 调用前，包括工具结果追加后的同一 Agent loop）计算完整预算；预算包含 system prompt、活动工具 schema、消息/Reasoning、工具结果、上一轮 `totalTokens`（含 cacheRead）之后的新尾部，以及输出预留和安全边际。达到阈值时必须先编译有界活动上下文，原始超预算请求不得发送；持久 JSONL 不改写，Agent settle 后再请求 pi durable compaction。普通 auto-compact 设置可关闭，但这道防卡死保护不可关闭。
 
+**P0–P3 落地切面**：工具结果在 `tool_result` 缝先语义化；超过 64 KiB 的纯文本
+完整值由 Store 内容寻址外置，活动历史只保留有界预览和取回指针。预算度量优先使用
+Provider usage 锚点 + replay tail，缺失时才保守估算；每次 compact/blocked 生成
+Context Compilation Manifest。Endpoint Profile 把模型声明窗口与真实路由证据分开。
+旧叙事可以折叠，但 Task/TDD/Capsule 事实受保护。pi-subagents 的直接委派默认
+`fresh`，并只附带当前任务最新且通过 revision/digest/snapshot 校验的 sealed Capsule；
+显式 `fork` 保留完整父上下文。
+
 未经验证的第三方 OpenAI Responses endpoint 不得直接以模型卡片声明的 1M 作为有效窗口。P0 默认使用保守的 320K effective window；后续只有 endpoint 级验证证据才能提高。官方 endpoint 或已有验证值使用各自有效窗口。
 
 ### 3.4 三级工具与 search_tools 发现（2026-08-07 已确认，R4 收敛持久状态）

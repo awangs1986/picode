@@ -1,6 +1,7 @@
 import { IlinkSessionExpiredError, type IlinkClient, type IlinkCredentials, type IlinkMessage } from "./weixin-ilink-client.ts";
 import type { WeixinStateV1 } from "./weixin-state.ts";
 import { WeixinStateStore } from "./weixin-state.ts";
+import { WeixinTokenLease, type WeixinTokenLeaseHandle } from "./weixin-token-lease.ts";
 
 const MAX_RECENT_MESSAGES = 256;
 const MAX_WEIXIN_TEXT = 2_000;
@@ -37,6 +38,7 @@ function chunks(text: string): string[] {
 export class WeixinTransport {
   private controller: AbortController | undefined;
   private loop: Promise<void> | undefined;
+  private tokenLease: WeixinTokenLeaseHandle | undefined;
 
   constructor(private readonly deps: WeixinTransportDeps) {}
 
@@ -49,11 +51,17 @@ export class WeixinTransport {
     const state = await this.deps.store.readOrEmpty();
     if (state.accountRefId === undefined) throw new Error("Weixin account is not connected; run /weixin login");
     if (state.boundSessionId === undefined) throw new Error("Weixin is not bound to a persisted Chat");
+    const lease = new WeixinTokenLease().acquire(
+      this.deps.credentials().token,
+    );
+    this.tokenLease = lease;
     this.controller = new AbortController();
     const signal = this.controller.signal;
     this.loop = this.poll(state, signal).finally(() => {
       this.loop = undefined;
       this.controller = undefined;
+      lease.release();
+      if (this.tokenLease === lease) this.tokenLease = undefined;
     });
   }
 

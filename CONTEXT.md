@@ -46,7 +46,7 @@
 
 **Task Slice** — Task Run 中目标单一、范围明确、可以独立验证的一段工作。
 
-**Task Capsule** — Slice 之间传递的有界事实包；生命周期与事实内容由 Devloop/task 唯一拥有，Devloop/context 只负责校验后渲染。包含不可摘要覆盖的 Verbatim Facts 和允许有来源摘要的 Narrative。生成时从 Git 工作区事实采集 `filesTouched`，从未完成 Todo 采集待解决事项，禁止用空数组掩盖已知变化。v1 外壳带 `schemaVersion`，绑定 taskRevision 与 workspaceSnapshot（版本不符不得注入），事实使用可带 sourceDigest 的通用 SourceRef，并关联 verificationRefs；sealed 内容带 digest，生命周期 `draft → sealed → superseded`，通过 supersedes 串联替代关系，sealed 后不可变。
+**Task Capsule** — Slice 之间传递的有界事实包；生命周期与事实内容由 Devloop/task 唯一拥有，Devloop/context 只负责校验后渲染。包含不可摘要覆盖的 Verbatim Facts 和允许有来源摘要的 Narrative。生成时从 Git 工作区事实采集 `filesTouched`（tracked 优先，最多 200 条；排除未跟踪依赖缓存目录），超限必须以 `filesTouchedOmitted` 明示，完整代码身份仍由 `workspaceSnapshot` 负责；从未完成 Todo 采集待解决事项，禁止用空数组掩盖已知变化。v1 外壳带 `schemaVersion`，绑定 taskRevision 与 workspaceSnapshot（版本不符不得注入），事实使用可带 sourceDigest 的通用 SourceRef，并关联 verificationRefs；sealed 内容带 digest，生命周期 `draft → sealed → superseded`，通过 supersedes 串联替代关系，sealed 后不可变。`/slice` 只有在新 Pi JSONL 已持久化且可由下一无头进程重新打开时才可报告成功。
 
 **Execution Epoch** — Task Run 中账号、Channel、模型和能力集合固定的一段执行。
 
@@ -83,6 +83,14 @@
 **Built-in Feature** — Picode 出厂自带的可选功能（如上下文压缩）；用户可开关，无信任流程，界面上属于"功能"分区。Codebase Memory 只有稳定 Provider Interface/Adapter 属于内建，实际三方运行时不属于 Built-in Feature。
 
 **Context Governor** — Devloop/context 的确定性请求编译器。它在每次 Provider 调用前把 system、工具 schema、历史、Reasoning、Tool Result、cacheRead 后新增尾部、输出预留和安全边际放进同一预算；接近 endpoint 有效上限时强制生成有界 active context，完整 transcript 不变。它是防卡死硬保护，不是用户可关闭的 `/pi-compress` 功能。
+
+**Tool Result Artifact** — 超过活动上下文内联阈值的完整纯文本工具返回。Store 以内容摘要和 session/tool-call 身份确定性落盘；模型只看到有界 head/tail、摘要、路径和按需读取提示。Artifact 是审计/按需取回材料，不是第二份会话权威。
+
+**Context Compilation Manifest** — Context Governor 每次 compact/blocked 时产生的可重放派生记录，包含 session revision、输入/输出 digest、替换来源位置与前后摘要、Token 预算和 effective window；它说明“这次请求如何被编译”，不保存或取代会话正文。
+
+**Endpoint Context Profile** — 某个 provider API + 去凭据 Base URL + provider/model 路由的容量证据。模型卡片声明值与真实 endpoint 成功证据分开记录；第三方 endpoint 未验证前仍使用保守窗口。
+
+**Fresh Delegation** — pi-subagents 的默认 Picode 子代理上下文策略：直接委派只接收任务文本和当前 Task 最新、校验通过的 sealed Capsule，不继承父会话全文。显式 `fork` 始终保留为用户选择。
 
 **Active Context** — 某一次 Provider 请求实际获得的有界消息集合。它是从完整 Pi transcript 编译出的临时投影，不是第二份会话权威。工具轨迹可在这里被 envelope 化或折叠，但原 JSONL 仍可审计和恢复。
 
@@ -156,7 +164,9 @@
 
 **Import Contract** — 版本化的导入交换格式（manifest + Foreign Transcript IR + SourceToolSignature + 附件引用）；来源解析工具与 Picode 核心之间唯一的耦合点。来源格式解析住在核心之外；语义映射（工具痕迹五级判定、归一化投影）由核心内的 ImportCompiler 集中执行。
 
-**Writer Lease** — 同一 Chat Session 在本机某一时刻唯一写入者的短期所有权。
+**Writer Lease** — 同一 Chat Session 在本机某一时刻唯一写入者的短期所有权。其 acquire、heartbeat、expiry、release 与连接清理由 Guard 的 Chat Writer Lease module 唯一裁决；TUI、CLI 与 Remote Adapter 不得建立各自的 lease Map。
+
+**Pi Session Lifecycle** — Engine 内封装 Pi Session 创建、seed、首次持久化、解析和重新打开的 deep module。任何成功返回的 Session identity 必须已有真实 Pi JSONL，可被另一进程恢复；Adapter 不得手写 Pi JSONL，也不得接触 `flushed` 等上游私有状态。
 
 **Account Import Wizard** — 裸 `/import` 或 `/accounts import` 启动的临时 loopback 网页。它只负责扫描、预览和收集用户选择；Account Vault 是凭据权威，Wizard 关闭后不保留第二份状态。账号导入与激活是两个动作，导入不会隐式替换当前账号。带路径的 `/import <path.jsonl>` 保留为 Pi 原生会话导入。
 

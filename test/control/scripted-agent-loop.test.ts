@@ -206,6 +206,45 @@ describe("no-key real Agent Loop", () => {
     expect(compactEvents.some((event) => event.kind === "run.completed" && (event.payload as { text?: string }).text === "scripted-ok")).toBe(false);
   }, 30_000);
 
+  it("persists each fresh Slice session so the next headless process can resume it", async () => {
+    const driver = new RpcControlDriver({
+      packageRoot: root,
+      piEntry: join(root, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "cli.js"),
+      cwd: scratch,
+      env: { ...process.env, PICODE_DIR: join(scratch, "slice-resume-data") },
+      extraExtensions: [join(root, "test", "fixtures", "scripted-model-extension.ts")],
+    });
+    const seedEvents = [];
+    for await (const event of driver.run({
+      prompt: "seed",
+      provider: "picode-scripted-test",
+      model: "fixture",
+      nonInteractive: true,
+      timeoutMs: 20_000,
+    })) seedEvents.push(event);
+    let currentSession = (seedEvents.find((event) => event.kind === "run.started")?.payload as {
+      sessionFile?: string;
+    } | undefined)?.sessionFile;
+    expect(currentSession).toBeTypeOf("string");
+
+    for (const intent of ["continue phase three", "continue phase five"]) {
+      const sliceEvents = [];
+      for await (const event of driver.sliceSession(currentSession as string, intent)) sliceEvents.push(event);
+      const completed = sliceEvents.find((event) => event.kind === "run.completed")?.payload as {
+        sessionFile?: string;
+      } | undefined;
+      expect(completed?.sessionFile).toBeTypeOf("string");
+      expect(existsSync(completed?.sessionFile as string)).toBe(true);
+      const reopened = SessionManager.open(completed?.sessionFile as string);
+      expect(restoreTaskBinding(reopened.getBranch())).toMatchObject({
+        taskId: expect.any(String),
+        taskRevision: 1,
+      });
+      expect(JSON.stringify(reopened.buildSessionContext().messages)).toContain(intent);
+      currentSession = completed?.sessionFile;
+    }
+  }, 30_000);
+
   it("round-trips a real Guard approval through the long-lived RPC channel", async () => {
     const driver = new RpcControlDriver({ packageRoot: root, piEntry: join(root, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "cli.js"), cwd: scratch, env: { ...process.env, PICODE_DIR: join(scratch, "approval-data") }, extraExtensions: [join(root, "test", "fixtures", "scripted-model-extension.ts")] });
     const output: Array<{ id: string; event?: string; payload?: unknown }> = [];

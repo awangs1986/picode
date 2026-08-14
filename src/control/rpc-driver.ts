@@ -1,6 +1,6 @@
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import {
   RpcClient,
@@ -17,6 +17,7 @@ import { HARNESS_ENTRY_TYPE, restoreHarnessTier } from "../extension/harness.ts"
 import { PERMISSION_ENTRY_TYPE, restorePermissionTier } from "../extension/permissions.ts";
 import { startAccountImportWizard } from "../extension/account-import-wizard.ts";
 import { CapabilityReadinessRegistry } from "../engine/readiness.ts";
+import { PiSessionLifecycle } from "../engine/pi-session-lifecycle.ts";
 import { PICODE_SUBAGENT_RESULT_PREFIX } from "../extension/subagent-control-command.ts";
 import { WorktreeRegistry } from "../engine/worktree.ts";
 import { bootRuntime } from "../extension/index.ts";
@@ -73,35 +74,6 @@ function isUiApproval(event: unknown): boolean {
     (row.method === "confirm" || row.method === "select" || row.method === "input" || row.method === "editor");
 }
 
-function sessionIdentity(manager: SessionManager): SessionIdentity {
-  const file = manager.getSessionFile();
-  return {
-    sessionId: manager.getSessionId(),
-    ...(file === undefined ? {} : { sessionFile: file }),
-  };
-}
-
-function persistSessionSeed(manager: SessionManager): string {
-  const sessionFile = manager.getSessionFile();
-  if (sessionFile === undefined) throw new Error("new session has no persistent file");
-  const entries = [manager.getHeader(), ...manager.getEntries()];
-  writeFileSync(sessionFile, `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`, { flag: "wx" });
-  return sessionFile;
-}
-
-async function resolveSession(value: string, sessionDir: string): Promise<SessionIdentity> {
-  const direct = isAbsolute(value) ? value : resolve(value);
-  if (existsSync(direct)) return sessionIdentity(SessionManager.open(direct, sessionDir));
-  const all = await SessionManager.listAll(sessionDir);
-  const matches = all.filter((session) => session.id === value || session.id.startsWith(value));
-  if (matches.length !== 1) {
-    throw new Error(matches.length === 0 ? `session not found: ${value}` : `session id is ambiguous: ${value}`);
-  }
-  const match = matches[0];
-  if (match === undefined) throw new Error(`session not found: ${value}`);
-  return { sessionId: match.id, sessionFile: match.path };
-}
-
 export interface DriverOptions {
   packageRoot: string;
   piEntry: string;
@@ -126,6 +98,10 @@ export class RpcControlDriver implements ControlDriver {
 
   private sessionsRoot(): string {
     return join(this.agentRoot(), "sessions");
+  }
+
+  private sessions(): PiSessionLifecycle {
+    return new PiSessionLifecycle(this.sessionsRoot());
   }
 
   private tasksRoot(): string {
@@ -179,19 +155,20 @@ export class RpcControlDriver implements ControlDriver {
     let effectiveHarnessTier: "simple" | "standard" | "tdd" = "simple";
     let effectivePermissionTier: "readonly" | "auto" | "full" | "danger-full-access" = "auto";
     if (session === undefined && (input.permissionTier !== undefined || input.harnessTier !== undefined)) {
-      const manager = SessionManager.create(input.cwd ?? this.options.cwd ?? process.cwd(), this.sessionsRoot());
-      if (input.harnessTier !== undefined) manager.appendCustomEntry(HARNESS_ENTRY_TYPE, { tier: input.harnessTier });
-      if (input.permissionTier !== undefined) manager.appendCustomEntry(PERMISSION_ENTRY_TYPE, { tier: input.permissionTier });
-      session = persistSessionSeed(manager);
+      const identity = this.sessions().createSeeded(input.cwd ?? this.options.cwd ?? process.cwd(), (manager) => {
+        if (input.harnessTier !== undefined) manager.appendCustomEntry(HARNESS_ENTRY_TYPE, { tier: input.harnessTier });
+        if (input.permissionTier !== undefined) manager.appendCustomEntry(PERMISSION_ENTRY_TYPE, { tier: input.permissionTier });
+      });
+      if (identity.sessionFile === undefined) throw new Error("new session has no persistent file");
+      session = identity.sessionFile;
+      const manager = await this.sessions().open(identity.sessionFile);
       effectiveHarnessTier = restoreHarnessTier(manager.getBranch());
       effectivePermissionTier = restorePermissionTier(manager.getBranch());
     } else if (session !== undefined) {
-      const identity = await resolveSession(session, this.sessionsRoot());
-      if (identity.sessionFile === undefined) throw new Error(`session has no persistent file: ${session}`);
-      const manager = SessionManager.open(identity.sessionFile, this.sessionsRoot());
+      const manager = await this.sessions().open(session);
       if (input.harnessTier !== undefined) manager.appendCustomEntry(HARNESS_ENTRY_TYPE, { tier: input.harnessTier });
       if (input.permissionTier !== undefined) manager.appendCustomEntry(PERMISSION_ENTRY_TYPE, { tier: input.permissionTier });
-      session = identity.sessionFile;
+      session = this.sessions().identity(manager).sessionFile;
       effectiveHarnessTier = restoreHarnessTier(manager.getBranch());
       effectivePermissionTier = restorePermissionTier(manager.getBranch());
     }
@@ -358,12 +335,11 @@ export class RpcControlDriver implements ControlDriver {
   }
 
   async createSession(input: { id?: string; cwd?: string }): Promise<SessionIdentity> {
-    mkdirSync(this.sessionsRoot(), { recursive: true });
-    const manager = SessionManager.create(input.cwd ?? this.options.cwd ?? process.cwd(), this.sessionsRoot(), {
-      ...(input.id === undefined ? {} : { id: input.id }),
-    });
-    persistSessionSeed(manager);
-    return sessionIdentity(manager);
+    return this.sessions().createSeeded(
+      input.cwd ?? this.options.cwd ?? process.cwd(),
+      undefined,
+      { ...(input.id === undefined ? {} : { id: input.id }) },
+    );
   }
 
   async listSessions(): Promise<unknown> {
@@ -373,17 +349,17 @@ export class RpcControlDriver implements ControlDriver {
   }
 
   resumeSession(session: string): Promise<SessionIdentity> {
-    return resolveSession(session, this.sessionsRoot());
+    return this.sessions().resolve(session);
   }
 
   switchSession(session: string): Promise<SessionIdentity> {
     // The CLI is intentionally stateless: this validates and returns the Pi
     // identity that the caller passes to its next command; no second active-session authority.
-    return resolveSession(session, this.sessionsRoot());
+    return this.sessions().resolve(session);
   }
 
   async branchSession(session: string, from: string): Promise<SessionIdentity & { from: string }> {
-    const identity = await resolveSession(session, this.sessionsRoot());
+    const identity = await this.sessions().resolve(session);
     if (identity.sessionFile === undefined) throw new Error(`session has no persistent file: ${session}`);
     const client = this.client({ session: identity.sessionFile });
     try {
@@ -398,13 +374,12 @@ export class RpcControlDriver implements ControlDriver {
         // Pi session that upstream defers writing. A one-shot CLI would otherwise
         // return a path that vanishes when the RPC child exits, so persist its
         // upstream SessionManager header before returning the identity.
-        const source = SessionManager.open(identity.sessionFile, this.sessionsRoot());
-        const emptyBranch = SessionManager.create(source.getCwd(), this.sessionsRoot(), {
+        const source = await this.sessions().open(identity.sessionFile);
+        const emptyBranch = this.sessions().createSeeded(source.getCwd(), undefined, {
           id: state.sessionId,
           parentSession: identity.sessionFile,
         });
-        persistSessionSeed(emptyBranch);
-        return { ...sessionIdentity(emptyBranch), from };
+        return { ...emptyBranch, from };
       }
       return {
         sessionId: state.sessionId,
@@ -417,7 +392,7 @@ export class RpcControlDriver implements ControlDriver {
   }
 
   private async subagentRpc(session: string, method: "status" | "stop" | "resume", params?: Record<string, unknown>): Promise<unknown> {
-    const identity = await resolveSession(session, this.sessionsRoot());
+    const identity = await this.sessions().resolve(session);
     if (identity.sessionFile === undefined) throw new Error(`session has no persistent file: ${session}`);
     const client = this.client({ session: identity.sessionFile });
     let settle: ((value: unknown) => void) | undefined;
@@ -644,23 +619,23 @@ export class RpcControlDriver implements ControlDriver {
         });
         continue;
       }
-      const manager = SessionManager.create(resolve(workspace), this.sessionsRoot());
-      manager.appendCustomEntry(TASK_BINDING_ENTRY_TYPE, { taskId: task.value.taskId, taskRevision: 1 });
-      manager.appendCustomEntry("picode.foreign-import", { importId: persisted.value.importId, sourceAgent: normalized });
-      manager.appendMessage({
-        role: "custom",
-        customType: "picode.foreign-resume",
-        content: persisted.value.resumeCapsule,
-        display: true,
-        details: { importId: persisted.value.importId, sourceAgent: normalized },
-        timestamp: Date.now(),
+      const session = this.sessions().createSeeded(resolve(workspace), (manager) => {
+        manager.appendCustomEntry(TASK_BINDING_ENTRY_TYPE, { taskId: task.value.taskId, taskRevision: 1 });
+        manager.appendCustomEntry("picode.foreign-import", { importId: persisted.value.importId, sourceAgent: normalized });
+        manager.appendMessage({
+          role: "custom",
+          customType: "picode.foreign-resume",
+          content: persisted.value.resumeCapsule,
+          display: true,
+          details: { importId: persisted.value.importId, sourceAgent: normalized },
+          timestamp: Date.now(),
+        });
       });
-      persistSessionSeed(manager);
       imported.push({
         importId: persisted.value.importId,
         selectionId: candidate.selectionId,
         taskId: task.value.taskId,
-        ...sessionIdentity(manager),
+        ...session,
         archived: false,
       });
     }
@@ -670,7 +645,7 @@ export class RpcControlDriver implements ControlDriver {
   }
 
   async *send(input: { session: string; message: string; nonInteractive: boolean }): AsyncIterable<ControlEvent> {
-    const identity = await resolveSession(input.session, this.sessionsRoot());
+    const identity = await this.sessions().resolve(input.session);
     if (identity.sessionFile === undefined) throw new Error(`session has no persistent file: ${input.session}`);
     yield* this.run({
       prompt: input.message,
@@ -680,9 +655,9 @@ export class RpcControlDriver implements ControlDriver {
   }
 
   async *events(input: { session: string; since?: string }): AsyncIterable<ControlEvent> {
-    const identity = await resolveSession(input.session, this.sessionsRoot());
+    const identity = await this.sessions().resolve(input.session);
     if (identity.sessionFile === undefined) return;
-    const manager = SessionManager.open(identity.sessionFile, this.sessionsRoot());
+    const manager = await this.sessions().open(identity.sessionFile);
     let include = input.since === undefined;
     for (const entry of manager.getEntries()) {
       if (!include) {
@@ -715,9 +690,7 @@ export class RpcControlDriver implements ControlDriver {
   }
 
   private async sessionManager(session: string): Promise<SessionManager> {
-    const identity = await resolveSession(session, this.sessionsRoot());
-    if (identity.sessionFile === undefined) throw new Error(`session has no persistent file: ${session}`);
-    return SessionManager.open(identity.sessionFile, this.sessionsRoot());
+    return this.sessions().open(session);
   }
 
   async harnessTier(session: string): Promise<string> {
@@ -748,7 +721,7 @@ export class RpcControlDriver implements ControlDriver {
   }
 
   async sessionModelState(session: string): Promise<unknown> {
-    const identity = await resolveSession(session, this.sessionsRoot());
+    const identity = await this.sessions().resolve(session);
     const client = this.client({ session: identity.sessionFile ?? session });
     try {
       await client.start();
@@ -770,7 +743,7 @@ export class RpcControlDriver implements ControlDriver {
   }
 
   async setSessionModel(session: string, provider: string, modelId: string): Promise<unknown> {
-    const identity = await resolveSession(session, this.sessionsRoot());
+    const identity = await this.sessions().resolve(session);
     const client = this.client({ session: identity.sessionFile ?? session });
     try {
       await client.start();
@@ -783,7 +756,7 @@ export class RpcControlDriver implements ControlDriver {
   }
 
   async setSessionThinking(session: string, level: "off" | "minimal" | "low" | "medium" | "high" | "xhigh"): Promise<unknown> {
-    const identity = await resolveSession(session, this.sessionsRoot());
+    const identity = await this.sessions().resolve(session);
     const client = this.client({ session: identity.sessionFile ?? session });
     try {
       await client.start();

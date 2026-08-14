@@ -1,11 +1,49 @@
 import {
   convertToLlm,
+  estimateTokens,
   serializeConversation,
   type CompactionResult,
   type ExtensionAPI,
   type SessionBeforeCompactEvent,
 } from "@earendil-works/pi-coding-agent";
-import { contentText, type Context } from "@earendil-works/pi-ai";
+import { contentText, type Context, type Usage } from "@earendil-works/pi-ai";
+
+type AgentMessage = Parameters<typeof convertToLlm>[0][number];
+
+const DEFAULT_SUMMARIZATION_CHUNK_TOKENS = 48_000;
+
+export interface SummarizationChunk {
+  messages: AgentMessage[];
+  estimatedTokens: number;
+}
+
+/**
+ * Keep custom compaction requests below the provider's effective context limit.
+ * Imported model metadata is not authoritative for third-party gateways (a model
+ * may advertise 1M while the proxy accepts substantially less), so long histories
+ * are summarized in bounded, chronological batches.
+ */
+export function buildSummarizationChunks(
+  messages: AgentMessage[],
+  maxTokens: number = DEFAULT_SUMMARIZATION_CHUNK_TOKENS,
+): SummarizationChunk[] {
+  const budget = Math.max(1_024, Math.floor(maxTokens));
+  const chunks: SummarizationChunk[] = [];
+  let current: AgentMessage[] = [];
+  let estimatedTokens = 0;
+  for (const message of messages) {
+    const tokens = Math.max(1, estimateTokens(message));
+    if (current.length > 0 && estimatedTokens + tokens > budget) {
+      chunks.push({ messages: current, estimatedTokens });
+      current = [];
+      estimatedTokens = 0;
+    }
+    current.push(message);
+    estimatedTokens += tokens;
+  }
+  if (current.length > 0) chunks.push({ messages: current, estimatedTokens });
+  return chunks;
+}
 
 /** Remove fields that mean "reasoning off" but are rejected by some gateways. */
 export function reasoningFreeFetch(baseFetch: typeof fetch = globalThis.fetch): typeof fetch {
@@ -63,28 +101,54 @@ export function registerCompactionCompatibility(pi: ExtensionAPI): void {
     ctx.ui.setStatus("picode-compaction", "gateway-compatible");
     const messages = [...event.preparation.messagesToSummarize, ...event.preparation.turnPrefixMessages];
     try {
-      const conversation = serializeConversation(convertToLlm(messages));
-      const prompt = `${event.preparation.previousSummary ? `Previous summary:\n${event.preparation.previousSummary}\n\n` : ""}${event.customInstructions ? `Focus:\n${event.customInstructions}\n\n` : ""}<conversation>\n${conversation}\n</conversation>\n\nSummarize the coding session. Preserve exact paths, decisions, errors, pending work, and verification state. Do not continue the conversation.`;
-      const context: Context = {
-        systemPrompt: "You produce concise, faithful coding-session summaries.",
-        messages: [{ role: "user", content: [{ type: "text", text: prompt }], timestamp: Date.now() }],
+      const completeSummary = async (prompt: string, maxTokens: number) => {
+        const context: Context = {
+          systemPrompt: "You produce concise, faithful coding-session summaries.",
+          messages: [{ role: "user", content: [{ type: "text", text: prompt }], timestamp: Date.now() }],
+        };
+        const result = await ctx.modelRegistry.complete(requestModel, context, {
+          apiKey: auth.apiKey,
+          headers: auth.headers,
+          fetch: reasoningFreeFetch(),
+          signal: event.signal,
+          maxTokens,
+        });
+        if (result.stopReason === "error" || result.stopReason === "aborted") {
+          throw new Error(result.errorMessage ?? "gateway summary failed");
+        }
+        return result;
       };
-      const result = await ctx.modelRegistry.complete(requestModel, context, {
-        apiKey: auth.apiKey,
-        headers: auth.headers,
-        fetch: reasoningFreeFetch(),
-        signal: event.signal,
-        maxTokens: Math.min(event.preparation.settings.reserveTokens, 8192),
-      });
-      if (result.stopReason === "error" || result.stopReason === "aborted") {
-        throw new Error(result.errorMessage ?? "gateway summary failed");
+
+      const chunks = buildSummarizationChunks(messages);
+      const chunkSummaries: string[] = [];
+      let usage: Usage | undefined;
+      let result;
+      if (chunks.length <= 1) {
+        result = await completeSummary(
+          `${event.preparation.previousSummary ? `Previous summary:\n${event.preparation.previousSummary}\n\n` : ""}${event.customInstructions ? `Focus:\n${event.customInstructions}\n\n` : ""}<conversation>\n${serializeConversation(convertToLlm(messages))}\n</conversation>\n\nSummarize the coding session. Preserve exact paths, decisions, errors, pending work, and verification state. Do not continue the conversation.`,
+          Math.min(event.preparation.settings.reserveTokens, 8192),
+        );
+      } else {
+        for (const [index, chunk] of chunks.entries()) {
+          const conversation = serializeConversation(convertToLlm(chunk.messages));
+          const part = await completeSummary(
+            `<conversation-part ${index + 1} of ${chunks.length}>\n${conversation}\n</conversation-part>\n\nSummarize this part of a coding session. Preserve exact paths, decisions, errors, pending work, and verification state. Do not continue the conversation.`,
+            Math.min(event.preparation.settings.reserveTokens, 4096),
+          );
+          chunkSummaries.push(contentText(part.content));
+          usage = part.usage;
+        }
+        result = await completeSummary(
+          `${event.preparation.previousSummary ? `Previous summary:\n${event.preparation.previousSummary}\n\n` : ""}${event.customInstructions ? `Focus:\n${event.customInstructions}\n\n` : ""}<conversation-parts>\n${chunkSummaries.join("\n\n---\n\n")}\n</conversation-parts>\n\nCreate one concise coding-session summary from these ordered parts. Preserve exact paths, decisions, errors, pending work, and verification state. Do not continue the conversation.`,
+          Math.min(event.preparation.settings.reserveTokens, 8192),
+        );
       }
       const facts = fileFacts(event.preparation);
       const compaction: CompactionResult = {
         summary: appendFileFacts(contentText(result.content), facts),
         firstKeptEntryId: event.preparation.firstKeptEntryId,
         tokensBefore: event.preparation.tokensBefore,
-        usage: result.usage,
+        usage: result.usage ?? usage,
         details: {
           ...facts,
           compatibility: "third-party-openai-responses-reasoning-off",

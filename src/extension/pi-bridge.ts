@@ -65,6 +65,8 @@ import {
 } from "./permissions.ts";
 import { registerCompactionCompatibility } from "./compaction-compat.ts";
 import { registerContextGovernor } from "./context-governor.ts";
+import { registerToolOutputRetention } from "./tool-output-retention.ts";
+import { applySubagentContextPolicy } from "./subagent-context-policy.ts";
 import type { AccountImportCompleteHandler } from "./account-import-wizard.ts";
 import { prepareWorkspaceSwitch } from "./workspace-switch.ts";
 
@@ -270,20 +272,40 @@ export async function candidateSnapshot(pi: ExtensionAPI, cwd: string): Promise<
   };
 }
 
+function isGeneratedDependencyPath(path: string): boolean {
+  const normalized = path.replaceAll("\\", "/");
+  const segments = normalized.split("/");
+  if (segments.includes("node_modules") || segments.includes(".pnpm-store")) return true;
+  return normalized.startsWith(".yarn/cache/") || normalized.startsWith(".gradle/caches/");
+}
+
 export async function workspaceChangedFiles(pi: ExtensionAPI, cwd: string): Promise<string[]> {
   if (typeof pi.exec !== "function") return [];
   const [tracked, untracked] = await Promise.all([
     pi.exec("git", ["diff", "--name-only", "-z", "HEAD", "--"], { cwd, timeout: 5_000 }),
     pi.exec("git", ["ls-files", "--others", "--exclude-standard", "-z"], { cwd, timeout: 5_000 }),
   ]);
-  const files = new Set<string>();
+  const trackedFiles = new Set<string>();
   if (tracked.code === 0) {
-    for (const path of tracked.stdout.split("\0")) if (path !== "") files.add(path.replaceAll("\\", "/"));
+    for (const path of tracked.stdout.split("\0")) {
+      if (path !== "") trackedFiles.add(path.replaceAll("\\", "/"));
+    }
   }
+  const untrackedFiles = new Set<string>();
   if (untracked.code === 0) {
-    for (const path of untracked.stdout.split("\0")) if (path !== "") files.add(path.replaceAll("\\", "/"));
+    for (const path of untracked.stdout.split("\0")) {
+      const normalized = path.replaceAll("\\", "/");
+      if (
+        normalized !== "" &&
+        !trackedFiles.has(normalized) &&
+        !isGeneratedDependencyPath(normalized)
+      ) untrackedFiles.add(normalized);
+    }
   }
-  return [...files].sort((left, right) => left.localeCompare(right));
+  return [
+    ...[...trackedFiles].sort((left, right) => left.localeCompare(right)),
+    ...[...untrackedFiles].sort((left, right) => left.localeCompare(right)),
+  ];
 }
 
 function intentFor(event: ToolCallEvent, cwd: string): OperationIntent {
@@ -352,7 +374,8 @@ export function registerPicodeBridge(
   options: BridgeOptions = {},
 ): { snapshot(): BridgeProbeSnapshot } {
   registerCompactionCompatibility(pi);
-  registerContextGovernor(pi);
+  registerContextGovernor(pi, undefined, { store: runtime.store });
+  registerToolOutputRetention(pi, runtime.store);
   const now = options.now ?? (() => performance.now());
   const accountAdapter = new PiAccountAdapter(pi);
   const slices = new SliceSessionCoordinator(
@@ -412,6 +435,21 @@ export function registerPicodeBridge(
 
   pi.on("tool_call", async (event, ctx): Promise<ToolCallEventResult | undefined> => {
     const started = now();
+    const capsuleBinding = event.toolName === "subagent"
+      ? await slices.capsuleInjectionBinding(ctx.cwd)
+      : undefined;
+    const subagentContext = await applySubagentContextPolicy(
+      event.toolName,
+      event.input as Record<string, unknown>,
+      {
+        ...(capsuleBinding === undefined ? {} : { binding: capsuleBinding }),
+        loadLatestSealedCapsule: (taskId) => runtime.store.loadLatestSealedCapsule(taskId),
+        canInjectCapsule: (capsule, current) => runtime.devloop.canInjectCapsule(capsule, current),
+      },
+    );
+    if (subagentContext.warning !== undefined) {
+      ctx.ui.notify?.(`Subagent Capsule was not injected: ${subagentContext.warning}`, "warning");
+    }
     const intent = intentFor(event, ctx.cwd);
     if (
       runtime.harness.current() !== "simple" && slices.mutationBlocked() &&

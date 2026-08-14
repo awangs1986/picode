@@ -23,6 +23,7 @@ import { atomicWriteFile } from "../shared/fs.ts";
 import { dataPaths } from "../shared/paths.ts";
 import { StateFile } from "../store/state-file.ts";
 import { REMOTE_SLASH_COMMANDS } from "./command-catalog.ts";
+import { ChatWriterLeases, type ChatWriterOwner } from "../guard/chat-writer-lease.ts";
 
 const require = createRequire(import.meta.url);
 const selfsigned = require("selfsigned") as {
@@ -96,6 +97,7 @@ export interface RemoteServeOptions {
   newChatWorkspace?: string;
   rateWindowMs?: number;
   maxRequestsPerWindow?: number;
+  writerLeases?: ChatWriterLeases;
 }
 
 export interface RemoteServeHandle {
@@ -418,10 +420,10 @@ export async function startRemoteServe(options: RemoteServeOptions): Promise<Rem
   const writerLeaseMs = options.writerLeaseMs ?? heartbeatMs * 3;
   const rateWindowMs = options.rateWindowMs ?? DEFAULT_RATE_WINDOW_MS;
   const maxRequestsPerWindow = options.maxRequestsPerWindow ?? DEFAULT_MAX_REQUESTS_PER_WINDOW;
+  const writerLeases = options.writerLeases ?? new ChatWriterLeases();
   let pairing = newPairingWindow(pairingTtlMs);
   let active: { deviceId: string; connectionId: string; socket: WebSocket; alive: boolean } | undefined;
   const pending = new Set<string>();
-  const leases = new Map<string, { deviceId: string; connectionId: string; expiresAt: number }>();
   const steeringConfirmations = new Map<string, {
     deviceId: string; connectionId: string; session: string; runId: string; message: string; expiresAt: number;
   }>();
@@ -702,6 +704,7 @@ export async function startRemoteServe(options: RemoteServeOptions): Promise<Rem
   });
 
   sockets.on("connection", (socket: WebSocket, _request: IncomingMessage, device: DeviceRecord, connectionId: string) => {
+    const writerOwner: ChatWriterOwner = { kind: "remote", id: `${device.deviceId}/${connectionId}` };
     const buffers = new Map<string, RpcMessage[]>();
     let rateWindowStartedAt = Date.now();
     let requestsInWindow = 0;
@@ -727,9 +730,7 @@ export async function startRemoteServe(options: RemoteServeOptions): Promise<Rem
     });
     socket.on("close", () => {
       if (active?.socket === socket) active = undefined;
-      for (const [session, lease] of leases) {
-        if (lease.connectionId === connectionId) leases.delete(session);
-      }
+      writerLeases.releaseOwner(writerOwner);
       for (const [confirmationId, confirmation] of steeringConfirmations) {
         if (confirmation.connectionId === connectionId) steeringConfirmations.delete(confirmationId);
       }
@@ -810,34 +811,27 @@ export async function startRemoteServe(options: RemoteServeOptions): Promise<Rem
         const session = typeof parsed.params?.session === "string" ? parsed.params.session : undefined;
         if (parsed.method === "lease.acquire") {
           if (session === undefined || session.trim() === "") throw new Error("missing session");
-          const now = Date.now();
-          const current = leases.get(session);
-          if (current !== undefined && current.expiresAt > now && current.connectionId !== connectionId) {
+          const acquired = writerLeases.acquire(session, writerOwner, writerLeaseMs);
+          if (!acquired.ok) {
             await sendServeError("serve/writer-lease-held", "Chat Writer Lease is held by another writer");
             return;
           }
-          const expiresAt = now + writerLeaseMs;
-          leases.set(session, { deviceId: device.deviceId, connectionId, expiresAt });
-          await sendServeResult({ session, held: true, owner: "remote", inherited: false, expiresAt: new Date(expiresAt).toISOString() });
+          await sendServeResult({ session, held: true, owner: "remote", inherited: false, expiresAt: new Date(acquired.value.expiresAt).toISOString() });
           return;
         }
         if (parsed.method === "lease.release") {
           if (session === undefined || session.trim() === "") throw new Error("missing session");
-          const current = leases.get(session);
-          if (current?.connectionId === connectionId) leases.delete(session);
-          await sendServeResult({ session, released: current?.connectionId === connectionId });
+          await sendServeResult({ session, released: writerLeases.release(session, writerOwner) });
           return;
         }
         if (parsed.method === "lease.heartbeat") {
           if (session === undefined || session.trim() === "") throw new Error("missing session");
-          const current = leases.get(session);
-          if (current?.connectionId !== connectionId || current.expiresAt <= Date.now()) {
-            leases.delete(session);
+          const renewed = writerLeases.heartbeat(session, writerOwner, writerLeaseMs);
+          if (!renewed.ok) {
             await sendServeError("serve/writer-lease-missing", "Chat Writer Lease is not held by this connection");
             return;
           }
-          current.expiresAt = Date.now() + writerLeaseMs;
-          await sendServeResult({ session, held: true, expiresAt: new Date(current.expiresAt).toISOString() });
+          await sendServeResult({ session, held: true, expiresAt: new Date(renewed.value.expiresAt).toISOString() });
           return;
         }
         if (parsed.method === "steering.prepare") {
@@ -851,8 +845,7 @@ export async function startRemoteServe(options: RemoteServeOptions): Promise<Rem
             await sendServeError("serve/prompt-too-large", "Steering message exceeds 128 KiB");
             return;
           }
-          const lease = leases.get(session);
-          if (lease?.connectionId !== connectionId || lease.expiresAt <= Date.now()) {
+          if (!writerLeases.owns(session, writerOwner)) {
             await sendServeError("serve/writer-lease-missing", "Force-Steering requires the Chat Writer Lease");
             return;
           }
@@ -879,15 +872,12 @@ export async function startRemoteServe(options: RemoteServeOptions): Promise<Rem
           return;
         }
         if (parsed.method === "run.start" && session !== undefined) {
-          const now = Date.now();
-          const current = leases.get(session);
-          if (current !== undefined && current.expiresAt > now && current.connectionId !== connectionId) {
+          const acquired = writerLeases.acquire(session, writerOwner, writerLeaseMs);
+          if (!acquired.ok) {
             await sendServeError("serve/writer-lease-held", "Chat Writer Lease is held by another writer");
             return;
           }
-          const expiresAt = now + writerLeaseMs;
-          leases.set(session, { deviceId: device.deviceId, connectionId, expiresAt });
-          socket.send(JSON.stringify({ version: 1, id: parsed.id, event: "writer.lease", payload: { session, held: true, expiresAt: new Date(expiresAt).toISOString() } }));
+          socket.send(JSON.stringify({ version: 1, id: parsed.id, event: "writer.lease", payload: { session, held: true, expiresAt: new Date(acquired.value.expiresAt).toISOString() } }));
         }
         await rpc.receive(parsed);
       })().catch(() => {

@@ -21,7 +21,8 @@ SessionStorage 抽象只存在于 oh-my-pi fork），单存储需要上游 PR �
 
 1. **文件是权威，索引是可丢弃的缓存。**
 2. 会话：pi 原生 JSONL 是唯一会话存储，sessionDir 指向 Picode 数据目录（受管）。
-   零同步、零镜像、零 Patch。
+   零同步、零镜像；无头 seed Session 的首次落盘由集中式 vendored Pi Compatibility
+   Patch 提供，调用方不得手写 JSONL。
 3. 产品状态（账号引用、Task/Slice/Capsule、Evidence、能力状态）：独立 JSON/JSONL
    文件，原子写（临时文件 + rename）。Backend 单实例单写者（实例锁）使并发写不成立。
 4. 目录/检索：`catalog/` 下的派生索引，增量维护，可全量重建；永不进入权威表。
@@ -50,7 +51,8 @@ SessionStorage 抽象只存在于 oh-my-pi fork），单存储需要上游 PR �
 
 ## 后果
 
-- 消灭 SQLite schema 迁移、native 依赖、双写一致性三类工程；会话层与上游 pi 零摩擦。
+- 消灭 SQLite schema 迁移、native 依赖、双写一致性三类工程；会话层只承担集中、
+  fail-closed 且有 package smoke 的小型 vendor 税。
 - 全文检索为扫描级性能，接受；慢则升级索引缓存，架构不变。
 - 跨实体引用无外键，靠约定 + 启动校验修复。
 - 上下文压缩与抗失真机制不受影响（其存储本就是文件形态）。

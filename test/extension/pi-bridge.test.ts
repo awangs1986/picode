@@ -594,7 +594,7 @@ describe("Pi 0.84 Bridge feasibility seam", () => {
         withSession?: (ctx: {
           sendMessage(message: unknown): Promise<void>;
           ui: { notify(): void };
-          sessionManager: { getSessionId(): string };
+          sessionManager: { getSessionId(): string; persistSessionSeed(): string | undefined };
           cwd: string;
         }) => Promise<void>;
       }) => {
@@ -604,7 +604,10 @@ describe("Pi 0.84 Bridge feasibility seam", () => {
         await options.withSession?.({
           async sendMessage(message) { messages.push(message); },
           ui: { notify: vi.fn() },
-          sessionManager: { getSessionId: () => "session-slice" },
+          sessionManager: {
+            getSessionId: () => "session-slice",
+            persistSessionSeed: () => "C:/session-slice.jsonl",
+          },
           cwd: "C:/repo",
         });
         return { cancelled: false };
@@ -630,6 +633,15 @@ describe("Pi 0.84 Bridge feasibility seam", () => {
         customType: "picode.task-capsule",
         content: expect.stringContaining("Implement the next acceptance slice"),
       }));
+
+      await pi.commands.get("slice")?.handler("Implement the next acceptance slice", commandCtx);
+
+      expect(newSession).toHaveBeenCalledTimes(2);
+      const retriedCapsuleIds = persistedEntries
+        .filter(([type]) => type === "picode.task-capsule")
+        .map(([, value]) => (value as { capsuleId: string }).capsuleId);
+      expect(retriedCapsuleIds).toHaveLength(2);
+      expect(new Set(retriedCapsuleIds)).toHaveLength(1);
     });
   });
 
@@ -643,7 +655,19 @@ describe("Pi 0.84 Bridge feasibility seam", () => {
           return { code: 0, stdout: "src/migrate.ts\0", stderr: "", killed: false };
         }
         if (args[0] === "diff") return { code: 0, stdout: "diff", stderr: "", killed: false };
-        if (args[0] === "ls-files") return { code: 0, stdout: "test/new.test.ts\0", stderr: "", killed: false };
+        if (args[0] === "ls-files") {
+          return {
+            code: 0,
+            stdout: [
+              "test/new.test.ts",
+              ...Array.from({ length: 204 }, (_, index) => `src/generated-${String(index).padStart(3, "0")}.ts`),
+              "node_modules/typescript/lib/typescript.js",
+              "",
+            ].join("\0"),
+            stderr: "",
+            killed: false,
+          };
+        }
         if (args[0] === "hash-object") return { code: 0, stdout: "blob123\n", stderr: "", killed: false };
         throw new Error(`unexpected git args ${args.join(" ")}`);
       }) as ExtensionAPI["exec"];
@@ -699,10 +723,14 @@ describe("Pi 0.84 Bridge feasibility seam", () => {
 
       const capsule = persistedEntries.find(([type]) => type === "picode.task-capsule")?.[1] as {
         filesTouched?: string[];
+        filesTouchedOmitted?: number;
         openQuestions?: string[];
         verificationRefs?: Array<{ kind?: string; locator?: string }>;
       } | undefined;
-      expect(capsule?.filesTouched).toEqual(["src/migrate.ts", "test/new.test.ts"]);
+      expect(capsule?.filesTouched).toHaveLength(200);
+      expect(capsule?.filesTouched).toContain("src/migrate.ts");
+      expect(capsule?.filesTouched).not.toContain("node_modules/typescript/lib/typescript.js");
+      expect(capsule?.filesTouchedOmitted).toBe(6);
       expect(capsule?.openQuestions).toEqual(["Resolve replay ordering"]);
       expect(capsule?.verificationRefs).toEqual([
         expect.objectContaining({ kind: "evidence", locator: "evidence/202608.jsonl#L1" }),

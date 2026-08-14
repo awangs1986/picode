@@ -13,6 +13,8 @@
   "files": [
     "bin/",
     "scripts/patch-vendored-pi.mjs",
+    "scripts/vendored-pi-compatibility.mjs",
+    "scripts/vendored-pi-compatibility.d.mts",
     "src/",
     "vendor/",
     "prompts/",

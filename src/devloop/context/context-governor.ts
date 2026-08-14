@@ -1,4 +1,11 @@
 import { createHash } from "node:crypto";
+import type { ContextCompilationManifest, ContextReplacementRecord } from "../../shared/types.ts";
+import {
+  ContextBudgetMeter,
+  contextDigest,
+  estimateContextTextTokens,
+  stableContextJson,
+} from "./context-budget-meter.ts";
 
 export interface ContextGovernorMessage {
   role: string;
@@ -20,6 +27,7 @@ export interface ContextBudgetBreakdown {
   messageTokens: number;
   providerObservedTokens?: number;
   totalTokens: number;
+  source: "estimated" | "provider-anchor";
 }
 
 export interface ContextGovernorBudget {
@@ -48,9 +56,12 @@ export interface ContextGovernorResult {
   budget: ContextGovernorBudget;
   stats: ContextGovernorStats;
   blockedReason?: string;
+  manifest?: ContextCompilationManifest;
 }
 
 export interface ContextGovernorInput {
+  sessionId?: string;
+  sessionRevision?: string;
   messages: ContextGovernorMessage[];
   systemPrompt: string;
   tools: readonly ContextGovernorTool[];
@@ -68,64 +79,6 @@ const TOOL_HEAD_CHARS = 1_200;
 const TOOL_TAIL_CHARS = 1_200;
 const HISTORY_HEAD_CHARS = 800;
 const HISTORY_TAIL_CHARS = 800;
-
-function textTokens(text: string): number {
-  // Three UTF-8 bytes per token is deliberately conservative for mixed CJK,
-  // source code, JSON, and logs. Provider tokenizers remain the final truth.
-  return Math.max(1, Math.ceil(Buffer.byteLength(text, "utf8") / 3));
-}
-
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (value !== null && typeof value === "object") {
-    const row = value as Record<string, unknown>;
-    return `{${Object.keys(row).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(row[key])}`).join(",")}}`;
-  }
-  return JSON.stringify(value) ?? "null";
-}
-
-function messageTokens(message: ContextGovernorMessage): number {
-  return textTokens(canonicalJson(message));
-}
-
-function measure(
-  messages: readonly ContextGovernorMessage[],
-  systemPrompt: string,
-  tools: ContextGovernorInput["tools"],
-): ContextBudgetBreakdown {
-  const systemPromptTokens = textTokens(systemPrompt);
-  const toolSchemaTokens = tools.length === 0 ? 0 : textTokens(canonicalJson(tools));
-  const historyTokens = messages.reduce((sum, message) => sum + messageTokens(message), 0);
-  let providerObservedTokens: number | undefined;
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index] as unknown as {
-      role?: unknown;
-      stopReason?: unknown;
-      usage?: { totalTokens?: unknown; input?: unknown; output?: unknown; cacheRead?: unknown; cacheWrite?: unknown };
-    } | undefined;
-    if (message?.role !== "assistant" || message.stopReason === "error" || message.stopReason === "aborted") continue;
-    const usage = message.usage;
-    if (usage === undefined) continue;
-    const componentTotal = [usage.input, usage.output, usage.cacheRead, usage.cacheWrite]
-      .reduce<number>((sum, value) => sum + (typeof value === "number" ? value : 0), 0);
-    const total = typeof usage.totalTokens === "number" && usage.totalTokens > 0
-      ? usage.totalTokens
-      : componentTotal;
-    if (total <= 0) continue;
-    const delta = messages.slice(index + 1).reduce((sum, item) => sum + messageTokens(item), 0);
-    providerObservedTokens = total + delta;
-    break;
-  }
-  const staticTotal = systemPromptTokens + toolSchemaTokens + historyTokens;
-  const totalTokens = Math.max(staticTotal, providerObservedTokens ?? 0);
-  return {
-    systemPromptTokens,
-    toolSchemaTokens,
-    messageTokens: historyTokens,
-    ...(providerObservedTokens === undefined ? {} : { providerObservedTokens }),
-    totalTokens,
-  };
-}
 
 function resolveBudget(input: ContextGovernorInput): ContextGovernorBudget {
   const declared = Math.max(16_384, Math.floor(input.declaredContextWindow));
@@ -181,7 +134,7 @@ function compactToolResult(message: ContextGovernorMessage): ContextGovernorMess
   const row = message as unknown as Record<string, unknown>;
   if (row.role !== "toolResult") return undefined;
   const text = contentText(row.content);
-  const serialized = canonicalJson(row.content);
+  const serialized = stableContextJson(row.content);
   if (serialized.length <= TOOL_HEAD_CHARS + TOOL_TAIL_CHARS + 512) return undefined;
   const digest = createHash("sha256").update(serialized).digest("hex");
   const preview = text === "" ? "[non-text tool content omitted from active context]" : text;
@@ -212,6 +165,7 @@ function removeReasoning(message: ContextGovernorMessage): ContextGovernorMessag
 
 function compactNarrative(message: ContextGovernorMessage): ContextGovernorMessage | undefined {
   const row = message as unknown as Record<string, unknown>;
+  if (isProtectedContext(message)) return undefined;
   if (row.role !== "user" && row.role !== "assistant" && row.role !== "custom") return undefined;
   if (row.role === "assistant" && Array.isArray(row.content) && row.content.some(
     (part) => part !== null && typeof part === "object" && (part as { type?: unknown }).type === "toolCall",
@@ -228,21 +182,28 @@ function compactNarrative(message: ContextGovernorMessage): ContextGovernorMessa
   } as ContextGovernorMessage;
 }
 
+function isProtectedContext(message: ContextGovernorMessage): boolean {
+  const row = message as unknown as Record<string, unknown>;
+  if (row.customType === "picode.context-event" || row.customType === "picode.task-capsule") return true;
+  const text = contentText(row.content);
+  return /<picode_(?:task_state|tdd_state)>|# Task Capsule \(/.test(text);
+}
+
 function foldOldHistory(
   messages: ContextGovernorMessage[],
   lastUserIndex: number,
 ): ContextGovernorMessage[] | undefined {
   if (lastUserIndex <= 0) return undefined;
   const omitted = messages.slice(0, lastUserIndex);
-  const digest = createHash("sha256").update(canonicalJson(omitted)).digest("hex");
+  const digest = createHash("sha256").update(stableContextJson(omitted)).digest("hex");
+  const protectedMessages = omitted.filter(isProtectedContext);
   return [{
     role: "user",
     content: [{
       type: "text",
       text: `[Picode emergency active-context compaction omitted ${omitted.length} older messages; the full transcript remains on disk; sha256=${digest}. Continue from the retained current turn and authoritative project/task files.]`,
     }],
-    timestamp: Date.now(),
-  }, ...messages.slice(lastUserIndex)];
+  }, ...protectedMessages, ...messages.slice(lastUserIndex)];
 }
 
 /**
@@ -250,9 +211,19 @@ function foldOldHistory(
  * transcript; it compiles a bounded active context for this provider request.
  */
 export class ContextGovernor {
+  constructor(private readonly meter: ContextBudgetMeter = new ContextBudgetMeter()) {}
+
   prepareRequest(input: ContextGovernorInput): ContextGovernorResult {
     const budget = resolveBudget(input);
-    const before = measure(input.messages, input.systemPrompt, input.tools);
+    const sessionId = input.sessionId ?? "unknown-session";
+    const sessionRevision = input.sessionRevision ?? `messages:${input.messages.length}:${contextDigest(input.messages.at(-1) ?? null)}`;
+    const before = this.meter.measure({
+      sessionId,
+      revision: sessionRevision,
+      messages: input.messages,
+      systemPrompt: input.systemPrompt,
+      tools: input.tools,
+    });
     const emptyStats: ContextGovernorStats = {
       toolResultsCompacted: 0,
       reasoningBlocksRemoved: 0,
@@ -275,9 +246,18 @@ export class ContextGovernor {
       (message as unknown as { role?: unknown }).role === "user"
     ));
     const stats = { ...emptyStats };
+    const replacements: ContextReplacementRecord[] = [];
+    let measureGeneration = 0;
     let current = before;
     const remeasure = (): ContextBudgetBreakdown => {
-      const measured = measure(messages, input.systemPrompt, input.tools);
+      measureGeneration += 1;
+      const measured = this.meter.measure({
+        sessionId,
+        revision: `${sessionRevision}:compile:${measureGeneration}`,
+        messages,
+        systemPrompt: input.systemPrompt,
+        tools: input.tools,
+      });
       if (before.providerObservedTokens === undefined) return measured;
       const removedMessageTokens = Math.max(0, before.messageTokens - measured.messageTokens);
       const providerObservedTokens = Math.max(0, before.providerObservedTokens - removedMessageTokens);
@@ -293,9 +273,10 @@ export class ContextGovernor {
     const applyCandidates = (
       transform: (message: ContextGovernorMessage) => ContextGovernorMessage | undefined,
       increment: keyof Pick<ContextGovernorStats, "toolResultsCompacted" | "reasoningBlocksRemoved" | "historyMessagesCompacted">,
+      kind: ContextReplacementRecord["kind"],
     ): void => {
       const candidates = messages
-        .map((message, index) => ({ index, message, tokens: messageTokens(message) }))
+        .map((message, index) => ({ index, message, tokens: this.meter.messageTokens(message) }))
         .sort((left, right) => right.tokens - left.tokens);
       for (const candidate of candidates) {
         if (current.totalTokens <= budget.targetInputTokens) break;
@@ -304,28 +285,60 @@ export class ContextGovernor {
         const replacement = transform(original);
         if (replacement === undefined) continue;
         messages[candidate.index] = replacement;
+        const toolCallId = typeof (original as { toolCallId?: unknown }).toolCallId === "string"
+          ? String((original as unknown as { toolCallId: string }).toolCallId)
+          : undefined;
+        replacements.push({
+          kind,
+          sourceIndex: candidate.index,
+          ...(toolCallId === undefined ? {} : { toolCallId }),
+          beforeDigest: contextDigest(original),
+          afterDigest: contextDigest(replacement),
+        });
         stats[increment] += 1;
         current = remeasure();
       }
     };
 
-    applyCandidates(compactToolResult, "toolResultsCompacted");
-    applyCandidates(removeReasoning, "reasoningBlocksRemoved");
+    applyCandidates(compactToolResult, "toolResultsCompacted", "tool-result");
+    applyCandidates(removeReasoning, "reasoningBlocksRemoved", "reasoning");
     const compactOlderNarrative = (message: ContextGovernorMessage): ContextGovernorMessage | undefined => {
       if (messages.indexOf(message) === lastUserIndex) return undefined;
       return compactNarrative(message);
     };
-    applyCandidates(compactOlderNarrative, "historyMessagesCompacted");
+    applyCandidates(compactOlderNarrative, "historyMessagesCompacted", "narrative");
     if (current.totalTokens > budget.targetInputTokens) {
       const folded = foldOldHistory(messages, lastUserIndex);
       if (folded !== undefined) {
+        const beforeFold = messages.slice(0, Math.max(0, lastUserIndex));
         const removed = messages.length - folded.length;
         messages.splice(0, messages.length, ...folded);
+        replacements.push({
+          kind: "history-fold",
+          sourceIndex: 0,
+          ...(lastUserIndex <= 0 ? {} : { sourceEndIndex: lastUserIndex - 1 }),
+          beforeDigest: contextDigest(beforeFold),
+          afterDigest: contextDigest(folded.slice(0, folded.length - (input.messages.length - lastUserIndex))),
+        });
         stats.historyMessagesCompacted += Math.max(1, removed);
         current = remeasure();
       }
     }
     stats.tokensRemoved = Math.max(0, before.totalTokens - current.totalTokens);
+
+    const manifestFor = (action: "compact" | "blocked"): ContextCompilationManifest => ({
+      schemaVersion: "picode.context-compilation/v1",
+      compilerVersion: 1,
+      sessionId,
+      sessionRevision,
+      action,
+      inputDigest: contextDigest(input.messages),
+      outputDigest: contextDigest(messages),
+      beforeTokens: before.totalTokens,
+      afterTokens: current.totalTokens,
+      effectiveContextWindow: budget.effectiveContextWindow,
+      replacements,
+    });
 
     if (current.totalTokens > budget.hardInputTokens) {
       return {
@@ -335,6 +348,7 @@ export class ContextGovernor {
         after: current,
         budget,
         stats,
+        manifest: manifestFor("blocked"),
         blockedReason: current.systemPromptTokens + current.toolSchemaTokens > budget.hardInputTokens
           ? "immutable prefix (system prompt plus tool schemas) exceeds the safe input budget"
           : "active context cannot be reduced below the safe provider budget",
@@ -347,6 +361,7 @@ export class ContextGovernor {
       after: current,
       budget,
       stats,
+      manifest: manifestFor("compact"),
     };
   }
 }

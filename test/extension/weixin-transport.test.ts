@@ -200,6 +200,29 @@ describe("WeixinTransport", () => {
     expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining("run /weixin login") }));
   });
 
+  it("allows only one live poller for the same iLink token", async () => {
+    const firstStore = tempState();
+    const secondStore = tempState();
+    const state = { version: 1 as const, accountRefId: "weixin-ilink:bot-1", boundSessionId: "chat-1", allowedUserIds: ["owner-1"], syncBuf: "", contextTokens: {}, recentMessageIds: [] };
+    await firstStore.write(state);
+    await secondStore.write(state);
+    const blockingClient = {
+      getUpdates: vi.fn().mockImplementation(async (_credentials, syncBuf, signal: AbortSignal) => {
+        await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+        return { syncBuf, messages: [] };
+      }),
+      sendText: vi.fn(),
+    } as unknown as IlinkClient;
+    const first = new WeixinTransport({ client: blockingClient, credentials: () => credentials, store: firstStore, handleMessage: vi.fn() });
+    const second = new WeixinTransport({ client: blockingClient, credentials: () => credentials, store: secondStore, handleMessage: vi.fn() });
+
+    await first.start();
+    await expect(second.start()).rejects.toThrow("already polled by another Picode process");
+    await first.stop();
+    await second.start();
+    await second.stop();
+  });
+
   it("ignores unapproved senders and duplicate messages", async () => {
     const updates = { syncBuf: "s1", messages: [
       { messageId: "seen", senderId: "owner-1", text: "again" },

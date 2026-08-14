@@ -157,6 +157,71 @@ export interface TaskContext {
 }
 
 // ---------------------------------------------------------------------------
+// Context artifacts（完整工具输出不直接常驻模型上下文）
+// ---------------------------------------------------------------------------
+
+export interface ContextArtifactInput {
+  sessionId: string;
+  toolCallId: string;
+  toolName: string;
+  text: string;
+}
+
+export interface ContextArtifactRef {
+  artifactId: string;
+  sessionId: string;
+  toolCallId: string;
+  toolName: string;
+  path: string;
+  bytes: number;
+  sha256: string;
+}
+
+export interface ContextArtifactStorePort {
+  saveContextArtifact(input: ContextArtifactInput): Promise<Result<ContextArtifactRef>>;
+}
+
+export interface ContextReplacementRecord {
+  kind: "tool-result" | "reasoning" | "narrative" | "history-fold";
+  sourceIndex: number;
+  sourceEndIndex?: number;
+  toolCallId?: string;
+  beforeDigest: string;
+  afterDigest: string;
+}
+
+export interface ContextCompilationManifest {
+  schemaVersion: "picode.context-compilation/v1";
+  compilerVersion: 1;
+  sessionId: string;
+  sessionRevision: string;
+  action: "compact" | "blocked";
+  inputDigest: string;
+  outputDigest: string;
+  beforeTokens: number;
+  afterTokens: number;
+  effectiveContextWindow: number;
+  replacements: ContextReplacementRecord[];
+}
+
+export interface ContextCompilationStorePort {
+  saveContextCompilation(manifest: ContextCompilationManifest): Promise<Result<string>>;
+}
+
+export interface EndpointContextProfile {
+  schemaVersion: "picode.endpoint-context/v1";
+  routeKey: string;
+  verifiedContextWindow?: number;
+  observedSuccessInputTokens?: number;
+  observedOverflowInputTokens?: number;
+}
+
+export interface EndpointContextProfileStorePort {
+  loadEndpointContextProfile(routeKey: string): Promise<Result<EndpointContextProfile>>;
+  saveEndpointContextProfile(profile: EndpointContextProfile): Promise<Result<void>>;
+}
+
+// ---------------------------------------------------------------------------
 // 账号统一管理（PICODE-V3-DESIGN.md §3.1，Q4/Q14）
 // Picode 自己管理 OAuth 流与凭据（accounts.json 0600）；
 // AccountRef 是无秘密的引用投影，凭据本体在 Store 的 vault 分区。
@@ -291,6 +356,8 @@ export interface TaskCapsule {
   verbatimFacts: VerbatimFact[];
   decisions: { decision: string; rationale: string }[];
   filesTouched: string[];
+  /** Number of additional changed files omitted from the bounded context payload. */
+  filesTouchedOmitted?: number;
   openQuestions: string[];
   nextSteps: string[];
   /** 唯一允许摘要的自由段 */

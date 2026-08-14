@@ -18,8 +18,10 @@ pi，进而"包在 pi 外面的 Backend"失去了立足点。
 
 **Picode V3 = pi 发行版：pi + Picode 扩展套件 + 伴生 CLI + 独立导入工具。**
 
-1. `picode` 命令启动预装 Picode 扩展套件的 pi；pi TUI、Agent Loop、JSONL
-   持久化保持原版零改动，不 fork。
+1. `picode` 命令启动预装 Picode 扩展套件的 pi；pi TUI、Agent Loop 与 JSONL
+   语义保持上游权威。必要源码补丁集中在 vendored Pi Compatibility module，
+   对 pinned layout fail-closed，并由 pinned/package smoke 验证；领域调用方不得
+   复制上游私有实现知识。
 2. 四个领域模块（Store / Engine / Guard / Devloop）是普通 TS 库，由
    Adapter Extension 在 pi 进程内加载；模块不感知宿主形态。
 3. TUI 增强以 pi 扩展 API 能画什么为上限：缓存命中率状态部件进 Spike

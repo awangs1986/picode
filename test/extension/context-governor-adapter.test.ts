@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { registerContextGovernor } from "../../src/extension/context-governor.ts";
+import type {
+  ContextCompilationStorePort,
+  EndpointContextProfileStorePort,
+} from "../../src/shared/types.ts";
+import { ok } from "../../src/shared/types.ts";
 
 type Handler = (event: never, ctx: ExtensionContext) => unknown;
 
@@ -60,5 +65,59 @@ describe("Context Governor Pi adapter", () => {
 
     await handlers.get("agent_settled")?.({ type: "agent_settled" } as never, ctx);
     expect(compact).toHaveBeenCalledOnce();
+  });
+
+  it("applies endpoint evidence and persists the exact compilation manifest", async () => {
+    const handlers = new Map<string, Handler>();
+    const pi = {
+      on(name: string, handler: Handler) { handlers.set(name, handler); },
+      getActiveTools: () => [],
+      getAllTools: () => [],
+    } as unknown as ExtensionAPI;
+    const saveContextCompilation = vi.fn(async () => ok("manifest.json"));
+    const saveEndpointContextProfile = vi.fn(async () => ok(undefined));
+    const store: ContextCompilationStorePort & EndpointContextProfileStorePort = {
+      saveContextCompilation,
+      loadEndpointContextProfile: vi.fn(async (routeKey) => ok({
+        schemaVersion: "picode.endpoint-context/v1" as const,
+        routeKey,
+        verifiedContextWindow: 64_000,
+      })),
+      saveEndpointContextProfile,
+    };
+    const ctx = {
+      model: {
+        id: "gpt-test", provider: "openai", api: "openai-responses",
+        baseUrl: "https://proxy.example/v1", contextWindow: 1_000_000, maxTokens: 8_000,
+      },
+      modelRegistry: { getApiKeyAndHeaders: vi.fn(async () => ({ ok: true, apiKey: "redacted", baseUrl: "https://proxy.example/v1" })) },
+      sessionManager: { getSessionId: () => "session-evidence", getBranch: () => [{ id: "leaf-7" }] },
+      getSystemPrompt: () => "Pi",
+      compact: vi.fn(),
+      abort: vi.fn(),
+      ui: { setStatus: vi.fn() },
+    } as unknown as ExtensionContext;
+    registerContextGovernor(pi, undefined, { store });
+
+    const transformed = await handlers.get("context")?.({
+      type: "context",
+      messages: [{
+        role: "toolResult", toolCallId: "large-1", toolName: "bash", isError: false,
+        content: [{ type: "text", text: "x".repeat(180_000) }],
+      }],
+    } as never, ctx) as { messages: unknown[] };
+
+    expect(transformed.messages).toBeDefined();
+    expect(saveContextCompilation).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: "session-evidence",
+      effectiveContextWindow: 64_000,
+      action: "compact",
+    }));
+
+    await handlers.get("after_provider_response")?.({ type: "after_provider_response", status: 200, headers: {} } as never, ctx);
+    expect(saveEndpointContextProfile).toHaveBeenCalledWith(expect.objectContaining({
+      verifiedContextWindow: 64_000,
+      observedSuccessInputTokens: expect.any(Number),
+    }));
   });
 });

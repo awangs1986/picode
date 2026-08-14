@@ -1,4 +1,4 @@
-import { randomInt, randomUUID } from "node:crypto";
+import { createHash, randomInt, randomUUID } from "node:crypto";
 
 const DEFAULT_BASE_URL = "https://ilinkai.weixin.qq.com";
 const CLIENT_VERSION = String((2 << 16) | (2 << 8));
@@ -116,10 +116,11 @@ export class IlinkClient {
     const messages = Array.isArray(response["msgs"])
       ? response["msgs"].flatMap((raw): IlinkMessage[] => {
         const message = object(raw);
-        const messageId = string(message["message_id"]);
+        const messageId = string(message["message_id"]) ||
+          `synthetic:${createHash("sha256").update(JSON.stringify(message)).digest("hex")}`;
         const senderId = string(message["from_user_id"]);
         const text = textFromItems(message["item_list"]);
-        if (messageId === "" || senderId === "" || text === "") return [];
+        if (senderId === "" || text === "") return [];
         const contextToken = string(message["context_token"]);
         return [{ messageId, senderId, text, ...(contextToken === "" ? {} : { contextToken }) }];
       })
