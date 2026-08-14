@@ -2,9 +2,8 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { atomicWriteFile, withFileLock } from "../shared/fs.ts";
-import { dataPaths, picodeDir } from "../shared/paths.ts";
+import { dataPaths } from "../shared/paths.ts";
 import type {
-  AccountRef,
   HistoricalCompatibility,
   Result,
   SourceToolSignature,
@@ -13,6 +12,7 @@ import type {
   ContextArtifactInput,
   ContextArtifactRef,
   ContextCompilationManifest,
+  ContextLedgerEntry,
   EndpointContextProfile,
   TaskCapsule,
   TaskTodoState,
@@ -36,6 +36,25 @@ export type { SourceAdapter } from "./import-adapters.ts";
 export { buildCompatReport, renderCompatReport } from "./import-report.ts";
 export type { CompatReport, ContinueStatus } from "./import-report.ts";
 
+function isContextLedgerEntry(value: unknown): value is ContextLedgerEntry {
+  if (typeof value !== "object" || value === null) return false;
+  const row = value as Partial<ContextLedgerEntry>;
+  return row.schemaVersion === "picode.context-ledger/v1" &&
+    typeof row.eventId === "string" && typeof row.recordedAt === "string" &&
+    typeof row.sessionId === "string" && typeof row.sessionRevision === "string" &&
+    typeof row.layer === "string" && typeof row.action === "string" &&
+    typeof row.sourceDigest === "string" && typeof row.requestOnly === "boolean";
+}
+
+function parseContextLedger(text: string): ContextLedgerEntry[] {
+  if (text.trim() === "") return [];
+  return text.split(/\r?\n/).filter((line) => line.trim() !== "").map((line) => {
+    const value: unknown = JSON.parse(line);
+    if (!isContextLedgerEntry(value)) throw new Error("Context Ledger schema rejected");
+    return value;
+  });
+}
+
 /**
  * Store：文件权威的读写纪律 + 账号引用 + 目录索引 + ImportCompiler。
  * 会话本体不归 Store 管——vendored pi 的 JSONL 池是唯一会话权威。
@@ -49,42 +68,6 @@ export type { CompatReport, ContinueStatus } from "./import-report.ts";
 export class Store implements StorePort {
   /** 懒加载：正常聊天不付映射表的加载成本 */
   private compiler: ImportCompiler | undefined;
-
-  async listAccounts(): Promise<Result<AccountRef[]>> {
-    const path = dataPaths.accounts();
-    if (!existsSync(path)) return ok([]);
-    try {
-      return ok(JSON.parse(readFileSync(path, "utf8")) as AccountRef[]);
-    } catch (cause) {
-      return err("store/accounts-unreadable", `cannot parse ${path}`, cause);
-    }
-  }
-
-  async saveAccounts(accounts: AccountRef[]): Promise<Result<void>> {
-    // 单账号活跃不变量：同 Provider 至多一个 active（Q4）
-    const activeByProvider = new Set<string>();
-    for (const account of accounts) {
-      if (account.status !== "active") continue;
-      if (activeByProvider.has(account.provider)) {
-        return err(
-          "store/multiple-active-accounts",
-          `provider ${account.provider} has more than one active account`,
-        );
-      }
-      activeByProvider.add(account.provider);
-    }
-
-    // 纪律：共享状态写入 = 文件锁 + 原子写（ADR-0003 决策 6）
-    const lock = join(picodeDir(), "accounts.json.lock");
-    try {
-      await withFileLock(lock, () => {
-        atomicWriteFile(dataPaths.accounts(), JSON.stringify(accounts, null, 2));
-      });
-      return ok(undefined);
-    } catch (cause) {
-      return err("store/accounts-write-failed", "failed to persist accounts", cause);
-    }
-  }
 
   async saveContextArtifact(input: ContextArtifactInput): Promise<Result<ContextArtifactRef>> {
     const sha256 = createHash("sha256").update(input.text).digest("hex");
@@ -132,6 +115,34 @@ export class Store implements StorePort {
       return ok(path);
     } catch (cause) {
       return err("store/context-compilation-write-failed", "failed to persist context compilation manifest", cause);
+    }
+  }
+
+  async appendContextLedger(entry: ContextLedgerEntry): Promise<Result<void>> {
+    const sessionKey = createHash("sha256").update(entry.sessionId).digest("hex").slice(0, 24);
+    const path = join(dataPaths.metrics(), "context-ledger", `${sessionKey}.jsonl`);
+    try {
+      await withFileLock(`${path}.lock`, () => {
+        const existing = existsSync(path) ? readFileSync(path, "utf8") : "";
+        const entries = parseContextLedger(existing);
+        if (entries.some((candidate) => candidate.eventId === entry.eventId)) return;
+        const next = `${existing.trimEnd()}${existing.trim() === "" ? "" : "\n"}${JSON.stringify(entry)}\n`;
+        atomicWriteFile(path, next, { mode: 0o600 });
+      });
+      return ok(undefined);
+    } catch (cause) {
+      return err("store/context-ledger-write-failed", "failed to append Context Ledger", cause);
+    }
+  }
+
+  async listContextLedger(sessionId: string): Promise<Result<ContextLedgerEntry[]>> {
+    const sessionKey = createHash("sha256").update(sessionId).digest("hex").slice(0, 24);
+    const path = join(dataPaths.metrics(), "context-ledger", `${sessionKey}.jsonl`);
+    if (!existsSync(path)) return ok([]);
+    try {
+      return ok(parseContextLedger(readFileSync(path, "utf8")));
+    } catch (cause) {
+      return err("store/context-ledger-unreadable", "failed to read Context Ledger", cause);
     }
   }
 

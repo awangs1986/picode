@@ -3,6 +3,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { registerContextGovernor } from "../../src/extension/context-governor.ts";
 import type {
   ContextCompilationStorePort,
+  ContextLedgerStorePort,
   EndpointContextProfileStorePort,
 } from "../../src/shared/types.ts";
 import { ok } from "../../src/shared/types.ts";
@@ -111,9 +112,12 @@ describe("Context Governor Pi adapter", () => {
       getAllTools: () => [],
     } as unknown as ExtensionAPI;
     const saveContextCompilation = vi.fn(async () => ok("manifest.json"));
+    const appendContextLedger = vi.fn(async () => ok(undefined));
     const saveEndpointContextProfile = vi.fn(async () => ok(undefined));
-    const store: ContextCompilationStorePort & EndpointContextProfileStorePort = {
+    const store: ContextCompilationStorePort & EndpointContextProfileStorePort & ContextLedgerStorePort = {
       saveContextCompilation,
+      appendContextLedger,
+      listContextLedger: vi.fn(async () => ok([])),
       loadEndpointContextProfile: vi.fn(async (routeKey) => ok({
         schemaVersion: "picode.endpoint-context/v1" as const,
         routeKey,
@@ -148,6 +152,24 @@ describe("Context Governor Pi adapter", () => {
       sessionId: "session-evidence",
       effectiveContextWindow: 64_000,
       action: "compact",
+    }));
+    expect(appendContextLedger).toHaveBeenCalledWith(expect.objectContaining({
+      layer: "governor",
+      action: "compiled",
+      requestOnly: true,
+    }));
+
+    await handlers.get("agent_settled")?.({ type: "agent_settled" } as never, ctx);
+    expect(appendContextLedger).toHaveBeenCalledWith(expect.objectContaining({
+      layer: "durable-compaction",
+      action: "scheduled",
+      requestOnly: false,
+    }));
+    const compactOptions = (ctx.compact as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as { onComplete?: () => void };
+    compactOptions.onComplete?.();
+    expect(appendContextLedger).toHaveBeenCalledWith(expect.objectContaining({
+      layer: "durable-compaction",
+      action: "completed",
     }));
 
     await handlers.get("after_provider_response")?.({ type: "after_provider_response", status: 200, headers: {} } as never, ctx);

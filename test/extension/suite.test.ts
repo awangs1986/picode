@@ -3,8 +3,10 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   SUITE_ENTRIES,
   loadSuiteForTier,
+  measureToolSchemaBudget,
   suiteForTier,
   suiteRespectsPolicy,
+  withinSimpleToolBudget,
 } from "../../src/extension/suite.ts";
 import { TIER_POLICIES } from "../../src/extension/harness.ts";
 
@@ -26,6 +28,23 @@ describe("SUITE_ENTRIES", () => {
 });
 
 describe("suiteForTier", () => {
+  it("measures and enforces the Simple extension schema budget", () => {
+    const small = measureToolSchemaBudget([{
+      name: "web_search",
+      description: "Search the web",
+      parameters: { type: "object", properties: { query: { type: "string" } } },
+    }]);
+    const oversized = measureToolSchemaBudget([{
+      name: "web_search",
+      description: "schema".repeat(10_000),
+      parameters: { type: "object" },
+    }]);
+
+    expect(small.toolNames).toEqual(["web_search"]);
+    expect(withinSimpleToolBudget(small)).toBe(true);
+    expect(withinSimpleToolBudget(oversized)).toBe(false);
+  });
+
   it("does not initialize the same vendor twice across sessions in one Pi process", async () => {
     const loaded = new Set<string>();
     const imported: string[] = [];

@@ -171,6 +171,11 @@ Codebase Memory 的 Provider Interface/Adapter 是随产品分发的稳定
 Implementation；实际 `codebase-memory-mcp` 进程按 External Extension 治理，
 同样受上述 enabled/trustedDigest 与临时运行轴约束。
 
+Simple 档另有确定性的扩展 Tool Schema Gate：组合根只统计当前活动、由 Simple
+套件贡献的扩展工具，预算上限为估算 4096 Token。超限时停用这些扩展工具并显示
+诊断，不能静默继续污染稳定前缀，也不能隐藏 Pi 原生工具。该 Gate 约束的是实际
+活动 schema，不以包是否已安装代替测量。
+
 ## 3. Devloop 设计条目（2026-08-07，Q15–Q18 已决）
 
 Task Capsule 的生命周期与事实内容由 **Devloop/task** 唯一拥有；
@@ -207,6 +212,11 @@ Store 只保存可重建的 **Context Compilation Manifest**（输入/输出 dig
 位置、toolCallId、前后摘要、Token 与 effective window），不建立第二份会话。
 Provider/endpoint/model 的成功容量证据保存在独立 Endpoint Context Profile；URL
 凭据不得进入 route key。
+
+Retention、Governor、Durable Compaction 与 Capsule 的每次变换还必须经
+`ContextLedger.record()` 写入同一会话的 append-only 审计账本。Ledger 使用确定性
+事件 ID 去重，记录 layer/action、session revision、输入/输出摘要、Token 变化与
+Artifact 指针；它只回答“哪一层对上下文做过什么”，不得成为第二份 transcript。
 
 Task State、TDD State 和 sealed Capsule 属于 protected context：普通叙事折叠不得
 删除或摘要覆盖它们。只有在 emergency history fold 中才允许重排其位置，同时必须
@@ -249,6 +259,9 @@ narrative         唯一允许摘要的自由段
 `{kind: session|evidence|import|file, id, locator?, sourceDigest?}` —— 事实可指向
 会话轮次、Evidence 条目、导入 Snapshot 或文件位置。引用可变文件时
 `sourceDigest` 必填，防止 Verbatim Fact 的来源在 Capsule sealed 后漂移。
+封存不能只检查摘要格式：Devloop/task 的 `CapsuleSealer` 必须通过
+`CapsuleSourceResolver` 重新读取权威来源，验证摘要，并确认 fact 文本逐字存在；
+来源不可用、摘要变化或文本不在来源中均 fail-closed。Store 只负责保存封存结果。
 
 ### 3.2 Slice 触发（决策）
 
@@ -273,6 +286,9 @@ task 中。Draft、superseded、版本/快照不符的 Capsule 不得注入；�
 ### 3.3 TDD 状态机与预算
 
 `spec → red → green → refactor → gate → done`；recorded RED 先于实现写入。
+`TddSessionController`、测试计数解析、Gate/Evidence 与 Completion Label 全部归
+**Devloop/verify**；Adapter Extension 只执行命令并翻译 Pi 生命周期事件，不得拥有
+第二套 TDD 状态或测试结果解释器。
 预算默认：2 轮修复 + 1 轮 Reviewer（watchdog 强配置）+ 1 次 Integration
 Smoke + 同 Snapshot 1 次确认重跑；超限 → Flaky / Needs Decision / QA
 Handoff。若代码、Gate Contract、命令和环境均未改变，而确认重跑由红转绿或

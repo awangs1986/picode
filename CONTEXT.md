@@ -20,7 +20,7 @@
 
 **Harness Task** — 绑定 Workspace 并启用工程 Context、权限、Work 和 Verification 的任务。
 
-**StateFile** — Store 内统一持久化纪律的深 Interface；集中负责 schema、文件锁、flush/fsync、原子替换、known-good、quarantine 和迁移 tombstone 校验。业务模块只提交/读取类型化状态，不各自实现恢复逻辑。
+**StateFile** — Store 内统一持久化纪律的深 Interface；集中负责 schema、文件锁、flush/fsync、原子替换、known-good、quarantine 和迁移 tombstone 校验。Workspace Fence 与 Worktree Registry 等安全权威复用同一恢复原语：主文件损坏时只可从通过 schema 的 known-good 恢复，否则 fail-closed。业务模块只提交/读取类型化状态，不各自实现恢复逻辑。
 
 ## Conversation and task
 
@@ -46,7 +46,7 @@
 
 **Task Slice** — Task Run 中目标单一、范围明确、可以独立验证的一段工作。
 
-**Task Capsule** — Slice 之间传递的有界事实包；生命周期与事实内容由 Devloop/task 唯一拥有，Devloop/context 只负责校验后渲染。包含不可摘要覆盖的 Verbatim Facts 和允许有来源摘要的 Narrative。生成时从 Git 工作区事实采集 `filesTouched`（tracked 优先，最多 200 条；排除未跟踪依赖缓存目录），超限必须以 `filesTouchedOmitted` 明示，完整代码身份仍由 `workspaceSnapshot` 负责；从未完成 Todo 采集待解决事项，禁止用空数组掩盖已知变化。v1 外壳带 `schemaVersion`，绑定 taskRevision 与 workspaceSnapshot（版本不符不得注入），事实使用可带 sourceDigest 的通用 SourceRef，并关联 verificationRefs；sealed 内容带 digest，生命周期 `draft → sealed → superseded`，通过 supersedes 串联替代关系，sealed 后不可变。`/slice` 只有在新 Pi JSONL 已持久化且可由下一无头进程重新打开时才可报告成功。
+**Task Capsule** — Slice 之间传递的有界事实包；生命周期与事实内容由 Devloop/task 唯一拥有，Devloop/context 只负责校验后渲染。包含不可摘要覆盖的 Verbatim Facts 和允许有来源摘要的 Narrative。生成时从 Git 工作区事实采集 `filesTouched`（tracked 优先，最多 200 条；排除未跟踪依赖缓存目录），超限必须以 `filesTouchedOmitted` 明示，完整代码身份仍由 `workspaceSnapshot` 负责；从未完成 Todo 采集待解决事项，禁止用空数组掩盖已知变化。v1 外壳带 `schemaVersion`，绑定 taskRevision 与 workspaceSnapshot（版本不符不得注入），事实使用可带 sourceDigest 的通用 SourceRef，并关联 verificationRefs；`CapsuleSealer` 在 sealed 前必须重新解析来源、校验来源摘要，并证明每条 Verbatim Fact 确实逐字存在，来源不可用或内容不符即拒绝封存。sealed 内容带 digest，生命周期 `draft → sealed → superseded`，通过 supersedes 串联替代关系，sealed 后不可变。`/slice` 只有在新 Pi JSONL 已持久化且可由下一无头进程重新打开时才可报告成功。
 
 **Execution Epoch** — Task Run 中账号、Channel、模型和能力集合固定的一段执行。
 
@@ -88,6 +88,8 @@
 
 **Context Compilation Manifest** — Context Governor 每次 compact/blocked 时产生的可重放派生记录，包含 session revision、输入/输出 digest、替换来源位置与前后摘要、Token 预算和 effective window；它说明“这次请求如何被编译”，不保存或取代会话正文。
 
+**Context Ledger** — Store 按会话保存的 append-only 派生审计账本，统一记录 Retention、Governor、Durable Compaction 与 Capsule 四层对上下文做过的变换。每条记录绑定层、动作、session revision、输入/输出摘要、Token 变化与 Artifact 指针，并以确定性事件 ID 去重；它用于发现重复压缩和缓存税，不拥有或改写 Pi transcript。
+
 **Endpoint Context Profile** — 某个 provider API + 去凭据 Base URL + provider/model 路由的容量证据。模型卡片声明值与真实 endpoint 成功证据分开记录；第三方 endpoint 未验证前仍使用保守窗口。
 
 **Fresh Delegation** — pi-subagents 的默认 Picode 子代理上下文策略：直接委派只接收任务文本和当前 Task 最新、校验通过的 sealed Capsule，不继承父会话全文。显式 `fork` 始终保留为用户选择。
@@ -95,6 +97,8 @@
 **Active Context** — 某一次 Provider 请求实际获得的有界消息集合。它是从完整 Pi transcript 编译出的临时投影，不是第二份会话权威。工具轨迹可在这里被 envelope 化或折叠，但原 JSONL 仍可审计和恢复。
 
 **Effective Context Window** — Picode 有证据认为某个 provider/endpoint/model 组合实际可接受的窗口。它可以低于模型卡片声明值；未经验证的第三方 Responses endpoint 使用保守上限，不能用“模型理论支持 1M”替代 endpoint 证据。
+
+**Simple Extension Schema Budget** — Simple 档活动扩展工具 schema 的确定性上限，当前为估算 4096 Token。启动时从 Pi 实际活动工具面测量；超过预算时 fail-closed 地停用 Simple 扩展工具并显示诊断，不影响 Pi 原生工具。
 
 **Adapter Extension** — Picode 一方编写、随产品分发的 pi 扩展胶水；只把 pi 事件与意图翻译到 Module 接口，零业务逻辑、零自有状态；对用户不可见，不可单独停用。
 

@@ -50,7 +50,14 @@ export {
   handleSearchTools,
 } from "./search-tools.ts";
 export type { SearchToolsInput, SearchToolsDeps } from "./search-tools.ts";
-export { SUITE_ENTRIES, suiteForTier, suiteRespectsPolicy } from "./suite.ts";
+export {
+  SIMPLE_EXTENSION_SCHEMA_BUDGET_TOKENS,
+  SUITE_ENTRIES,
+  measureToolSchemaBudget,
+  suiteForTier,
+  suiteRespectsPolicy,
+  withinSimpleToolBudget,
+} from "./suite.ts";
 export type { SuiteEntry } from "./suite.ts";
 export {
   applyToolPlaceholders,

@@ -1,8 +1,10 @@
 import type { ExtensionAPI, ExtensionContext, ToolInfo } from "@earendil-works/pi-coding-agent";
 import { ContextGovernor } from "../devloop/context/context-governor.ts";
+import { ContextLedger } from "../devloop/context/context-ledger.ts";
 import type { ContextGovernorMessage } from "../devloop/context/context-governor.ts";
 import type {
   ContextCompilationStorePort,
+  ContextLedgerStorePort,
   EndpointContextProfile,
   EndpointContextProfileStorePort,
 } from "../shared/types.ts";
@@ -50,7 +52,7 @@ function sessionRevision(ctx: ExtensionContext, messageCount: number): string {
   return `${branch.length}:${typeof leaf === "string" ? leaf : `messages-${messageCount}`}`;
 }
 
-type ContextGovernorStore = ContextCompilationStorePort & EndpointContextProfileStorePort;
+type ContextGovernorStore = ContextCompilationStorePort & EndpointContextProfileStorePort & ContextLedgerStorePort;
 
 /**
  * Register the request-boundary safety governor. This deliberately remains
@@ -65,6 +67,8 @@ export function registerContextGovernor(
 ): void {
   let durableCompactionPending = false;
   let durableCompactionRunning = false;
+  const ledger = options.store === undefined ? undefined : new ContextLedger(options.store);
+  let lastManifest: import("../shared/types.ts").ContextCompilationManifest | undefined;
   let lastRequest: {
     routeKey: string;
     inputTokens: number;
@@ -102,10 +106,22 @@ export function registerContextGovernor(
     });
     lastRequest = { routeKey: currentRouteKey, inputTokens: result.after.totalTokens, profile };
     if (result.manifest !== undefined) {
+      lastManifest = result.manifest;
       const saved = await options.store?.saveContextCompilation(result.manifest);
       if (saved !== undefined && !saved.ok) {
         ctx.ui.setStatus(STATUS_KEY, "context protected; manifest persistence failed");
       }
+      await ledger?.record({
+        sessionId: result.manifest.sessionId,
+        sessionRevision: result.manifest.sessionRevision,
+        layer: "governor",
+        action: result.action === "blocked" ? "blocked" : "compiled",
+        sourceDigest: result.manifest.inputDigest,
+        outputDigest: result.manifest.outputDigest,
+        beforeTokens: result.manifest.beforeTokens,
+        afterTokens: result.manifest.afterTokens,
+        requestOnly: true,
+      });
     }
     if (result.action === "pass") {
       ctx.ui.setStatus(STATUS_KEY, `${Math.round(result.before.totalTokens / 1_000)}K / ${Math.round(result.budget.effectiveContextWindow / 1_000)}K`);
@@ -135,19 +151,49 @@ export function registerContextGovernor(
     });
   });
 
-  pi.on("agent_settled", (_event, ctx) => {
+  pi.on("agent_settled", async (_event, ctx) => {
     if (!durableCompactionPending || durableCompactionRunning) return;
     durableCompactionPending = false;
     durableCompactionRunning = true;
+    const durableManifest = lastManifest;
+    if (durableManifest !== undefined) {
+      await ledger?.record({
+        sessionId: durableManifest.sessionId,
+        sessionRevision: durableManifest.sessionRevision,
+        layer: "durable-compaction",
+        action: "scheduled",
+        sourceDigest: durableManifest.outputDigest,
+        beforeTokens: durableManifest.afterTokens,
+        requestOnly: false,
+      });
+    }
     ctx.compact({
       customInstructions: "Preserve exact goals, decisions, paths, errors, pending work, and verification state. Large raw tool outputs already remain in the transcript and should be summarized, not copied.",
       onComplete: () => {
         durableCompactionRunning = false;
+        if (durableManifest !== undefined) void ledger?.record({
+          sessionId: durableManifest.sessionId,
+          sessionRevision: durableManifest.sessionRevision,
+          layer: "durable-compaction",
+          action: "completed",
+          sourceDigest: durableManifest.outputDigest,
+          beforeTokens: durableManifest.afterTokens,
+          requestOnly: false,
+        });
         ctx.ui.setStatus(STATUS_KEY, "durable compaction complete");
       },
       onError: () => {
         durableCompactionRunning = false;
         durableCompactionPending = true;
+        if (durableManifest !== undefined) void ledger?.record({
+          sessionId: durableManifest.sessionId,
+          sessionRevision: durableManifest.sessionRevision,
+          layer: "durable-compaction",
+          action: "failed",
+          sourceDigest: durableManifest.outputDigest,
+          beforeTokens: durableManifest.afterTokens,
+          requestOnly: false,
+        });
         ctx.ui.setStatus(STATUS_KEY, "active context protected; durable compaction retry pending");
       },
     });

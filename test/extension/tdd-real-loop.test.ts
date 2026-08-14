@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ShellGateExecutor } from "../../src/extension/gate-command-executor.ts";
-import { TddSessionController } from "../../src/extension/tdd-session.ts";
+import { TddSessionController } from "../../src/devloop/index.ts";
 
 describe("real TDD gate loop", () => {
   it("records a real Vitest RED before the same gate may issue completion", async () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { dataPaths } from "../../src/shared/paths.ts";
@@ -8,6 +8,27 @@ import { prepareWorkspaceSwitch } from "../../src/extension/workspace-switch.ts"
 import { withTempPicodeDir } from "../helpers/temp-dir.ts";
 
 describe("workspace write fence", () => {
+  it("recovers the last known-good fence and quarantines later corruption", async () => {
+    await withTempPicodeDir(async (dir) => {
+      const path = dataPaths.workspaceFence();
+      writeFileSync(path, JSON.stringify({
+        version: 1,
+        activeWorkspace: "D:/new",
+        deniedWriteRoots: ["D:/old"],
+      }), "utf8");
+      expect(new WorkspaceFence(path).deniedWriteRoots()).toEqual(["D:/old"]);
+      expect(existsSync(`${path}.known-good`)).toBe(true);
+
+      writeFileSync(path, "{broken", "utf8");
+      const recovered = new WorkspaceFence(path);
+
+      expect(recovered.deniedWriteRoots()).toEqual(["D:/old"]);
+      expect(recovered.decide({ category: "fs-write", cwd: "D:/old", targets: ["x"] }))
+        .toMatchObject({ verdict: "deny", reason: expect.stringContaining("previous workspace") });
+      expect(readdirSync(dir).some((name) => name.startsWith("workspace-fence.json.quarantine-"))).toBe(true);
+    });
+  });
+
   it("fails closed for every write when the persisted fence is corrupt", async () => {
     await withTempPicodeDir(async () => {
       writeFileSync(dataPaths.workspaceFence(), "{broken", "utf8");

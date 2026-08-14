@@ -36,7 +36,7 @@ import type { GitAction, GitRequest } from "../engine/index.ts";
 import type { CandidateSnapshot } from "../devloop/verify/gate.ts";
 import type { GateContract, GateExecutor } from "../devloop/verify/gate-runner.ts";
 import { ShellGateExecutor } from "./gate-command-executor.ts";
-import { TddSessionController, type TddSessionCheckpoint } from "./tdd-session.ts";
+import { TddSessionController, type TddSessionCheckpoint } from "../devloop/index.ts";
 import {
   effectivePromptLevel,
   PROMPT_LEVEL_ENTRY_TYPE,

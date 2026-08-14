@@ -1,6 +1,7 @@
 import type { ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createCapsule, evaluateSlice, renderCapsule, sealCapsule } from "../devloop/index.ts";
+import { CapsuleSealer, ContextLedger, createCapsule, evaluateSlice, renderCapsule } from "../devloop/index.ts";
 import type { TaskCapsule, WorkspaceSnapshotRef } from "../shared/types.ts";
+import { err, ok } from "../shared/types.ts";
 import { createHash } from "node:crypto";
 import type { HarnessTier } from "../shared/types.ts";
 import type { TaskStateHeader } from "../devloop/index.ts";
@@ -179,7 +180,6 @@ export class SliceSessionCoordinator {
       return;
     }
     const todos = await this.runtime.store.loadTaskTodos(binding.taskId);
-    const taskJson = JSON.stringify(task.value);
     const workspaceSnapshot = await this.snapshotOf(ctx.cwd);
     const sourceSessionId = sessionIdOf(ctx);
     const capsuleId = createHash("sha256")
@@ -199,34 +199,31 @@ export class SliceSessionCoordinator {
     const filesTouched = changedFiles.slice(0, MAX_CAPSULE_FILES_TOUCHED);
     const filesTouchedOmitted = Math.max(0, changedFiles.length - filesTouched.length);
     const verificationRefs = this.runtime.store.loadTaskVerificationRefs(binding.taskId);
-    const todoFacts = todos.ok
-      ? todos.value.items.filter((item) => item.status !== "completed")
-        .map((item) => `Todo (${item.status}): ${item.content}`)
-      : [];
     const openQuestions = todos.ok
       ? todos.value.items.filter((item) => item.status !== "completed").map((item) => item.content)
       : [];
-    const sealed = sealCapsule(createCapsule({
+    const taskTitleSource = task.value.title;
+    const taskTitleSourceRef = {
+      kind: "file" as const,
+      id: `${binding.taskId}/task.json#title`,
+      locator: `tasks/${binding.taskId}/task.json#title`,
+      sourceDigest: createHash("sha256").update(taskTitleSource).digest("hex"),
+    };
+    const sealer = new CapsuleSealer({
+      resolve: async (source) => source.id === taskTitleSourceRef.id
+        ? ok({ content: taskTitleSource })
+        : err("store/source-missing", `Capsule source is unavailable: ${source.kind}:${source.id}`),
+    });
+    const sealed = await sealer.seal(createCapsule({
       taskId: binding.taskId,
       taskRevision: binding.taskRevision,
       workspaceSnapshot,
       verificationRefs: verificationRefs.ok ? verificationRefs.value : [],
       intent: normalizedIntent,
       verbatimFacts: [{
-        text: `Task: ${task.value.title}`,
-        source: {
-          kind: "file",
-          id: `${binding.taskId}/task.json`,
-          locator: `tasks/${binding.taskId}/task.json`,
-          sourceDigest: createHash("sha256").update(taskJson).digest("hex"),
-        },
-      }, {
-        text: `Workspace: ${ctx.cwd}`,
-        source: { kind: "session", id: sourceSessionId },
-      }, ...todoFacts.map((text) => ({
-        text,
-        source: { kind: "session" as const, id: sourceSessionId, locator: "task-todos" },
-      }))],
+        text: taskTitleSource,
+        source: taskTitleSourceRef,
+      }],
       decisions: [],
       filesTouched,
       ...(filesTouchedOmitted === 0 ? {} : { filesTouchedOmitted }),
@@ -243,6 +240,16 @@ export class SliceSessionCoordinator {
       ctx.ui.notify(saved.error.message, "error");
       return;
     }
+    await new ContextLedger(this.runtime.store).record({
+      sessionId: sourceSessionId,
+      sessionRevision: `task:${binding.taskRevision}`,
+      layer: "capsule",
+      action: "sealed",
+      sourceDigest: sealed.value.digest ?? createHash("sha256").update(JSON.stringify(sealed.value)).digest("hex"),
+      artifactRef: `tasks/${binding.taskId}/capsules/${sealed.value.capsuleId}.json`,
+      requestOnly: false,
+      ...(sealed.value.supersedes === undefined ? {} : { supersedes: sealed.value.supersedes }),
+    });
     await this.startFreshSession(sealed.value, ctx);
   }
 

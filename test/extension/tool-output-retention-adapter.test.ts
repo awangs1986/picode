@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { registerToolOutputRetention } from "../../src/extension/tool-output-retention.ts";
-import type { ContextArtifactStorePort } from "../../src/shared/types.ts";
+import type { ContextArtifactStorePort, ContextLedgerStorePort } from "../../src/shared/types.ts";
 import { ok } from "../../src/shared/types.ts";
 
 describe("Tool output retention Pi adapter", () => {
@@ -19,7 +19,12 @@ describe("Tool output retention Pi adapter", () => {
       bytes: Buffer.byteLength(input.text),
       sha256: "digest",
     }));
-    registerToolOutputRetention(pi, { saveContextArtifact } as ContextArtifactStorePort, { maxInlineBytes: 4_096 });
+    const appendContextLedger = vi.fn(async () => ok(undefined));
+    registerToolOutputRetention(pi, {
+      saveContextArtifact,
+      appendContextLedger,
+      listContextLedger: vi.fn(async () => ok([])),
+    } as ContextArtifactStorePort & ContextLedgerStorePort, { maxInlineBytes: 4_096 });
     const huge = "log line\n".repeat(5_000);
 
     const transformed = await handlers.get("tool_result")?.({
@@ -34,6 +39,12 @@ describe("Tool output retention Pi adapter", () => {
     } as unknown as ExtensionContext) as { content: Array<{ type: string; text: string }> };
 
     expect(saveContextArtifact).toHaveBeenCalledOnce();
+    expect(appendContextLedger).toHaveBeenCalledWith(expect.objectContaining({
+      layer: "retention",
+      action: "externalized",
+      sessionId: "session-1",
+      artifactRef: "C:/artifacts/a-1.txt",
+    }));
     expect(Buffer.byteLength(transformed.content[0]?.text ?? "")).toBeLessThanOrEqual(4_096);
     expect(transformed.content[0]?.text).toContain("C:/artifacts/a-1.txt");
   });

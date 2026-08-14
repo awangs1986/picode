@@ -53,6 +53,11 @@ export class CacheMeter {
     if (prev.retainedHistoryAnchorDigest !== signals.retainedHistoryAnchorDigest) {
       return "history-anchor-rewrite";
     }
+    if (prev.provider !== signals.provider || prev.model !== signals.model || prev.baseUrl !== signals.baseUrl) {
+      return "route-drift";
+    }
+    if (prev.promptCacheKeyHash !== signals.promptCacheKeyHash) return "cache-key-drift";
+    if (prev.cacheRetention !== signals.cacheRetention) return "retention-policy-drift";
     if (cacheRead > 0) return "uncached-tail";
     return "unknown-provider-side";
   }

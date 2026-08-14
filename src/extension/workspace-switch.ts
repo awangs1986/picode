@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
-import { atomicWriteFile, withFileLock } from "../shared/fs.ts";
+import { atomicWriteFile, atomicWriteRecoverableFile, withFileLock } from "../shared/fs.ts";
 import { picodeDir } from "../shared/paths.ts";
 import type { Result } from "../shared/types.ts";
 import { err, ok } from "../shared/types.ts";
@@ -123,7 +123,7 @@ export async function prepareWorkspaceSwitch(input: {
     };
     await withFileLock(`${workspaceFencePath()}.lock`, () => {
       updateAgentsFile(target.value, deniedWriteRoots);
-      atomicWriteFile(workspaceFencePath(), JSON.stringify(state, null, 2), { mode: 0o600 });
+      atomicWriteRecoverableFile(workspaceFencePath(), JSON.stringify(state, null, 2), { mode: 0o600 });
       atomicWriteFile(requestPath, JSON.stringify(request, null, 2), { mode: 0o600 });
     });
     return ok({ targetWorkspace: target.value, deniedWriteRoots });

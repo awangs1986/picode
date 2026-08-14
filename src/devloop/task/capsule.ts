@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { Result, TaskCapsule, WorkspaceSnapshotRef } from "../../shared/types.ts";
+import type { Result, SourceRef, TaskCapsule, WorkspaceSnapshotRef } from "../../shared/types.ts";
 import { err, ok } from "../../shared/types.ts";
 
 /**
@@ -13,6 +13,48 @@ export type CapsuleDraftInput = Omit<
   TaskCapsule,
   "schemaVersion" | "capsuleId" | "status" | "createdAt" | "supersededBy" | "digest"
 >;
+
+export interface CapsuleSourceResolver {
+  resolve(source: SourceRef): Promise<Result<{ content: string }>>;
+}
+
+/**
+ * Attests verbatim facts before applying the structural Capsule seal. A source
+ * digest proves which source was read; containment proves the quoted fact was
+ * actually present in that source rather than being paired with an unrelated
+ * but valid digest.
+ */
+export class CapsuleSealer {
+  constructor(private readonly sources: CapsuleSourceResolver) {}
+
+  async seal(capsule: TaskCapsule): Promise<Result<TaskCapsule>> {
+    if (capsule.status !== "draft") return sealCapsule(capsule);
+    for (const fact of capsule.verbatimFacts) {
+      const resolved = await this.sources.resolve(fact.source);
+      if (!resolved.ok) {
+        return err(
+          "devloop/capsule-source-unavailable",
+          `cannot attest ${fact.source.kind}:${fact.source.id}: ${resolved.error.message}`,
+          resolved.error,
+        );
+      }
+      const actualDigest = createHash("sha256").update(resolved.value.content).digest("hex");
+      if (fact.source.sourceDigest !== undefined && fact.source.sourceDigest !== actualDigest) {
+        return err(
+          "devloop/capsule-source-digest-mismatch",
+          `source digest does not match ${fact.source.kind}:${fact.source.id}`,
+        );
+      }
+      if (!resolved.value.content.includes(fact.text)) {
+        return err(
+          "devloop/capsule-fact-not-verbatim",
+          `fact is absent from ${fact.source.kind}:${fact.source.id}`,
+        );
+      }
+    }
+    return sealCapsule(capsule);
+  }
+}
 
 function stable(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`;

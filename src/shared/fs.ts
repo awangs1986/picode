@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import {
   closeSync,
   existsSync,
+  fsyncSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -28,11 +29,25 @@ export function atomicWriteFile(
   mkdirSync(dirname(path), { recursive: true });
   const tmp = join(dirname(path), `.${randomBytes(6).toString("hex")}.tmp`);
   // mode 在 Windows 上近似生效（只读位）；凭据文件仍额外依赖用户目录 ACL
-  writeFileSync(tmp, contents, opts.mode === undefined ? { encoding: "utf8" } : { encoding: "utf8", mode: opts.mode });
+  const fd = openSync(tmp, "w", opts.mode ?? 0o666);
+  let writeError: unknown;
+  try {
+    writeFileSync(fd, contents, { encoding: "utf8" });
+    fsyncSync(fd);
+  } catch (cause) {
+    writeError = cause;
+  } finally {
+    closeSync(fd);
+  }
+  if (writeError !== undefined) {
+    rmSync(tmp, { force: true });
+    throw writeError;
+  }
   let lastError: unknown;
   for (let attempt = 0; attempt < 8; attempt += 1) {
     try {
       renameSync(tmp, path);
+      syncParentDirectory(path);
       return;
     } catch (cause) {
       lastError = cause;
@@ -47,6 +62,65 @@ export function atomicWriteFile(
   }
   rmSync(tmp, { force: true });
   throw lastError;
+}
+
+function syncParentDirectory(path: string): void {
+  let fd: number | undefined;
+  try {
+    fd = openSync(dirname(path), "r");
+    fsyncSync(fd);
+  } catch {
+    // Windows and some network filesystems do not permit directory handles.
+    // The file itself was already flushed before rename; directory sync is a
+    // best-effort strengthening on platforms that expose it.
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+export function atomicWriteRecoverableFile(
+  path: string,
+  contents: string,
+  opts: { mode?: number } = {},
+): void {
+  atomicWriteFile(path, contents, opts);
+  atomicWriteFile(`${path}.known-good`, contents, opts);
+}
+
+export function readRecoverableFile<T>(
+  path: string,
+  parse: (text: string) => T,
+  serialize: (value: T) => string,
+): T {
+  let originalError: unknown;
+  try {
+    const value = parse(readFileSync(path, "utf8"));
+    const serialized = serialize(value);
+    try {
+      if (!existsSync(`${path}.known-good`) || readFileSync(`${path}.known-good`, "utf8") !== serialized) {
+        atomicWriteFile(`${path}.known-good`, serialized);
+      }
+    } catch {
+      // A valid read-only authority remains readable. The next successful
+      // writer will refresh the recovery copy.
+    }
+    return value;
+  } catch (cause) {
+    originalError = cause;
+  }
+  try {
+    const recovered = parse(readFileSync(`${path}.known-good`, "utf8"));
+    if (existsSync(path)) renameSync(path, `${path}.quarantine-${Date.now()}`);
+    atomicWriteFile(path, serialize(recovered));
+    return recovered;
+  } catch {
+    try {
+      if (existsSync(path)) renameSync(path, `${path}.quarantine-${Date.now()}`);
+    } catch {
+      // Preserve the original parse/read failure as the actionable error.
+    }
+    throw originalError;
+  }
 }
 
 const STALE_LOCK_MS = 30_000;

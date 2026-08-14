@@ -4,12 +4,12 @@ import {
   type GateContract,
   type GateEvidence,
   type GateExecutor,
-} from "../devloop/verify/gate-runner.ts";
-import type { CandidateSnapshot, GateRun } from "../devloop/verify/gate.ts";
-import { issueCompletionLabel, type CompletionLabel } from "../devloop/verify/completion.ts";
-import { TddRun, type TddRunCheckpoint, type TddState } from "../devloop/verify/tdd.ts";
-import type { Result, SourceRef } from "../shared/types.ts";
-import { err, ok } from "../shared/types.ts";
+} from "./gate-runner.ts";
+import type { CandidateSnapshot, GateRun } from "./gate.ts";
+import { issueCompletionLabel, type CompletionLabel } from "./completion.ts";
+import { TddRun, type TddRunCheckpoint, type TddState } from "./tdd.ts";
+import type { Result, SourceRef } from "../../shared/types.ts";
+import { err, ok } from "../../shared/types.ts";
 
 function evidenceId(gateId: string, phase: string, command: string): string {
   return createHash("sha256").update(`${gateId}\0${phase}\0${command}\0${Date.now()}`).digest("hex").slice(0, 24);

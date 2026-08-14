@@ -2,7 +2,12 @@ import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@e
 import open from "open";
 import { bootRuntime } from "./index.ts";
 import { registerPicodeBridge } from "./pi-bridge.ts";
-import { loadSuiteForTier, suiteForTier } from "./suite.ts";
+import {
+  loadSuiteForTier,
+  measureToolSchemaBudget,
+  suiteForTier,
+  withinSimpleToolBudget,
+} from "./suite.ts";
 import { startAccountImportWizard } from "./account-import-wizard.ts";
 import { shouldRunOnboarding } from "./onboarding.ts";
 import { runOnboardingFlow } from "./onboarding-runner.ts";
@@ -70,6 +75,7 @@ export default function picodeExtension(pi: ExtensionAPI): void {
   pi.on("session_shutdown", () => { disposeWindowsShellProvider(); });
   const toolAdapter = new PiActiveToolAdapter(pi);
   const loadedSuitePackages = new Set<string>();
+  const simpleExtensionToolNames = new Set<string>();
   const runtime = bootRuntime({ toolAdapter });
   const writerLeases = new ChatWriterLeases();
   const packageRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
@@ -187,13 +193,35 @@ export default function picodeExtension(pi: ExtensionAPI): void {
         pi,
         tier,
         undefined,
-        (entry, toolNames) => { toolAdapter.bind(entry.manifest.id, toolNames); },
+        (entry, toolNames) => {
+          toolAdapter.bind(entry.manifest.id, toolNames);
+          if (entry.tiers.includes("simple")) {
+            for (const name of toolNames) simpleExtensionToolNames.add(name);
+          }
+        },
         loadedSuitePackages,
       );
       registerWindowsPowerShellTool(pi, ctx.cwd);
       toolAdapter.reconcile(suiteForTier(tier).map((entry) => entry.manifest.id));
       const readiness = await CapabilityReadinessRegistry.defaults().inspectAll({ cwd: ctx.cwd, harnessTier: tier });
       pi.setActiveTools(filterToolNamesForReadiness(pi.getActiveTools(), readiness));
+      if (tier === "simple") {
+        const active = new Set(pi.getActiveTools());
+        const report = measureToolSchemaBudget(pi.getAllTools().filter(
+          (tool) => active.has(tool.name) && simpleExtensionToolNames.has(tool.name),
+        ));
+        ctx.ui.setStatus(
+          "picode-simple-schema",
+          `Simple extensions ${report.estimatedTokens} tokens / 4096`,
+        );
+        if (!withinSimpleToolBudget(report)) {
+          pi.setActiveTools(pi.getActiveTools().filter((name) => !simpleExtensionToolNames.has(name)));
+          ctx.ui.notify(
+            "Simple extension tool schemas exceeded the 4096-token budget and were disabled for this session.",
+            "error",
+          );
+        }
+      }
     },
     onPermissionTierReady: async (permissionTier, ctx) => {
       const configured = await configureLandstripForSession({

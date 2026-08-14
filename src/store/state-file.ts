@@ -1,5 +1,9 @@
-import { existsSync, readFileSync, renameSync } from "node:fs";
-import { atomicWriteFile, withFileLock } from "../shared/fs.ts";
+import { existsSync } from "node:fs";
+import {
+  atomicWriteRecoverableFile,
+  readRecoverableFile,
+  withFileLock,
+} from "../shared/fs.ts";
 import type { Result } from "../shared/types.ts";
 import { err, ok } from "../shared/types.ts";
 
@@ -20,35 +24,13 @@ export class StateFile<T> {
   readSync(): Result<T> {
     if (!existsSync(this.path)) return err("store/state-missing", `state file not found: ${this.path}`);
     try {
-      const value = this.parse(this.path);
-      // Seed recovery metadata for state written by older Picode versions.
-      // This makes the first successful V3 read a safe migration boundary.
-      const knownGood = `${this.path}.known-good`;
-      try {
-        if (!existsSync(knownGood)) atomicWriteFile(knownGood, this.serialize(value));
-      } catch {
-        // A read-only but valid state file must remain readable. The next
-        // successful write will create the recovery copy through write().
-      }
-      return ok(value);
+      return ok(readRecoverableFile(
+        this.path,
+        (text) => this.parseText(text),
+        (value) => this.serialize(value),
+      ));
     } catch (cause) {
-      const knownGood = `${this.path}.known-good`;
-      try {
-        const recovered = this.parse(knownGood);
-        renameSync(this.path, `${this.path}.quarantine-${Date.now()}`);
-        atomicWriteFile(this.path, this.serialize(recovered));
-        return ok(recovered);
-      } catch {
-        // Preserve an unreadable file for diagnosis instead of repeatedly
-        // ignoring it on every boot. Defaults may be used by the caller, but
-        // the bad input remains recoverable from quarantine.
-        try {
-          if (existsSync(this.path)) renameSync(this.path, `${this.path}.quarantine-${Date.now()}`);
-        } catch {
-          // The original read error remains the actionable failure.
-        }
-        return err("store/state-unreadable", `cannot read state: ${this.path}`, cause);
-      }
+      return err("store/state-unreadable", `cannot read state: ${this.path}`, cause);
     }
   }
 
@@ -57,8 +39,7 @@ export class StateFile<T> {
     try {
       await withFileLock(`${this.path}.lock`, () => {
         const serialized = this.serialize(value);
-        atomicWriteFile(this.path, serialized);
-        atomicWriteFile(`${this.path}.known-good`, serialized);
+        atomicWriteRecoverableFile(this.path, serialized);
       });
       return ok(undefined);
     } catch (cause) {
@@ -66,10 +47,9 @@ export class StateFile<T> {
     }
   }
 
-  private parse(path: string): T {
-    const text = readFileSync(path, "utf8");
+  private parseText(text: string): T {
     const value: unknown = this.codec.parse?.(text) ?? JSON.parse(text);
-    if (!this.validate(value)) throw new Error(`state schema rejected: ${path}`);
+    if (!this.validate(value)) throw new Error(`state schema rejected: ${this.path}`);
     return value;
   }
 

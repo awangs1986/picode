@@ -4,15 +4,18 @@ import type {
   ToolResultEvent,
 } from "@earendil-works/pi-coding-agent";
 import { retainToolOutput } from "../devloop/context/tool-output-retention.ts";
+import { ContextLedger } from "../devloop/context/context-ledger.ts";
+import { contextDigest, estimateContextTextTokens } from "../devloop/context/context-budget-meter.ts";
 import { renderToolResult } from "../devloop/context/tool-result-renderer.ts";
-import type { ContextArtifactStorePort } from "../shared/types.ts";
+import type { ContextArtifactStorePort, ContextLedgerStorePort } from "../shared/types.ts";
 
 /** Adapter only: translate Pi's accepted tool-result event to Devloop policy. */
 export function registerToolOutputRetention(
   pi: ExtensionAPI,
-  store: ContextArtifactStorePort,
+  store: ContextArtifactStorePort & ContextLedgerStorePort,
   options: { maxInlineBytes?: number } = {},
 ): void {
+  const ledger = new ContextLedger(store);
   const handler = async (event: ToolResultEvent, ctx: ExtensionContext) => {
     const rendered = renderToolResult({
       toolName: event.toolName,
@@ -27,6 +30,20 @@ export function registerToolOutputRetention(
       toolName: event.toolName,
       content: rendered.content,
     }, store, options);
+    if (retained.retained && retained.artifact !== undefined) {
+      await ledger.record({
+        sessionId: ctx.sessionManager.getSessionId(),
+        sessionRevision: `tool-result:${event.toolCallId}`,
+        layer: "retention",
+        action: "externalized",
+        sourceDigest: retained.artifact.sha256,
+        outputDigest: contextDigest(retained.content),
+        artifactRef: retained.artifact.path,
+        beforeTokens: estimateContextTextTokens(JSON.stringify(rendered.content)),
+        afterTokens: estimateContextTextTokens(JSON.stringify(retained.content)),
+        requestOnly: false,
+      });
+    }
     if (!retained.retained && !rendered.semantic) return undefined;
     return { content: retained.content as typeof event.content };
   };

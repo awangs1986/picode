@@ -60,7 +60,7 @@ picode 命令 = 启动自带的 pi（预装扩展套件，PI_CODING_AGENT_DIR=~/
 | 长会话 TUI 渲染 | 固定并随包携带 `pi-sticky-input` 0.2.0 审核源码；作为 UI-only 默认扩展在首个 `session_start` 前注册，不进入 Capability Catalog、工具 Schema 或模型上下文 | 2026-08-14 集成裁决 |
 | 配置 | JSON（读取兼容 JSONC）；全局 `~/.picode/config.json` + 项目 `.picode/`；MCP 用生态标准 `.mcp.json` | ADR-0002 修订、ADR-0005 |
 | 提示词 | Simple **零注入**；Standard 追加稳定 Lean 行为核；TDD 追加自包含 Developer-TDD 行为核。两者都保留 Pi Base Prompt；Task/Capsule/Gate 事实只走受控 Context Event，不写入静态行为核 | `prompts/README.md`（2026-08-07 最终接入）；PICODE-HARNESS-PROMPT-DESIGN.md 仅作历史设计参考 |
-| Devloop 契约 | Capsule v1 外壳（schemaVersion/taskRevision/workspaceSnapshot/SourceRef/verificationRefs/digest + sealed/superseded 生命周期）+ 强制分节模板、Slice 三通道输入与软/硬阈值确定性裁决、TDD 状态机 `spec→red→green→refactor→gate→done` + 预算、Evidence 双层格式 | MODULES.md §3（Q15–Q18 + R3） |
+| Devloop 契约 | Capsule v1 外壳（schemaVersion/taskRevision/workspaceSnapshot/SourceRef/verificationRefs/digest + sealed/superseded 生命周期）+ 封存前来源摘要/逐字事实证明 + 强制分节模板、Slice 三通道输入与软/硬阈值确定性裁决、TDD 状态机 `spec→red→green→refactor→gate→done` + 预算、Evidence 双层格式 | MODULES.md §3（Q15–Q18 + R3） |
 | 显式压缩/纠偏 | 用户命令 `/pi-compress`、`/pi-correct` 仍推迟到 P5；防止 Provider 超限的 Context Governor 属于 P0 运行时安全，不可关闭 | Q3（2026-08-07）、019ff330 红证据（2026-08-12）、PICODE-COMPRESS-SKILL-DESIGN.md |
 | 开发方式 | 不做迭代式 MVP：设计完毕 → 一次搭齐基础架构 → 作者自行完成实现 | Q7（2026-08-07） |
 | 导入 | Import Contract（manifest + 会话 IR + 工具痕迹五级判定）；转换器住核心外 | PICODE-FOREIGN-TOOL-CONTRACT-COMPATIBILITY.md |
@@ -129,6 +129,8 @@ picode doctor
 **供应商层**：pin 采用 **pi-cache-optimizer**（provider 兼容面：OpenAI 系 `prompt_cache_key` 兜底、代理 session affinity、Anthropic TTL 顺序守卫、compat doctor/fix、持久化计数）；**关闭其提示词重写**（`PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE=1`），前缀结构由 Picode 套件纪律控制。Spike：其 footer 与 Picode 部件的显示整合。
 
 **压缩经济学**：Reasonix 分层压缩（60% 软提醒 → 剪陈旧工具结果 → 占位符 → 付费摘要 → 强制）与固定尾部预算防循环，仍是 P5 显式压缩模块实现参考。P0 另有不可关闭的 **Context Governor**：在 Pi 的每次 `context` 事件（即每次 Provider 调用前，包括工具结果追加后的同一 Agent loop）计算完整预算；预算包含 system prompt、活动工具 schema、消息/Reasoning、工具结果、上一轮 `totalTokens`（含 cacheRead）之后的新尾部，以及输出预留和安全边际。达到阈值时必须先编译有界活动上下文，原始超预算请求不得发送；持久 JSONL 不改写，Agent settle 后再请求 pi durable compaction。普通 auto-compact 设置可关闭，但这道防卡死保护不可关闭。
+
+**上下文变换审计**：Retention、Governor、Durable Compaction 与 Capsule 共用一份按会话 append-only 的 Context Ledger；每条记录以确定性事件 ID 去重，绑定层、动作、session revision、输入/输出摘要、Token 变化与 Artifact 指针。Ledger 只用于识别重复压缩、恢复链和缓存税，不保存会话正文，也不成为第二权威。
 
 **P0–P3 落地切面**：工具结果在 `tool_result` 缝先语义化；超过 64 KiB 的纯文本
 完整值由 Store 内容寻址外置，活动历史只保留有界预览和取回指针。预算度量优先使用

@@ -66,6 +66,31 @@ describe("CacheMeter", () => {
       expect(meter.snapshot().lastAttribution).toBe("history-anchor-rewrite");
     });
 
+    it("attributes route-drift when provider, model, or base URL changes", () => {
+      const meter = new CacheMeter();
+      meter.recordTurn(usage({ cacheReadTokens: 10 }), signals({ baseUrl: "https://a.example/v1" }));
+      meter.recordTurn(usage({ cacheReadTokens: 0 }), signals({
+        provider: "openai",
+        model: "gpt-5",
+        baseUrl: "https://b.example/v1",
+      }));
+      expect(meter.snapshot().lastAttribution).toBe("route-drift");
+    });
+
+    it("attributes cache-key-drift when prompt cache identity changes", () => {
+      const meter = new CacheMeter();
+      meter.recordTurn(usage({ cacheReadTokens: 10 }), signals({ promptCacheKeyHash: "key-a" }));
+      meter.recordTurn(usage({ cacheReadTokens: 0 }), signals({ promptCacheKeyHash: "key-b" }));
+      expect(meter.snapshot().lastAttribution).toBe("cache-key-drift");
+    });
+
+    it("attributes retention-policy-drift when provider retention changes", () => {
+      const meter = new CacheMeter();
+      meter.recordTurn(usage({ cacheReadTokens: 10 }), signals({ cacheRetention: "short" }));
+      meter.recordTurn(usage({ cacheReadTokens: 0 }), signals({ cacheRetention: "long" }));
+      expect(meter.snapshot().lastAttribution).toBe("retention-policy-drift");
+    });
+
     it("attributes uncached-tail when stable and cacheRead > 0", () => {
       const meter = new CacheMeter();
       meter.recordTurn(usage({ cacheReadTokens: 10 }), signals());

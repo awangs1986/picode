@@ -1,6 +1,39 @@
 import type { CapabilityManifest, HarnessTier } from "../shared/types.ts";
 import type { ExtensionAPI, ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import type { TierPolicy } from "./harness.ts";
+import { estimateContextTextTokens, stableContextJson } from "../devloop/context/context-budget-meter.ts";
+
+export const SIMPLE_EXTENSION_SCHEMA_BUDGET_TOKENS = 4_096;
+
+export interface ToolSchemaBudgetReport {
+  toolNames: string[];
+  bytes: number;
+  estimatedTokens: number;
+}
+
+export function measureToolSchemaBudget(tools: readonly {
+  name: string;
+  description?: string;
+  parameters?: unknown;
+  promptGuidelines?: unknown;
+}[]): ToolSchemaBudgetReport {
+  const normalized = tools.map((tool) => ({
+    name: tool.name,
+    ...(tool.description === undefined ? {} : { description: tool.description }),
+    ...(tool.parameters === undefined ? {} : { parameters: tool.parameters }),
+    ...(tool.promptGuidelines === undefined ? {} : { promptGuidelines: tool.promptGuidelines }),
+  }));
+  const serialized = stableContextJson(normalized);
+  return {
+    toolNames: normalized.map((tool) => tool.name),
+    bytes: Buffer.byteLength(serialized, "utf8"),
+    estimatedTokens: tools.length === 0 ? 0 : estimateContextTextTokens(serialized),
+  };
+}
+
+export function withinSimpleToolBudget(report: ToolSchemaBudgetReport): boolean {
+  return report.estimatedTokens <= SIMPLE_EXTENSION_SCHEMA_BUDGET_TOKENS;
+}
 
 /**
  * 扩展套件登记与档位装载（PICODE-V3-DESIGN.md §1/§2 + MODULES.md §4）。

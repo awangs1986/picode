@@ -1,5 +1,6 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { posix, win32 } from "node:path";
+import { readRecoverableFile } from "../shared/fs.ts";
 import { dataPaths } from "../shared/paths.ts";
 import type { Decision, OperationIntent } from "../shared/types.ts";
 
@@ -43,12 +44,7 @@ export class WorkspaceFence {
       return;
     }
     try {
-      const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<WorkspaceFenceFile>;
-      if (parsed.version !== 1 || typeof parsed.activeWorkspace !== "string" ||
-        !Array.isArray(parsed.deniedWriteRoots) ||
-        parsed.deniedWriteRoots.some((root) => typeof root !== "string")) {
-        throw new Error("invalid workspace fence schema");
-      }
+      const parsed = readRecoverableFile(path, parseWorkspaceFence, (value) => JSON.stringify(value, null, 2));
       this.roots = parsed.deniedWriteRoots as string[];
       this.unreadable = false;
     } catch {
@@ -92,4 +88,14 @@ export class WorkspaceFence {
       reason: `workspace-fence: previous workspace is permanently read-only for this lineage: ${root}`,
     };
   }
+}
+
+function parseWorkspaceFence(text: string): WorkspaceFenceFile {
+  const parsed = JSON.parse(text) as Partial<WorkspaceFenceFile>;
+  if (parsed.version !== 1 || typeof parsed.activeWorkspace !== "string" ||
+    !Array.isArray(parsed.deniedWriteRoots) ||
+    parsed.deniedWriteRoots.some((root) => typeof root !== "string")) {
+    throw new Error("invalid workspace fence schema");
+  }
+  return parsed as WorkspaceFenceFile;
 }

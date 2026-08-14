@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { WorktreeRegistry } from "../../src/engine/worktree.ts";
@@ -6,6 +6,22 @@ import { dataPaths } from "../../src/shared/paths.ts";
 import { withTempPicodeDir } from "../helpers/temp-dir.ts";
 
 describe("WorktreeRegistry", () => {
+  it("recovers known-good writer ownership and quarantines later corruption", async () => {
+    await withTempPicodeDir(async () => {
+      const registry = new WorktreeRegistry();
+      expect((await registry.claimWriter("ws-1", "task-a", { persistent: true })).ok).toBe(true);
+      const path = join(dataPaths.tasks(), "worktrees.json");
+      expect(existsSync(`${path}.known-good`)).toBe(true);
+      writeFileSync(path, "{broken", "utf8");
+
+      const conflict = await new WorktreeRegistry().claimWriter("ws-1", "task-b", { persistent: true });
+
+      expect(conflict.ok).toBe(false);
+      if (!conflict.ok) expect(conflict.error.code).toBe("engine/workspace-has-writer");
+      expect(readdirSync(dataPaths.tasks()).some((name) => name.startsWith("worktrees.json.quarantine-"))).toBe(true);
+    });
+  });
+
   it("refuses writer claims when the registry authority is corrupt", async () => {
     await withTempPicodeDir(async () => {
       mkdirSync(dataPaths.tasks(), { recursive: true });

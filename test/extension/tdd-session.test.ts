@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { GateExecution, GateExecutor } from "../../src/devloop/verify/gate-runner.ts";
-import { TddSessionController } from "../../src/extension/tdd-session.ts";
+import { TddSessionController } from "../../src/devloop/index.ts";
 
 class QueueExecutor implements GateExecutor {
   constructor(private readonly queue: GateExecution[]) {}

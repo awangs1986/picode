@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
-import { parseTestCounts, ShellGateExecutor } from "../../src/extension/gate-command-executor.ts";
+import { parseTestCounts } from "../../src/devloop/index.ts";
+import { ShellGateExecutor } from "../../src/extension/gate-command-executor.ts";
 
 describe("parseTestCounts", () => {
   it("parses Vitest summary counts", () => {

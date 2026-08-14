@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  CapsuleSealer,
   canInject,
   createCapsule,
   capsuleDigest,
@@ -7,9 +8,62 @@ import {
   sealCapsule,
   supersedeCapsule,
 } from "../../../src/devloop/task/capsule.ts";
+import { err, ok } from "../../../src/shared/types.ts";
 import { makeCapsuleInput, sealedCapsule } from "../../helpers/fixtures.ts";
 
 describe("Capsule v1 lifecycle", () => {
+  it("refuses to seal a verbatim fact that is absent from its attested source", async () => {
+    const source = "Acceptance: preserve existing saves\nNever delete user data.";
+    const sourceDigest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(source))
+      .then((value) => Buffer.from(value).toString("hex"));
+    const capsule = createCapsule(makeCapsuleInput({
+      verbatimFacts: [{
+        text: "Acceptance: deleting old saves is allowed",
+        source: { kind: "file", id: "design", locator: "docs/design.md", sourceDigest },
+      }],
+    }));
+    const sealer = new CapsuleSealer({
+      resolve: async () => ok({ content: source }),
+    });
+
+    const result = await sealer.seal(capsule);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("devloop/capsule-fact-not-verbatim");
+  });
+
+  it("seals only after every verbatim fact is attested by its source", async () => {
+    const source = "Acceptance: preserve existing saves\nNever delete user data.";
+    const sourceDigest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(source))
+      .then((value) => Buffer.from(value).toString("hex"));
+    const capsule = createCapsule(makeCapsuleInput({
+      verbatimFacts: [{
+        text: "Acceptance: preserve existing saves",
+        source: { kind: "file", id: "design", locator: "docs/design.md", sourceDigest },
+      }],
+    }));
+    const sealer = new CapsuleSealer({ resolve: async () => ok({ content: source }) });
+
+    const result = await sealer.seal(capsule);
+
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value.status).toBe("sealed");
+  });
+
+  it("fails closed when a verbatim source cannot be resolved", async () => {
+    const capsule = createCapsule(makeCapsuleInput({
+      verbatimFacts: [{ text: "Gate RED", source: { kind: "evidence", id: "gate-red" } }],
+    }));
+    const sealer = new CapsuleSealer({
+      resolve: async () => err("store/source-missing", "source is unavailable"),
+    });
+
+    const result = await sealer.seal(capsule);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("devloop/capsule-source-unavailable");
+  });
+
   it("createCapsule starts in draft status", () => {
     const cap = createCapsule(makeCapsuleInput());
     expect(cap.status).toBe("draft");

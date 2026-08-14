@@ -1,6 +1,6 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { atomicWriteFile, withFileLock } from "../shared/fs.ts";
+import { atomicWriteRecoverableFile, readRecoverableFile, withFileLock } from "../shared/fs.ts";
 import { dataPaths } from "../shared/paths.ts";
 import type { Result } from "../shared/types.ts";
 import { err, ok } from "../shared/types.ts";
@@ -56,11 +56,7 @@ export class WorktreeRegistry {
   private load(): WorktreeFile {
     const path = this.path();
     if (!existsSync(path)) return { version: 1, writers: [], managed: [] };
-    const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<WorktreeFile>;
-    if (parsed.version !== 1 || !Array.isArray(parsed.writers) || !Array.isArray(parsed.managed)) {
-      throw new Error(`invalid worktree registry: ${path}`);
-    }
-    return parsed as WorktreeFile;
+    return readRecoverableFile(path, (text) => parseWorktreeFile(text, path), (value) => JSON.stringify(value, null, 2));
   }
 
   private async mutate<T>(fn: (file: WorktreeFile) => Result<T>): Promise<Result<T>> {
@@ -69,7 +65,7 @@ export class WorktreeRegistry {
         const file = this.load();
         const result = fn(file);
         if (result.ok) {
-          atomicWriteFile(this.path(), JSON.stringify(file, null, 2));
+          atomicWriteRecoverableFile(this.path(), JSON.stringify(file, null, 2));
         }
         return result;
       });
@@ -176,6 +172,14 @@ export class WorktreeRegistry {
       writers: file.writers.filter((writer) => writer.persistent === true || isProcessAlive(writer.pid)),
     };
   }
+}
+
+function parseWorktreeFile(text: string, path: string): WorktreeFile {
+  const parsed = JSON.parse(text) as Partial<WorktreeFile>;
+  if (parsed.version !== 1 || !Array.isArray(parsed.writers) || !Array.isArray(parsed.managed)) {
+    throw new Error(`invalid worktree registry: ${path}`);
+  }
+  return parsed as WorktreeFile;
 }
 
 function isProcessAlive(pid: number): boolean {

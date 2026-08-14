@@ -210,6 +210,34 @@ export interface ContextCompilationStorePort {
   saveContextCompilation(manifest: ContextCompilationManifest): Promise<Result<string>>;
 }
 
+export type ContextLedgerLayer = "retention" | "governor" | "durable-compaction" | "capsule";
+
+export interface ContextLedgerEntryInput {
+  sessionId: string;
+  sessionRevision: string;
+  layer: ContextLedgerLayer;
+  action: string;
+  sourceDigest: string;
+  outputDigest?: string;
+  artifactRef?: string;
+  beforeTokens?: number;
+  afterTokens?: number;
+  cacheEpoch?: number;
+  requestOnly: boolean;
+  supersedes?: string;
+}
+
+export interface ContextLedgerEntry extends ContextLedgerEntryInput {
+  schemaVersion: "picode.context-ledger/v1";
+  eventId: string;
+  recordedAt: string;
+}
+
+export interface ContextLedgerStorePort {
+  appendContextLedger(entry: ContextLedgerEntry): Promise<Result<void>>;
+  listContextLedger(sessionId: string): Promise<Result<ContextLedgerEntry[]>>;
+}
+
 export interface EndpointContextProfile {
   schemaVersion: "picode.endpoint-context/v1";
   routeKey: string;
@@ -296,6 +324,9 @@ export type MissAttribution =
   | "system-drift"
   | "tool-schema-drift"
   | "history-anchor-rewrite"
+  | "route-drift"
+  | "cache-key-drift"
+  | "retention-policy-drift"
   | "uncached-tail"
   | "unknown-provider-side";
 
@@ -410,8 +441,6 @@ export interface HistoricalCompatibility {
 // ---------------------------------------------------------------------------
 
 export interface StorePort {
-  listAccounts(): Promise<Result<AccountRef[]>>;
-  saveAccounts(accounts: AccountRef[]): Promise<Result<void>>;
   // ImportCompiler 经 Store 暴露（仅导入时懒加载）
   resolveHistorical(sig: SourceToolSignature): HistoricalCompatibility;
 }

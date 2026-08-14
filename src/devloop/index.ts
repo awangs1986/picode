@@ -2,6 +2,7 @@ import type { DevloopPort, Result, TaskCapsule, WorkspaceSnapshotRef } from "../
 import { canInject } from "./task/capsule.ts";
 
 export {
+  CapsuleSealer,
   canInject,
   capsuleDigest,
   createCapsule,
@@ -9,7 +10,7 @@ export {
   sealCapsule,
   supersedeCapsule,
 } from "./task/capsule.ts";
-export type { CapsuleDraftInput } from "./task/capsule.ts";
+export type { CapsuleDraftInput, CapsuleSourceResolver } from "./task/capsule.ts";
 export { renderBridgeNote } from "./context/bridge-note.ts";
 export type { BridgeNoteInput } from "./context/bridge-note.ts";
 export { discoverProjectContext, renderProjectContext } from "./context/project-context.ts";
@@ -29,6 +30,10 @@ export { TDD_BUDGET, TddRun } from "./verify/tdd.ts";
 export type { BudgetOutcome, TddState } from "./verify/tdd.ts";
 export { issueCompletionLabel } from "./verify/completion.ts";
 export type { CompletionLabel } from "./verify/completion.ts";
+export { TddSessionController } from "./verify/tdd-session.ts";
+export type { TddSessionCheckpoint } from "./verify/tdd-session.ts";
+export { parseTestCounts } from "./verify/test-counts.ts";
+export type { TestCounts } from "./verify/test-counts.ts";
 export { renderForeignResumeCapsule } from "./context/foreign-resume.ts";
 export type { ForeignResumeInput } from "./context/foreign-resume.ts";
 export { ContextGovernor } from "./context/context-governor.ts";
@@ -48,6 +53,7 @@ export type {
   ContextMeterMessage,
   ContextMeterTool,
 } from "./context/context-budget-meter.ts";
+export { ContextLedger } from "./context/context-ledger.ts";
 export { retainToolOutput } from "./context/tool-output-retention.ts";
 export type {
   ToolOutputContentBlock,
