@@ -1,68 +1,88 @@
-# Picode V3
+# Picode
 
 <p align="right"><a href="README.en.md">English</a></p>
 
-Picode V3 是一个面向中小型到中型软件、游戏工程开发的轻量化 Harness。
-它以原版 Pi Agent 为运行时基础，通过 Extension-first 方式增加开发工作流、权限、
-测试、任务切片和可观测性；不重写 Pi Agent，不另造 Rust Core，也不强迫所有任务
-使用完整工程流程。
+**Picode 是一个独立的、面向真实软件开发的轻量化 Agent Harness。**
 
-<span style="color:red"><strong>当前状态：开发中，尚未完善，不是稳定发行版。</strong> P0–P4 的可代码化范围已通过本机自动化验证，但 Linux/macOS 实机、真实 Provider、真实中型项目漂移实验、Windows 强沙箱和第三方可选组件安装仍未全部验收。请把当前版本当作开发测试版。</span>
+它把经过固定版本验证的 [Pi Agent](https://github.com/earendil-works/pi) Runtime、TUI、会话格式和扩展 API 作为运行基础，在同一进程内增加权限、沙箱、任务状态、Subagent、Worktree、TDD Gate、长上下文治理和 CLI 自动化。Picode 拥有自己的产品边界、架构、数据目录、发布节奏和开发路线，不是其他桌面项目的延续或改名版本。
 
-## 核心理念
+> [!WARNING]
+> **当前仍是开发测试版，不是稳定发行版。** Windows 主路径和可代码化的 P0–P4 合同已经通过自动化验证；Linux/macOS 实机、真实 Provider 长周期测量、部分第三方组件和强 Windows 沙箱仍需单独验收。
 
-- **Pi 保持简洁**：Simple 模式接近原版 Pi；先进模型不被过度提示词和 Harness 约束。
-- **治理按需出现**：Simple、Standard、TDD 是会话级档位，能力按一级常驻、二级可发现懒加载、三级默认停用分层。
-- **事实与提示词分离**：提示词负责协作方式，Guard、TaskControl、GateRunner 和文件权威负责事实与强制条件。
-- **开发者拥有最终权力**：普通文件修改可按权限策略执行；commit、merge、push 等发布动作永远需要用户确认。
-- **上下文抗失真**：长任务切成 Slice，用带来源指针和摘要校验的 Capsule 交接；不依赖模型声称“我记得”。
-- **一个 Workflow**：TUI、CLI 和未来适配器共享同一套 Store、Engine、Guard、Devloop，不建立第二套任务数据库。
-- **稳定的长对话输入**：随包默认加载固定版本的 `pi-sticky-input`，把历史记录限制在终端视口上方，并只重绘变化的行，避免长输出时输入框随内容滚动及全屏重复刷新造成的卡顿。
+## 为什么做 Picode
 
-## 用户视角的开发闭环
+原版 Pi 的优势是小、快、可扩展，并且不替用户规定工作流。大型一体化 Agent 的优势是开箱即用，但固定提示词、常驻工具和完整治理也可能让小任务变重。Picode 选择中间路线：
+
+- 小任务保持接近原版 Pi；
+- 中型工程按需获得完整开发闭环；
+- 流程事实由代码和证据强制，不靠提示词反复提醒模型；
+- 工具、MCP、LSP 和专业扩展只在需要时发现或激活；
+- 不用独立 Core、第二套会话数据库或后台常驻服务换取功能。
+
+目标不是成为“拥有最多工具的 Agent”，而是让一个开发者能在有限上下文、有限时间和真实代码库里可靠地完成：理解 → 修改 → 验证 → 交接。
+
+## 核心设计原则
+
+1. **保留 Pi 的简洁性**：Pi Agent Loop、TUI、原生工具和 JSONL 会话仍是运行主干；Picode 优先使用公开扩展接口，源码补丁只作最后手段。
+2. **治理可以升降档**：`simple / standard / tdd` 是会话级档位，不需要为一次小修改启动完整 Harness。
+3. **提示词不拥有事实**：提示词只说明协作方式；Guard、Task、Gate、Evidence、Workspace Fence 和 Worktree 才是确定性权威。
+4. **文件是权威**：Task、Capsule、Grant 和 Evidence 使用可审计文件保存；索引可以重建，不引入隐藏数据库真相。
+5. **开发者拥有最终权力**：常规操作可以按会话授权；发布和高风险操作保留明确边界。`danger-full-access` 必须由用户显式选择。
+6. **长任务必须可交接**：Slice 控制工作颗粒，Capsule 保存逐字事实、来源、决策、变更、未决项和验证引用，不让摘要替代验收契约。
+7. **先做可红的 Gate**：TDD 不是“测试显示绿色”，而是先证明 Gate 有能力失败，再接受同一候选快照的 GREEN、Review 和 Integration 证据。
+8. **能力按成本出现**：Pi 原生工具永远保留；长尾能力经 Readiness、信任和任务档位过滤后才进入模型可见面或运行态。
+9. **一个 Workflow，多种入口**：TUI 和无头 CLI 使用相同的 Store、Engine、Guard、Devloop；远程客户端只能成为薄 Adapter，不能产生第二套权限或会话权威。
+
+## 和其他 Coding Agent 的区别
+
+下面是产品定位差异，不是跑分或“谁更聪明”的排名：
+
+| 对象 | 典型取向 | Picode 的选择 |
+|---|---|---|
+| [原版 Pi](https://github.com/earendil-works/pi) | 极简 Agent、扩展优先，不内置固定权限/Todo/MCP/Subagent 工作流 | 保留 Pi 运行时和 TUI，在其上提供可切换、可验证的工程 Harness 发行版 |
+| [Grok Build](https://github.com/xai-org/grok-build) | 完整 TUI、工具、沙箱、MCP、Headless/ACP 形成一体化产品 | 学习其成熟 Context、权限和工具模式，但把治理拆成会话档位，并把非核心能力做成懒加载扩展 |
+| [OpenCode](https://github.com/anomalyco/opencode) | 多 Provider、多客户端和 Client/Server 产品面广 | Picode 更聚焦本地开发闭环、TDD Evidence、Slice/Capsule 与工作区所有权，不追求同等客户端广度 |
+| [Codex CLI](https://github.com/openai/codex) 等一体化 Agent | 产品提供统一的审批、沙箱、计划和执行体验 | Picode 允许从近原生 Pi 到严格 TDD 动态升降，不把同一套重治理强加给所有任务 |
+| [Oh My Pi](https://github.com/can1357/oh-my-pi) 等深度增强 Runtime | 通过更深的 Runtime 修改快速获得大量内建能力 | Picode 优先保持固定 Pi 版本的上游兼容，以模块和扩展组合能力，降低长期合并税 |
+
+Picode 不要求比这些项目“功能更多”。它的差异化是：**轻量运行主干 + 可选完整工程闭环 + 可审计证据 + 长任务抗失真。**
+
+## 架构
 
 ```mermaid
-flowchart TD
-    A[启动 picode] --> B[原版 Pi TUI + Picode Extension]
-    B --> C{选择 Harness 档位}
-    C -->|simple| D[原生 Pi 对话与基础工具]
-    C -->|standard| E[权限、沙箱、Todo、Subagent、Slice]
-    C -->|tdd| F[RED → GREEN → Reviewer → Integration → Confirm]
-    D --> G[修改代码 / 运行测试]
-    E --> G
-    F --> G
-    G --> H{上下文或范围接近边界?}
-    H -->|否| I[继续当前 Slice]
-    H -->|是| J[生成 Capsule，校验快照]
-    J --> K[新 Pi 会话继续任务]
-    K --> G
-    G --> L[GateRunner 产生 Evidence]
-    L --> M{完成条件满足?}
-    M -->|否| N[修复、Review 或 QA handoff]
-    N --> G
-    M -->|是| O[用户确认 Git 发布动作]
+flowchart TB
+    U["Developer"] --> TUI["Pi TUI"]
+    U --> CLI["Picode Headless CLI"]
+    TUI --> A["Picode Adapter Extension"]
+    CLI --> A
+    A --> S["Store\nfiles, accounts, imports"]
+    A --> E["Engine\nruntime, subagents, worktrees"]
+    A --> G["Guard\npermissions, grants, catalog"]
+    A --> D["Devloop\ntasks, context, TDD, evidence"]
+    E --> PI["Pinned Pi Agent Runtime"]
+    G --> X["Sandbox / MCP / Tool adapters"]
+    D --> PI
+    R["Remote clients"] -. "P5 thin transport" .-> A
 ```
 
-## 四个核心模块
+Picode 是 **TypeScript-first、Extension-first、无独立 Core** 的单包应用。四个领域模块活在 Pi 进程内，由 Adapter Extension 组合：
 
-| 模块 | 责任 |
+| 模块 | 唯一责任 |
 |---|---|
-| **Store** | 文件权威、账号 Vault、导入编译、Task/Capsule/Todo 持久化、锁和原子写入 |
-| **Engine** | Pi 生命周期、能力激活、Subagent、Execution Epoch、Worktree 和沙箱调用侧 |
-| **Guard** | allow/ask/deny、Grant、权限策略、MCP 仲裁、能力目录与信任摘要 |
-| **Devloop** | Task、Slice/Capsule、上下文桥接、TDD 状态机、Gate、Evidence、Completion Label |
+| **Store** | 文件权威、账号 Vault、导入编译、Task/Capsule/Todo 持久化、锁与原子写 |
+| **Engine** | Pi 生命周期、能力激活、Subagent、Execution Epoch、Managed Worktree、沙箱调用侧 |
+| **Guard** | allow/ask/deny、Grant、权限档位、Workspace Fence、MCP 仲裁、能力目录与信任摘要 |
+| **Devloop** | Task/Slice/Capsule、Context Governor、TDD 状态机、Gate、Evidence、Completion Label |
 
-领域模块在 Pi 进程内通过接口和事件总线协作；Picode 不运行独立 Core 服务。
+领域模块互不直接依赖；组合根通过窄接口接线。Session 仍由 Pi 管理，Picode 不复制会话权威。
 
-## 三种 Harness 档位
+## 三档 Harness
 
-| 档位 | 适用场景 | 默认行为 |
+| 档位 | 适用场景 | 行为 |
 |---|---|---|
-| `simple` | 小改动、实验、简单页面 | 保留 Pi 原生提示词和基础工具，零工程治理注入 |
-| `standard` | 日常中型开发 | 权限、沙箱、Todo、Subagent、Worktree、Slice、可发现扩展 |
-| `tdd` | 需要明确验收的功能 | 先证明 RED，再允许生产代码写入；Target Gate、独立 Reviewer、Integration Smoke、同快照确认后才能完成；Reviewer 技术失败只允许一次重试，仍不可用则如实转交 QA |
-
-在 TUI 中输入：
+| `simple` | 小改动、探索、一次性脚本 | 保留 Pi 原生提示词和工具；不注入工程流程；Standard/TDD 能力不可搜索或激活 |
+| `standard` | 日常中型开发 | 增加权限、沙箱、Todo、Subagent、Worktree、Readiness、Slice/Capsule 和快速 Review |
+| `tdd` | 有明确验收契约的功能 | 在生产写入前要求真实 RED；随后验证 GREEN、独立 Review、Integration 和同快照 Completion Label |
 
 ```text
 /harness simple
@@ -70,97 +90,108 @@ flowchart TD
 /harness tdd
 ```
 
-`pi-sticky-input` 是仅影响本机 TUI 的默认界面扩展，不会向模型增加工具或提示词。
-键盘滚动默认可用；`/sticky-input status` 可查看状态，`/sticky-input mouse on|off`
-可切换鼠标滚轮支持。Picode 固定并随包携带已审核源码，安装时无需另装 npm 包。
-
-切换成功后，Picode 会说明沙箱、MCP、工具面、Watchdog、验证策略和默认提示词
-发生了哪些变化。Harness 的默认提示词级别为 `simple → none`、
-`standard → lean`、`tdd → full`。如只想改变当前会话的提示词引导强度：
+切换后 TUI 会明确说明工具、沙箱、MCP、Watchdog、验证和提示词发生了什么变化。提示词强度也可独立调整：
 
 ```text
-/system prompt
 /system prompt none
 /system prompt lean
 /system prompt full
 ```
 
-## 微信远程单对话（第三级插件）
+## 从需求到完成的开发闭环
 
-Picode 随包提供一个默认停用的腾讯 iLink Bot 文本适配器。微信消息会像 TUI 输入一样进入
-当前一个 Pi 对话，不创建第二套 Agent Runtime；完整回答留在 TUI，再经当前模型精简一次后回复微信。首次使用：
-
-```text
-/weixin enable
-/weixin login
-/weixin start
+```mermaid
+flowchart TD
+    A["新建任务"] --> B["发现项目规则与工具 Readiness"]
+    B --> C["确定 Task Contract 和工作区所有权"]
+    C --> D["切分当前 Slice"]
+    D --> E{"Harness tier"}
+    E -->|simple| F["直接实现与用户验收"]
+    E -->|standard| G["实现 → 测试 → Quick Review"]
+    E -->|tdd| H["Prove RED → Implement → GREEN"]
+    H --> I["Independent Review + Integration Smoke"]
+    F --> J{"范围或上下文接近边界?"}
+    G --> J
+    I --> J
+    J -->|yes| K["Seal Capsule with source and evidence"]
+    K --> L["Fresh Slice session continues"]
+    L --> D
+    J -->|no| M["Completion Label / QA handoff"]
+    M --> N["User-owned Git publication"]
 ```
 
-切换对话或退出 TUI 会自动停止；`/weixin disable` 后没有轮询或网络活动。详见
-[微信 iLink 插件指南](docs/WEIXIN-ILINK.zh.md)。
+### 克制的 TDD
 
-不带级别时会显示选择菜单。该命令不改变 Harness、工具、权限、沙箱或 Gate；
-下一次切换 Harness 会清除手动覆盖并恢复新档位默认值。
+Picode 的 TDD 面向开发者本地闭环，不试图取代专门 CI 和 QA：
 
-Standard/TDD 会话可用 `/permissions readonly|auto|full|danger-full-access` 调整授权密度。默认
-`auto`；`full` 会在当前会话放行常规命令，仍会询问破坏性操作以及
-commit/merge/push 等 Git 所有权操作，并且不会关闭 OS 沙箱。第一次审批时也
-可以直接选择“Allow routine operations for this session”。
+- Gate 必须先有受控红探针；零测试匹配不能算通过；
+- 默认限制 Reviewer 和修复轮次，避免游戏/软件项目被自动评判拖入死循环；
+- Flaky 结果单独标记并转入 QA Risk，不反复消耗修复预算；
+- 跨模块任务必须包含 Integration Gate，不能只把每个模块单测全绿当完成；
+- commit、merge、push 仍是用户拥有的发布动作。
 
-`danger-full-access` 精确对应 Codex 的 `approval_policy=never` 加
-`sandbox_mode=danger-full-access`：当前会话不再弹出工具审批，并关闭 OS 沙箱，
-包括破坏性操作与 Git 所有权操作也会直接执行。它不会取消 TDD Gate，也不会
-覆盖用户通过强制工作区切换建立的旧工作区禁写 fence。仅应在可信仓库中显式使用。
+## 上下文与长会话
 
-Agent 工作期间可输入 `/insert <补充指令>`：当前工具不会被取消，补充指令会在
-工具完成后、下一次模型调用前插入同一回合。若回合已经结束，它会自动成为新的
-普通消息而不会丢失。需要等当前工作全部结束后再执行的消息仍使用 Pi 原生
-Follow-up（默认 `Alt+Enter`）。
+Picode 把上下文当作编译产物，而不是无限增长的聊天字符串：
 
-如需重新检查推荐组件，在 TUI 输入 `/reinstall`。Picode 会依次检测
-`mattpocock/skills`、Herdr 和 CodebaseMemoryProvider，只对缺失项分别询问；
-已安装项不会重复提示。启用可选能力不等于启动常驻进程。
+- **Immutable Prefix**：稳定的 system prompt 和工具 Schema，减少 Provider 缓存失效；
+- **Append-only Log**：Pi JSONL 会话不就地改写；
+- **Volatile Scratch**：临时计划和推理不成为永久权威；
+- **Tool Output Retention**：大工具输出完整值外置，活动上下文只保留预览和内容指针；
+- **Context Governor**：每次 Provider 请求前计算 system、工具 Schema、消息、Reasoning、工具结果和输出预留；接近有效窗口时先编译有界上下文，禁止原始超预算请求继续发送；
+- **Slice/Capsule**：长任务跨新会话接续时，逐字事实从权威源复制，叙事才允许摘要。
 
-Pi 原生工具不会被隐藏。长尾能力由 `search_tools` 发现，需要时才激活，避免所有
-工具 Schema 常驻上下文。
+自动压缩可以改变持久会话，但不能关闭 Context Governor 这道防卡死边界。
 
-需要彻底改到另一个工程时，在 TUI 输入：
+## 工具与扩展分层
+
+1. **一级：常驻核心**——Pi 原生 `read/write/edit/bash` 及 Picode 的必要工程工具；Pi 原生工具不会被隐藏。
+2. **二级：可发现、懒加载**——已启用且 manifest 摘要已获信任；`search_tools` 可以发现，但未调用时不启动进程。
+3. **三级：默认停用**——模型完全不可见、零进程、零端口、零网络；用户启用并信任后才进入二级。
+
+`Enabled ≠ Running`，`Trusted ≠ 获得更高权限`。能力是否存在、是否可信、是否运行和本次操作是否允许，是四个独立事实。
+
+主要集成包括：
+
+- `pi-subagents`：隔离上下文、异步委派、模型策略、Worktree 和 Watchdog；
+- `pi-landstrip`：Sandbox Provider；策略由 Picode Guard 拥有；
+- `pi-mcp-adapter`：MCP 搜索、描述、调用与审批桥接；
+- `pi-lens`：按语言服务 Readiness 暴露 LSP 能力；
+- `pi-web-access`：Web 搜索和抓取；
+- `pi-cache-optimizer`：Provider 缓存兼容与诊断，禁止改写 Picode 提示词；
+- `pi-sticky-input`：默认 TUI 增量重绘，不进入模型上下文；
+- `mattpocock/skills`：`/plan` 首次使用时只物化 `grill-with-docs` 依赖闭包；
+- Herdr、CodebaseMemoryProvider、微信 iLink：可选或默认停用的外部能力。
+
+## 权限与工作区
+
+```text
+/permissions readonly
+/permissions auto
+/permissions full
+/permissions danger-full-access
+```
+
+- `readonly`：拒绝写入和有副作用操作；
+- `auto`：常规操作自动处理，高风险操作询问；
+- `full`：当前会话放行常规开发操作，但保留破坏性和 Git 所有权边界；
+- `danger-full-access`：不询问并关闭 OS 沙箱，只能由用户明确选择；它不绕过 TDD Gate 和已建立的 Workspace Fence。
+
+强制切换工程使用：
 
 ```text
 /workspace D:\path\to\new-project
 ```
 
-这是强制切换，不是普通的目录跳转。Picode 会先明确警告当前对话上下文不会继承；
-确认后等待当前回合结束，在新工作区的标准 `AGENTS.md` 写入受管边界，重新启动一份
-原版 Pi 会话，并由 Guard 永久拒绝该工作区谱系对旧工作区的写入。Standard/TDD 下
-相同禁令也会编译到 Landstrip 沙箱策略。要保留当前对话，请新开 TUI，而不要使用
-该命令。
+Picode 会警告旧上下文不再适用，在目标 `AGENTS.md` 写入受管边界，并永久拒绝该工作区谱系写回旧工作区。
 
-## 运行
+## TUI、CLI 和远程入口
 
-```powershell
-cd D:\otherproject\picode\v3
-npm ci
-npm link
-picode
-```
+- `picode` 启动增强后的 Pi TUI；关闭前台进程会终止其拥有的未完成任务。
+- CLI 是 P0–P4 的稳定自动化接口，输出版本化 JSON/JSONL，不解析 TUI 文案，也不依赖常驻 Core。
+- `/server`、Web/Android 和微信属于传输 Adapter：它们必须连接现有 Host Authority，并遵守 Chat Writer Lease，不能拥有第二套账号、权限或任务状态。
 
-如果尚未执行 `npm link`，也可以直接运行：
-
-```powershell
-node .\bin\picode.mjs
-```
-
-Picode 固定携带 vendored Pi 0.84.0，数据默认写入 `~/.picode/`，与系统 Pi 数据
-目录隔离。
-
-## CLI-first 自动化
-
-完整命令、RPC 协议、退出码和 PowerShell 示例见
-[无头模式使用手册](docs/HEADLESS-USAGE.zh.md)。需要独立测试人员做全量黑盒验收时，使用
-[无头完整产品测试指南](docs/verification/HEADLESS-FULL-PRODUCT-TEST-GUIDE.zh.md)。
-
-CLI 是 P0–P4 唯一公开自动化入口，不解析 TUI 输出，也不要求先启动 TUI 或 Core：
+常用 CLI：
 
 ```powershell
 picode run --prompt "检查当前项目" --cwd D:\repo --jsonl --non-interactive
@@ -169,43 +200,49 @@ picode session send --session <id> --message "继续" --jsonl
 picode session branch --session <id> --from <entry-id>
 picode slice create --session <id> --intent "下一阶段"
 picode subagent status --session <id>
-picode capability status
-picode chat preview --source codex --path D:\history
 picode task status --task <id>
-picode task wait --task <id> --timeout-ms 60000
-picode gate status --task <id>
 picode gate evidence --task <id>
-picode harness get --session <id>
 picode harness set --session <id> --tier tdd
 picode account import
+picode tools doctor --json
 picode doctor --json
 ```
 
-stdout 是版本化 JSON/JSONL，stderr 只输出诊断；非交互模式遇到需要用户授权的操作
-会 fail-closed 并返回稳定退出码。HTTP/SSE 仅在 `PICODE_DEBUG_API=1` 时作为内部
-诊断传输启动，不是公共兼容接口。
+完整说明见 [无头模式使用手册](docs/HEADLESS-USAGE.zh.md)。
 
-## 已引用和学习的项目
+## 安装与运行
 
-Picode 不是把这些项目整体复制进来，而是按稳定接口、许可证和适用范围选择性吸收：
+当前开发版要求 Node.js `>=22.19.0`：
 
-- **earendil-works/pi**：Pi Agent Runtime、原版 TUI、会话格式和 Extension API 的基础。
-- **pi-subagents**：Subagent 委派、异步任务、生命周期工件、Worktree 隔离和 Watchdog Review。
-- **pi-landstrip**：跨平台沙箱 Provider 的调用侧；策略仍由 Picode Guard 决定。Windows Harness 在同一沙箱边界内使用系统 PowerShell，避免 Git Bash/AppContainer 启动失败。
-- **pi-mcp-adapter**：外部 MCP 的搜索、描述、调用和审批仲裁。
-- **mattpocock/skills + Picode `/plan`**：随包携带固定的软件工程 Skills 快照；首次显式 `/plan` 时按需物化 `grill-with-docs` 依赖闭包并重载会话，启动时不整体加载。Picode 不再维护独立的 Plan/Goal 插件；用户也可显式运行 `/reinstall` 检查三项推荐组件。
-- **pi-web-access**：Simple 档可用的 Web 搜索/抓取扩展。
-- **pi-cache-optimizer**：Provider 缓存兼容与命中率诊断；Picode 禁止其改写提示词。
-- **pi-lens**：LSP 诊断和影响范围辅助。
-- **Herdr**：可选的多任务终端编排 Runtime；不替代 Pi Subagent 底座。
-- **Codebase Memory MCP**：可选的代码库结构索引和长期记忆 Provider。
-- **Grok Build**：项目上下文发现、工具面、权限审批和任务状态呈现的参考对象。
+```powershell
+git clone https://github.com/awangs1986/picode.git
+cd picode
+npm ci
+npm link
+picode
+```
 
-详细决策、来源、版本和取舍见 [PICODE-V3-DESIGN.md](PICODE-V3-DESIGN.md)、
-[MODULES.md](docs/design/MODULES.md)、[CONTEXT.md](CONTEXT.md) 和
-[ADR 目录](docs/adr)。
+不建立全局链接也可以直接运行：
 
-## 当前验证结果
+```powershell
+node .\bin\picode.mjs
+```
+
+Picode 固定依赖 Pi `0.84.0`，数据默认写入 `~/.picode/`，不读写系统 Pi 的默认数据目录。
+
+## 账号与历史导入
+
+裸 `/import` 或 `picode account import` 会打开一次性的本机 Web Wizard；`/import <path.jsonl>` 保留为 Pi 原生会话导入语义。Wizard 支持：
+
+- 嗅探本机 Codex、Cursor 和其他受支持 Agent 的历史来源，并允许用户修改路径；
+- 预览、筛选、去重、工作区绑定和选择性聊天导入；
+- OAuth、API Key、OpenAI Compatible、Anthropic 和自定义 Base URL；
+- 多账号保存、单 Provider 单活跃账号；导入不会静默替换当前账号；
+- 历史 Tool Trace 通过 ImportCompiler 映射到当前语义，不注册污染 Schema 的同名假工具。
+
+浏览器不是账号权威，不持久保存凭据；完成、取消、超时或 TUI 退出都会销毁临时 Wizard 状态。
+
+## 验证状态
 
 ```powershell
 npm run check
@@ -213,44 +250,48 @@ npm run smoke:pi-rpc
 npm run smoke:package
 ```
 
-当前基线：77 个测试文件、495 项测试通过；TypeScript、模块边界、锁定依赖、真实
-Pi RPC、npm 打包安装和 CLI doctor smoke 均已验证。
+当前自动化基线：
 
-2026 年 8 月的 Godot 4.7 .NET 纵向黑盒测试进一步验证了：Picode 可以通过自身
-Web/下载链路取得官方 Godot 资产，驱动 C# 项目的 NUnit、构建与无头 Smoke，发现
-`csharp-ls`，运行 Subagent，并保存 Slice/Capsule 与 Worktree 状态。测试暴露的
-Reviewer 技术失败锁死 GREEN、Gate 超时遗留子进程和死亡 Writer Lease 已加入回归
-测试并修复。完整故事与复测步骤见
-[Godot TetraShift 端到端任务书](docs/verification/GODOT-TETRASHIFT-END-TO-END-TEST.zh.md)；
-这仍不代表跨平台和所有可选 MCP 配置已经通过发布验收。详细基础证据见
-[P0-P4-ACCEPTANCE.md](docs/verification/P0-P4-ACCEPTANCE.md)。
+- TypeScript 类型、模块边界和锁定依赖检查通过；
+- **111 个测试文件、658 项测试通过**；
+- 真实 Pi RPC、Windows PowerShell/中文路径、TDD RED→GREEN、取消恢复、Writer Lease、MCP/工具边界和全新 npm 安装 Smoke 均有回归测试；
+- Godot 4.7 .NET 纵向故事验证了下载、C# 测试/构建、无头运行、Subagent、LSP Readiness、Slice/Capsule 和 Worktree 主路径。
 
-## 未来计划
+自动化全绿不等于产品完成。跨平台实机、真实账号/Provider、可选 MCP Server 和中型项目 Slice 漂移仍使用独立验收报告，不会把 `blocked`、`skipped` 或 `not_run` 写成 `passed`。
 
-### P5：延后能力
+详见 [P0–P4 验证记录](docs/verification/P0-P4-ACCEPTANCE.md) 和 [完整黑盒测试指南](docs/verification/HEADLESS-FULL-PRODUCT-TEST-GUIDE.zh.md)。
 
-- Linux/macOS/Windows 的完整实机验证和更强的 Windows 沙箱探针；
-- `/pi-compress`、`/pi-correct` 显式上下文压缩与纠偏模块；
+## 设计文档
+
+建议按以下顺序阅读：
+
+1. [PICODE-V3-DESIGN.md](PICODE-V3-DESIGN.md)：产品范围与决策入口；
+2. [CONTEXT.md](CONTEXT.md)：领域术语和唯一权威；
+3. [MODULES.md](docs/design/MODULES.md)：四模块和接口边界；
+4. [ADR](docs/adr)：关键选择的原因；
+5. [Context 风险评审](docs/design/CONTEXT-STRATEGY-RISK-REVIEW-2026-08-12.md)：真实超限证据与 Context Governor。
+
+## 路线图
+
+P5 和未来范围包括：
+
+- Linux/macOS/Windows 完整实机矩阵和更强 Windows 沙箱；
+- `/pi-compress`、`/pi-correct` 显式压缩与纠偏；
 - 真实 Provider 缓存命中率和中型项目 Slice 漂移实验；
-- 手机/桌面远程控制，复用同一 Control Interface；
-- 仅在 CLI 无法覆盖目标宿主时增加无状态 Picode Control MCP Adapter；
-- 可验证的第三方组件安装、更新、回滚和平台兼容矩阵；
-- 游戏领域验证适配器（无头运行、确定性回放、黄金快照）。
+- Web/Android 远程客户端与多入口 Chat Writer Lease 验收；
+- 第三方扩展安装、更新、回滚和资源限制；
+- 游戏开发可选验证 Adapter：无头运行、确定性回放、黄金快照。
 
-### 未来产品方向
+这些能力不能让 Simple 模式变重，也不能建立第二套 Runtime 或状态权威。
 
-GUI、远程协作和更丰富的扩展市场会在核心 Pi Workflow 稳定后单独评估；它们不能
-反过来迫使 Simple 模式变重，也不能创建第二套会话、任务或权限权威。
+## 来源、致谢与许可证
 
-## 贡献和当前限制
+Picode 是独立项目，但尊重并清楚记录所依赖和学习的开源工作：
 
-当前仓库处于重构开发阶段。欢迎提交测试、跨平台验证、Pi 上游兼容性报告和扩展
-适配建议；涉及核心架构、权限、Gate 或文件权威的修改，请先阅读设计文档和 ADR。
+- Pi Agent 提供 Runtime、TUI、模型抽象和 Extension API；
+- Grok Build 为 Context 发现、权限、工具和 Headless 产品形态提供成熟参考；
+- Reasonix 为缓存友好的 Immutable Prefix / Append-only Log / Volatile Scratch 提供参考；
+- 微信文本适配参考 MIT 许可的 `NousResearch/hermes-agent`；
+- 每个随包或可选组件的版本、来源和边界记录在设计文档、锁文件及 provenance 文件中。
 
-<span style="color:red"><strong>请勿把当前自动化测试全绿理解为产品已经完成。</strong> 真实 Provider、第三方可选组件、跨平台沙箱和中型项目漂移仍需要单独验收。</span>
-
-## 许可证和致谢
-
-Picode 以 MIT 许可证发布。感谢 Pi Agent 及其生态项目提供可组合的 Runtime、TUI
-和扩展接口；微信文本协议适配参考了 MIT 许可的 NousResearch/hermes-agent。
-Picode 是围绕 Pi 的独立 folk/衍生开发路线。
+Picode 以 [MIT License](LICENSE) 发布。
