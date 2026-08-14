@@ -1,4 +1,8 @@
-import type { ExtensionAPI, ProviderConfig } from "@earendil-works/pi-coding-agent";
+import type {
+  ExtensionAPI,
+  ProviderConfig,
+  ProviderModelConfig,
+} from "@earendil-works/pi-coding-agent";
 import type { Model } from "@earendil-works/pi-ai";
 import type { AccountRef, Result } from "../shared/types.ts";
 import type { AccountCredentials } from "../store/accounts.ts";
@@ -14,9 +18,31 @@ export class PiAccountAdapter {
     credentials: AccountCredentials,
     providerAlreadyExists: boolean,
     knownModels: readonly Model<any>[] = [],
+    refreshedModels?: readonly ProviderModelConfig[],
   ): Result<void> {
     try {
       if (providerAlreadyExists) {
+        const refreshedBaseUrl = credentials.baseUrl ?? account.endpoint?.baseUrl ??
+          (account.provider === "cursor" ? "https://cursor.com" : undefined);
+        const refreshedApi = account.provider === "cursor"
+          ? "cursor-sdk" as const
+          : account.endpoint?.api as ProviderConfig["api"] | undefined;
+        if (refreshedModels !== undefined) {
+          if (refreshedBaseUrl === undefined || refreshedApi === undefined) {
+            return err(
+              "accounts/refreshed-provider-incomplete",
+              `refreshed provider ${account.provider} requires Base URL and API type`,
+            );
+          }
+          this.pi.registerProvider(account.provider, {
+            name: account.label,
+            apiKey: credentials.accessToken,
+            baseUrl: refreshedBaseUrl,
+            api: refreshedApi,
+            models: [...refreshedModels],
+          });
+          return ok(undefined);
+        }
         this.pi.registerProvider(account.provider, {
           name: account.label,
           apiKey: credentials.accessToken,

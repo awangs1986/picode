@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
-import { buildPiLaunch, consumeWorkspaceSwitchRequest, resolveCursorSdkExtension, resolveVendoredPi } from "../../bin/picode-launch.mjs";
+import { buildPiLaunch, consumeWorkspaceSwitchRequest, resolveVendoredPi } from "../../bin/picode-launch.mjs";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 
@@ -74,27 +74,11 @@ describe("Picode vendored Pi launch contract", () => {
     expect(entry).toBe(join(dirname(sdkEntry), "cli.js"));
   });
 
-  it("resolves the Cursor SDK extension from its installed package instead of assuming a nested node_modules", () => {
-    const requested = [];
-    const entry = resolveCursorSdkExtension({
-      resolve(specifier) {
-        requested.push(specifier);
-        return "file:///C:/install/node_modules/pi-cursor-sdk/package.json";
-      },
-    });
-
-    expect(requested).toEqual(["pi-cursor-sdk/package.json"]);
-    expect(entry.replaceAll("\\", "/")).toBe(
-      "C:/install/node_modules/pi-cursor-sdk/src/index.ts",
-    );
-  });
-
-  it("injects Picode and the pinned Cursor SDK provider while preserving all user Pi arguments", () => {
+  it("injects Picode and its pinned Cursor SDK adapter while preserving all user Pi arguments", () => {
     const launch = buildPiLaunch({
       packageRoot: "C:/pkg/picode",
       picodeDir: "C:/Users/dev/.picode",
       piEntry: "C:/pkg/pi/dist/cli.js",
-      cursorSdkExtension: "C:/shared/node_modules/pi-cursor-sdk/src/index.ts",
       userArgs: ["--resume", "session.jsonl"],
       parentEnv: { PATH: "C:/bin" },
     });
@@ -104,7 +88,7 @@ describe("Picode vendored Pi launch contract", () => {
       "--extension",
       "C:/pkg/picode/src/extension/pi-entry.ts",
       "--extension",
-      "C:/shared/node_modules/pi-cursor-sdk/src/index.ts",
+      "C:/pkg/picode/src/extension/cursor-sdk-entry.ts",
       "--tui-mode",
       "fullscreen",
       "--resume",

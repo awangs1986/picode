@@ -13,7 +13,7 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildPiLaunch, consumeWorkspaceSwitchRequest, PI_PACKAGE, resolveCursorSdkExtension, resolveVendoredPi } from "./picode-launch.mjs";
+import { buildPiLaunch, consumeWorkspaceSwitchRequest, PI_PACKAGE, resolveVendoredPi } from "./picode-launch.mjs";
 
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const productManifest = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
@@ -88,7 +88,6 @@ if (productHelp || (userArgs[0] !== undefined && controlSubjects.has(userArgs[0]
         packageRoot,
         picodeDir,
         piEntry,
-        cursorSdkExtension: resolveCursorSdkExtension({ resolve: (specifier) => import.meta.resolve(specifier) }),
         userArgs: launchUserArgs,
         parentEnv: { ...process.env, PICODE_LAUNCH_ID: launchId },
       });

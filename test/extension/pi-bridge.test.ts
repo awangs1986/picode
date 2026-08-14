@@ -572,6 +572,74 @@ describe("Pi 0.84 Bridge feasibility seam", () => {
     });
   });
 
+  it("refreshes the live Cursor model catalog after importing and activating an API key", async () => {
+    await withTempPicodeDir(async () => {
+      const pi = fakePi();
+      const runtime = createRuntime();
+      const refreshImportedProviderModels = vi.fn(async () => ({
+        models: [{
+          id: "grok-4.6",
+          name: "Grok 4.6",
+          api: "cursor-sdk" as const,
+          reasoning: true,
+          input: ["text"] as ("text" | "image")[],
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+          contextWindow: 200_000,
+          maxTokens: 16_384,
+        }],
+      }));
+      registerPicodeBridge(pi.api, runtime, {
+        refreshImportedProviderModels,
+        startAccountImport: async (onImported) => {
+          const imported = await runtime.accounts.importMany([{
+            stableId: "cursor-sdk",
+            provider: "cursor",
+            piProvider: "cursor",
+            label: "Cursor SDK",
+            credentials: { accessToken: "cursor-test-key" },
+            authKind: "api_key",
+            chatCompatible: true,
+          }], "cursor-sdk");
+          expect(imported.ok).toBe(true);
+          if (imported.ok) {
+            await onImported({
+              status: "imported",
+              importedAccountIds: imported.value.map((account) => account.id),
+              activeAccountChanged: true,
+              warnings: [],
+            });
+          }
+          return { url: new URL("http://127.0.0.1:4568/token/"), browserOpened: true };
+        },
+      });
+      const notify = vi.fn();
+      const ctx = {
+        ui: { notify },
+        modelRegistry: {
+          getProvider: (id: string) => id === "cursor" ? {} : undefined,
+          getAll: () => [{
+            id: "grok-4.5",
+            provider: "cursor",
+            contextWindow: 200_000,
+            maxTokens: 16_384,
+          }],
+        },
+      } as unknown as ExtensionContext;
+
+      await pi.commands.get("import")?.handler("", ctx);
+
+      expect(refreshImportedProviderModels).toHaveBeenCalledOnce();
+      expect(refreshImportedProviderModels).toHaveBeenCalledWith({
+        provider: "cursor",
+        apiKey: "cursor-test-key",
+      });
+      expect(pi.providers.get("cursor")).toMatchObject({
+        apiKey: "cursor-test-key",
+        models: [expect.objectContaining({ id: "grok-4.6" })],
+      });
+    });
+  });
+
   it("creates a sealed Capsule and starts a fresh Pi session through /slice", async () => {
     await withTempPicodeDir(async () => {
       const pi = fakePi();

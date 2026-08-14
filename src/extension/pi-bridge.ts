@@ -2,6 +2,7 @@ import type {
   ExtensionAPI,
   ExtensionCommandContext,
   ExtensionContext,
+  ProviderModelConfig,
   ToolCallEvent,
   ToolCallEventResult,
 } from "@earendil-works/pi-coding-agent";
@@ -89,6 +90,13 @@ export interface BridgeOptions {
   startAccountImport?: (
     onImported: AccountImportCompleteHandler,
   ) => Promise<{ url: URL; browserOpened: boolean }>;
+  refreshImportedProviderModels?: (input: {
+    provider: string;
+    apiKey: string;
+  }) => Promise<{
+    models: ProviderModelConfig[];
+    fallbackWarning?: string;
+  }>;
   gateExecutorFor?: (cwd: string) => GateExecutor;
 }
 
@@ -418,11 +426,34 @@ export function registerPicodeBridge(
       if (active === undefined || completion.activeAccountChanged === false) return;
       const credentials = runtime.accounts.credentialsFor(active.id);
       if (!credentials.ok) throw new Error(credentials.error.message);
+      let refreshedModels: ProviderModelConfig[] | undefined;
+      if (
+        active.provider === "cursor" &&
+        active.authKind === "api_key" &&
+        options.refreshImportedProviderModels !== undefined
+      ) {
+        try {
+          const refreshed = await options.refreshImportedProviderModels({
+            provider: active.provider,
+            apiKey: credentials.value.accessToken,
+          });
+          refreshedModels = refreshed.models;
+          if (refreshed.fallbackWarning !== undefined) {
+            ctx.ui.notify(refreshed.fallbackWarning, "warning");
+          }
+        } catch (cause) {
+          ctx.ui.notify(
+            `Cursor account imported, but its live model catalog could not be refreshed: ${cause instanceof Error ? cause.message : String(cause)}`,
+            "warning",
+          );
+        }
+      }
       const applied = accountAdapter.apply(
         active,
         credentials.value,
         ctx.modelRegistry.getProvider(active.provider) !== undefined,
         knownModels(ctx),
+        refreshedModels,
       );
       if (!applied.ok) throw new Error(applied.error.message);
       ctx.ui.notify(`已将 ${active.label} 加载到当前 Pi 会话。`, "info");

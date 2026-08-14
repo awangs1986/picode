@@ -1,6 +1,5 @@
 import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, statSync } from "node:fs";
-import { createRequire } from "node:module";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import {
   RpcClient,
@@ -114,8 +113,7 @@ export class RpcControlDriver implements ControlDriver {
 
   private client(input: { cwd?: string; session?: string; provider?: string; model?: string } = {}): RpcClient {
     const extension = join(this.options.packageRoot, "src", "extension", "pi-entry.ts");
-    const cursorManifest = createRequire(import.meta.url).resolve("pi-cursor-sdk/package.json");
-    const cursorSdkExtension = join(dirname(cursorManifest), "src", "index.ts");
+    const cursorSdkExtension = join(this.options.packageRoot, "src", "extension", "cursor-sdk-entry.ts");
     const args = [
       "--extension", extension,
       "--extension", cursorSdkExtension,

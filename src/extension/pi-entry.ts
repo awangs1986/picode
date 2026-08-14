@@ -9,6 +9,7 @@ import {
   withinSimpleToolBudget,
 } from "./suite.ts";
 import { startAccountImportWizard } from "./account-import-wizard.ts";
+import { refreshCursorModelCatalog } from "./cursor-model-catalog.ts";
 import { shouldRunOnboarding } from "./onboarding.ts";
 import { runOnboardingFlow } from "./onboarding-runner.ts";
 import {
@@ -322,6 +323,18 @@ export default function picodeExtension(pi: ExtensionAPI): void {
           apply: async (input) => chats.apply(input),
         },
       });
+    },
+    refreshImportedProviderModels: async ({ provider, apiKey }) => {
+      if (provider !== "cursor") {
+        throw new Error(`automatic model refresh is not supported for ${provider}`);
+      }
+      const refreshed = await refreshCursorModelCatalog(apiKey);
+      return {
+        models: refreshed.models,
+        ...(refreshed.fallbackIssue === undefined
+          ? {}
+          : { fallbackWarning: refreshed.fallbackIssue.message }),
+      };
     },
   });
   pi.on("session_shutdown", () => {

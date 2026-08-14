@@ -43,20 +43,13 @@ export function resolveVendoredPi(resolver) {
   return join(dirname(sdkEntry), "cli.js");
 }
 
-/** Resolve the extension from npm's actual install location (dependencies may be hoisted). */
-export function resolveCursorSdkExtension(resolver) {
-  const resolved = resolver.resolve("pi-cursor-sdk/package.json");
-  const manifest = resolved.startsWith("file:") ? fileURLToPath(resolved) : resolved;
-  return join(dirname(manifest), "src", "index.ts");
-}
-
-export function buildPiLaunch({ packageRoot, picodeDir, piEntry, cursorSdkExtension, userArgs, parentEnv }) {
+export function buildPiLaunch({ packageRoot, picodeDir, piEntry, userArgs, parentEnv }) {
   const agentDir = join(picodeDir, "agent");
   return {
     args: [
       piEntry,
       "--extension", join(packageRoot, "src", "extension", "pi-entry.ts"),
-      "--extension", cursorSdkExtension,
+      "--extension", join(packageRoot, "src", "extension", "cursor-sdk-entry.ts"),
       // Pi 0.84's native fullscreen renderer owns a bounded, mouse-scrollable
       // transcript and fixed input dock. Keep this before user arguments so an
       // explicit `--tui-mode regular` remains the final authority.
