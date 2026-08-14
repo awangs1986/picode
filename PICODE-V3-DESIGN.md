@@ -20,7 +20,8 @@ picode 命令 = 启动自带的 pi（预装扩展套件，PI_CODING_AGENT_DIR=~/
       │   pi-mcp-adapter（MCP）、pi-subagents（委派/编排/watchdog）、
       │   pi-web-access（Simple 档默认工具）、
       │   pi-cache-optimizer（provider 兼容面，关闭提示词重写）、
-      │   pi-lens（TDD 档 LSP/诊断，按 Readiness 暴露可用子能力）
+      │   pi-lens（TDD 档 LSP/诊断，按 Readiness 暴露可用子能力）、
+      │   pi-sticky-input（默认 TUI 渲染优化；首个 session_start 前注册）
       └─ picode 自有扩展（Adapter Extension，组合根）
           ├─ store / engine / guard / devloop（TS 库）
           ├─ 状态部件：缓存命中率
@@ -56,6 +57,7 @@ picode 命令 = 启动自带的 pi（预装扩展套件，PI_CODING_AGENT_DIR=~/
 | 账号 | V2/cockpit-tools 模式：JSON+OAuth（0600）；同 Provider 多账号存储、单账号活跃；切换不动上下文，只记新 Execution Epoch；TUI `/accounts import` 打开本机临时 Web Wizard | Q4/Q14 + §3.1（2026-08-07） |
 | 模块 | 四模块 Store/Engine/Guard/Devloop + 两条保留条款 | MODULES.md |
 | TUI | 不自建；pi TUI + 扩展部件；鼠标/图片内联放弃 | ADR-0003 |
+| 长会话 TUI 渲染 | 固定并随包携带 `pi-sticky-input` 0.2.0 审核源码；作为 UI-only 默认扩展在首个 `session_start` 前注册，不进入 Capability Catalog、工具 Schema 或模型上下文 | 2026-08-14 集成裁决 |
 | 配置 | JSON（读取兼容 JSONC）；全局 `~/.picode/config.json` + 项目 `.picode/`；MCP 用生态标准 `.mcp.json` | ADR-0002 修订、ADR-0005 |
 | 提示词 | Simple **零注入**；Standard 追加稳定 Lean 行为核；TDD 追加自包含 Developer-TDD 行为核。两者都保留 Pi Base Prompt；Task/Capsule/Gate 事实只走受控 Context Event，不写入静态行为核 | `prompts/README.md`（2026-08-07 最终接入）；PICODE-HARNESS-PROMPT-DESIGN.md 仅作历史设计参考 |
 | Devloop 契约 | Capsule v1 外壳（schemaVersion/taskRevision/workspaceSnapshot/SourceRef/verificationRefs/digest + sealed/superseded 生命周期）+ 强制分节模板、Slice 三通道输入与软/硬阈值确定性裁决、TDD 状态机 `spec→red→green→refactor→gate→done` + 预算、Evidence 双层格式 | MODULES.md §3（Q15–Q18 + R3） |

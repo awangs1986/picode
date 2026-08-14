@@ -54,6 +54,13 @@ try {
   if (bundledSkills.name !== "mattpocock/skills" || bundledSkills.commit?.length !== 40) {
     throw new Error("installed artifact lost the pinned mattpocock skill bundle");
   }
+  const stickyInput = JSON.parse(readFileSync(
+    join(installed, "node_modules", "picode", "vendor", "pi-sticky-input", "PICODE-PROVENANCE.json"),
+    "utf8",
+  ));
+  if (stickyInput.version !== "0.2.0" || stickyInput.commit !== "c268886cff17b68b0eee1bd77d7d42212f1e6166") {
+    throw new Error("installed artifact lost the reviewed pi-sticky-input source");
+  }
   const launcher = join(installed, "node_modules", "picode", "bin", "picode.mjs");
   const help = run(process.execPath, [launcher, "--help"], { cwd: installed, env: { ...process.env, PICODE_DIR: join(scratch, "help-data") } });
   if (!help.includes("picode rpc") || !help.includes("picode tools doctor")) throw new Error("installed artifact lost Picode product help");

@@ -18,10 +18,16 @@ for (const path of [
   "bin/picode-launch.mjs",
   "src/extension/pi-entry.ts",
   "vendor/mattpocock/manifest.json",
+  "vendor/pi-sticky-input/index.ts",
+  "vendor/pi-sticky-input/PICODE-PROVENANCE.json",
 ]) {
   if (!existsSync(resolve(root, path))) failures.push(`required artifact file is missing: ${path}`);
 }
-if (!pkg.files?.includes("vendor/")) failures.push("package files must include the pinned skill bundle");
+if (!pkg.files?.includes("vendor/")) failures.push("package files must include pinned vendor bundles");
+const stickyProvenance = JSON.parse(readFileSync(resolve(root, "vendor/pi-sticky-input/PICODE-PROVENANCE.json"), "utf8"));
+if (stickyProvenance.version !== "0.2.0" || stickyProvenance.commit !== "c268886cff17b68b0eee1bd77d7d42212f1e6166") {
+  failures.push("bundled pi-sticky-input provenance is not pinned to the reviewed source");
+}
 for (const [name, version] of Object.entries(pkg.dependencies ?? {})) {
   if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(String(version))) {
     failures.push(`runtime dependency ${name} is not exactly pinned: ${version}`);

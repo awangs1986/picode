@@ -17,6 +17,7 @@ Picode V3 是一个面向中小型到中型软件、游戏工程开发的轻量�
 - **开发者拥有最终权力**：普通文件修改可按权限策略执行；commit、merge、push 等发布动作永远需要用户确认。
 - **上下文抗失真**：长任务切成 Slice，用带来源指针和摘要校验的 Capsule 交接；不依赖模型声称“我记得”。
 - **一个 Workflow**：TUI、CLI 和未来适配器共享同一套 Store、Engine、Guard、Devloop，不建立第二套任务数据库。
+- **稳定的长对话输入**：随包默认加载固定版本的 `pi-sticky-input`，把历史记录限制在终端视口上方，并只重绘变化的行，避免长输出时输入框随内容滚动及全屏重复刷新造成的卡顿。
 
 ## 用户视角的开发闭环
 
@@ -68,6 +69,10 @@ flowchart TD
 /harness standard
 /harness tdd
 ```
+
+`pi-sticky-input` 是仅影响本机 TUI 的默认界面扩展，不会向模型增加工具或提示词。
+键盘滚动默认可用；`/sticky-input status` 可查看状态，`/sticky-input mouse on|off`
+可切换鼠标滚轮支持。Picode 固定并随包携带已审核源码，安装时无需另装 npm 包。
 
 切换成功后，Picode 会说明沙箱、MCP、工具面、Watchdog、验证策略和默认提示词
 发生了哪些变化。Harness 的默认提示词级别为 `simple → none`、

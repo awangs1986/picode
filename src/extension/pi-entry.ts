@@ -50,6 +50,7 @@ import { TuiControlDriver } from "./tui-control-driver.ts";
 import { WeixinController } from "./weixin-controller.ts";
 import { compactWeixinReply } from "./weixin-reply-compactor.ts";
 import { ChatWriterLeases } from "../guard/chat-writer-lease.ts";
+import { registerBundledDefaultExtensions } from "./bundled-default-extensions.ts";
 
 /** Real Pi extension entry. Keep this file as a thin composition adapter. */
 function remoteAdvertisedHost(): string {
@@ -58,6 +59,9 @@ function remoteAdvertisedHost(): string {
 }
 
 export default function picodeExtension(pi: ExtensionAPI): void {
+  // Sticky input patches the live TUI renderer and must observe the very first
+  // session_start; loading it later through a tier transition is too late.
+  registerBundledDefaultExtensions(pi);
   registerThinkingCommand(pi);
   registerInputCursorBlink(pi);
   registerInterjection(pi);

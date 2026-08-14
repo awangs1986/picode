@@ -1,0 +1,13 @@
+{
+  "name": "pi-sticky-input",
+  "version": "0.2.0",
+  "repository": "https://github.com/MasuRii/pi-sticky-input",
+  "commit": "c268886cff17b68b0eee1bd77d7d42212f1e6166",
+  "license": "MIT",
+  "integration": "vendored source loaded before the first Pi session",
+  "picodeCompatibility": "verified against @earendil-works/pi-coding-agent and pi-tui 0.84.0",
+  "patches": [
+    "Narrow optional properties before passing them under exactOptionalPropertyTypes",
+    "Guard the parsed command token under noUncheckedIndexedAccess"
+  ]
+}

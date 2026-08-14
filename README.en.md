@@ -18,6 +18,7 @@ Core, or force every task into a heavyweight engineering process.
 - **Developer ownership**: Normal edits follow the configured permission policy. Commit, merge, push, and other publication actions always require explicit user confirmation.
 - **Context continuity**: Long work is split into Slices. A source-linked, digest-checked Capsule transfers facts between sessions instead of trusting a model’s memory claim.
 - **One workflow**: TUI, CLI, and future adapters share Store, Engine, Guard, and Devloop rather than creating another task database.
+- **Stable long-session input**: a pinned `pi-sticky-input` build loads by default, bounds history above the terminal viewport, and redraws only changed rows so the editor does not scroll away or stutter during long output.
 
 ## Development loop
 
@@ -70,6 +71,11 @@ Inside TUI:
 /harness standard
 /harness tdd
 ```
+
+`pi-sticky-input` is a local TUI-only default extension. It adds no model tool or prompt.
+Keyboard scrolling works by default; `/sticky-input status` shows its state and
+`/sticky-input mouse on|off` controls mouse-wheel support. Picode ships the reviewed
+source, so no separate npm installation is required.
 
 After a successful switch, Picode reports the changes to sandboxing, MCP, tool
 surface, watchdog, verification, and the default prompt. Harness defaults are
