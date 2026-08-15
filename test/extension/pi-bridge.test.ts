@@ -47,6 +47,7 @@ function fakePi() {
     setActiveTools(names: string[]) { activeTools = [...names]; },
     getAllTools: () => [...tools.values()].map((tool) => ({ ...tool, sourceInfo: { source: "extension" } })),
     registerProvider(name: string, config: unknown) { providers.set(name, config); },
+    unregisterProvider(name: string) { providers.delete(name); },
     appendEntry(type: string, data: unknown) { appended.push([type, data]); },
     sendUserMessage(message: string) { sentMessages.push(message); },
   } as unknown as ExtensionAPI;
@@ -62,6 +63,25 @@ function fakeContext(confirm: boolean, cwd = "C:/repo"): ExtensionContext {
 }
 
 describe("Pi 0.84 Bridge feasibility seam", () => {
+  it("namespaces Picode variants of Pi concepts under discoverable /pico- commands", () => {
+    const pi = fakePi();
+
+    registerPicodeBridge(pi.api, createRuntime());
+
+    expect([...pi.commands.keys()]).toEqual(expect.arrayContaining([
+      "pico-login",
+      "pico-logout",
+      "pico-account",
+      "pico-import",
+    ]));
+    expect([...pi.commands.keys()]).not.toEqual(expect.arrayContaining([
+      "accounts",
+      "import",
+      "chat-import",
+      "picode-compact",
+    ]));
+  });
+
   it("restores an active Cursor SDK account into Pi on session startup", async () => {
     await withTempPicodeDir(async () => {
       const pi = fakePi();
@@ -496,13 +516,13 @@ describe("Pi 0.84 Bridge feasibility seam", () => {
     expect(onReinstall).toHaveBeenCalledWith(ctx);
   });
 
-  it("exposes Account Vault operations through the Pi /accounts command", async () => {
+  it("exposes Account Vault listing through /pico-account", async () => {
     await withTempPicodeDir(async () => {
       const pi = fakePi();
       const runtime = createRuntime();
       registerPicodeBridge(pi.api, runtime);
       const notify = vi.fn();
-      await pi.commands.get("accounts")?.handler("list", { ui: { notify } } as unknown as ExtensionContext);
+      await pi.commands.get("pico-account")?.handler("list", { ui: { notify } } as unknown as ExtensionContext);
       expect(notify).toHaveBeenCalledWith(expect.stringContaining("no accounts"), "info");
     });
   });
@@ -517,14 +537,14 @@ describe("Pi 0.84 Bridge feasibility seam", () => {
       }),
     });
     const notify = vi.fn();
-    await pi.commands.get("accounts")?.handler("import", { ui: { notify } } as unknown as ExtensionContext);
+    await pi.commands.get("pico-import")?.handler("", { ui: { notify } } as unknown as ExtensionContext);
     expect(notify).toHaveBeenCalledWith(
       expect.stringContaining("http://127.0.0.1:1234/token/"),
       "warning",
     );
   });
 
-  it("routes bare /import to the Picode Web Wizard without stealing Pi JSONL imports", async () => {
+  it("routes /pico-import to the Picode Web Wizard", async () => {
     const pi = fakePi();
     const startAccountImport = vi.fn(async () => ({
       url: new URL("http://127.0.0.1:4321/token/"),
@@ -533,7 +553,7 @@ describe("Pi 0.84 Bridge feasibility seam", () => {
     registerPicodeBridge(pi.api, createRuntime(), { startAccountImport });
     const notify = vi.fn();
 
-    await pi.commands.get("import")?.handler("", { ui: { notify } } as unknown as ExtensionContext);
+    await pi.commands.get("pico-import")?.handler("", { ui: { notify } } as unknown as ExtensionContext);
 
     expect(startAccountImport).toHaveBeenCalledOnce();
     expect(notify).toHaveBeenCalledWith(
@@ -584,13 +604,64 @@ describe("Pi 0.84 Bridge feasibility seam", () => {
         },
       } as unknown as ExtensionContext;
 
-      await pi.commands.get("import")?.handler("", ctx);
+      await pi.commands.get("pico-import")?.handler("", ctx);
 
       expect(pi.providers.get("openai")).toMatchObject({
         apiKey: "proxy-secret",
         baseUrl: "https://proxy.example/v1",
       });
       expect(notify).toHaveBeenCalledWith("已将 Codex Proxy 加载到当前 Pi 会话。", "info");
+    });
+  });
+
+  it("logs out an imported active Cursor account and removes it from the live Pi registry", async () => {
+    await withTempPicodeDir(async () => {
+      const pi = fakePi();
+      const runtime = createRuntime();
+      const imported = await runtime.accounts.importMany([{
+        stableId: "cursor-main",
+        provider: "cursor",
+        piProvider: "cursor",
+        label: "Cursor main",
+        authKind: "api_key",
+        chatCompatible: true,
+        credentials: { accessToken: "cursor-secret" },
+      }], "cursor-main");
+      expect(imported.ok).toBe(true);
+      registerPicodeBridge(pi.api, runtime);
+      const notify = vi.fn();
+      const confirm = vi.fn(async () => true);
+      const select = vi.fn(async (_title: string, choices: string[]) =>
+        choices.find((choice) => choice.includes("Cursor main"))
+      );
+      const ctx = {
+        ...fakeContext(true),
+        ui: { notify, confirm, select },
+        modelRegistry: { getProvider: () => undefined, getAll: () => [] },
+      } as unknown as ExtensionContext;
+      await pi.handlers.get("session_start")?.(
+        { type: "session_start", reason: "resume" } as never,
+        ctx,
+      );
+      expect(pi.providers.has("cursor")).toBe(true);
+
+      await pi.commands.get("pico-logout")?.handler("", ctx);
+
+      expect(select).toHaveBeenCalledWith(
+        "Picode Vault account to log out",
+        [expect.stringContaining("Cursor main")],
+      );
+      expect(confirm).toHaveBeenCalledWith(
+        expect.stringContaining("Log out Cursor main"),
+        expect.stringContaining("credentials"),
+      );
+      expect(pi.providers.has("cursor")).toBe(false);
+      expect(runtime.accounts.credentialsFor("cursor:cursor-main").ok).toBe(false);
+      expect(runtime.accounts.list()).toEqual({
+        ok: true,
+        value: [expect.objectContaining({ id: "cursor:cursor-main", status: "retired" })],
+      });
+      expect(notify).toHaveBeenCalledWith(expect.stringContaining("Logged out Cursor main"), "info");
     });
   });
 
@@ -648,7 +719,7 @@ describe("Pi 0.84 Bridge feasibility seam", () => {
         },
       } as unknown as ExtensionContext;
 
-      await pi.commands.get("import")?.handler("", ctx);
+      await pi.commands.get("pico-import")?.handler("", ctx);
 
       expect(refreshImportedProviderModels).toHaveBeenCalledOnce();
       expect(refreshImportedProviderModels).toHaveBeenCalledWith({
@@ -828,7 +899,7 @@ describe("Pi 0.84 Bridge feasibility seam", () => {
     });
   });
 
-  it("routes /accounts login through the pinned Pi provider auth flow", async () => {
+  it("routes /pico-login through the pinned Pi provider auth flow", async () => {
     await withTempPicodeDir(async () => {
       const pi = fakePi();
       const runtime = createRuntime();
@@ -853,7 +924,7 @@ describe("Pi 0.84 Bridge feasibility seam", () => {
         modelRegistry: { getProvider: (id: string) => id === provider.id ? provider : undefined },
       } as unknown as ExtensionContext;
 
-      await pi.commands.get("accounts")?.handler("login openai-codex", ctx);
+      await pi.commands.get("pico-login")?.handler("openai-codex", ctx);
 
       expect(notify).toHaveBeenCalledWith(expect.stringContaining("stored account"), "info");
       const listed = runtime.accounts.list();
@@ -861,7 +932,7 @@ describe("Pi 0.84 Bridge feasibility seam", () => {
     });
   });
 
-  it("applies /accounts use to the live Pi provider before reporting success", async () => {
+  it("applies /pico-account use to the live Pi provider before reporting success", async () => {
     await withTempPicodeDir(async () => {
       const pi = fakePi();
       const runtime = createRuntime();
@@ -888,7 +959,7 @@ describe("Pi 0.84 Bridge feasibility seam", () => {
         },
       } as unknown as ExtensionContext;
 
-      await pi.commands.get("accounts")?.handler(`use ${imported.value.id}`, ctx);
+      await pi.commands.get("pico-account")?.handler(`use ${imported.value.id}`, ctx);
 
       expect(pi.providers.get("openai")).toMatchObject({
         apiKey: "cpa_secret",

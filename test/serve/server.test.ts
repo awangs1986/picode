@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import type { ControlDriver } from "../../src/control/index.ts";
-import { isRemoteControlCommand } from "../../src/serve/command-catalog.ts";
+import { isRemoteControlCommand, REMOTE_SLASH_COMMANDS } from "../../src/serve/command-catalog.ts";
 import { startRemoteServe } from "../../src/serve/server.ts";
 import { dataPaths } from "../../src/shared/paths.ts";
 import { withTempPicodeDir } from "../helpers/temp-dir.ts";
@@ -342,6 +342,21 @@ describe("P5 Serve Mode transport adapter", () => {
         await handle.close();
       }
     });
+  });
+
+  it("advertises Picode account/import commands with the /pico- prefix", () => {
+    const names = REMOTE_SLASH_COMMANDS.map((command) => command.name);
+    expect(names).toEqual(expect.arrayContaining([
+      "pico-account",
+      "pico-import",
+      "pico-login",
+      "pico-logout",
+    ]));
+    expect(names).not.toEqual(expect.arrayContaining([
+      "accounts",
+      "chat-import",
+      "picode-compact",
+    ]));
   });
 
   it("releases an in-flight request id after an exceptional request path", async () => {

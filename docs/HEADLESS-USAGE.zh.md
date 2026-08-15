@@ -224,6 +224,16 @@ picode account list
 picode account use --account <account-id>
 ```
 
+注销导入到 Picode Account Vault 的账号：
+
+```powershell
+picode account logout --account <account-id>
+```
+
+该操作清除敏感凭据并把账号标记为 `retired`，但保留聊天记录和 Cursor
+会话连续性元数据。TUI 中使用 `/pico-logout` 可从列表选择账号。上游 Pi
+原生 `/logout` 只管理通过 `/login` 保存到 Pi `auth.json` 的凭据。
+
 启动本机 Web Import Wizard：
 
 ```powershell

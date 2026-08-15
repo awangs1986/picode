@@ -91,7 +91,7 @@ export class AccountsManager {
     }
   }
 
-  /** 无秘密投影（/accounts 列表、调试面用） */
+  /** 无秘密投影（/pico-account 列表、调试面用） */
   list(): Result<AccountRef[]> {
     const vault = this.load();
     if (!vault.ok) return vault;
@@ -209,6 +209,24 @@ export class AccountsManager {
     if (!target) return err("store/account-unknown", `no account: ${accountId}`);
     target.label = label;
     return this.save(vault.value);
+  }
+
+  /**
+   * Remove the secret material for one Vault account without deleting its
+   * identity or conversation-continuity metadata.
+   */
+  async logout(accountId: string): Promise<Result<{ account: AccountRef; wasActive: boolean }>> {
+    const vault = this.load();
+    if (!vault.ok) return vault;
+    const target = vault.value.accounts.find((account) => account.id === accountId);
+    if (target === undefined) return err("store/account-unknown", `no account: ${accountId}`);
+    const wasActive = target.status === "active";
+    delete target.credentials;
+    target.status = "retired";
+    const saved = await this.save(vault.value);
+    if (!saved.ok) return saved;
+    if (wasActive) this.onActiveChanged(target.provider, target.id);
+    return ok({ account: toRef(target), wasActive });
   }
 
   /** 当前 Provider 的活跃凭据（Engine 侧使用；不出调试面） */

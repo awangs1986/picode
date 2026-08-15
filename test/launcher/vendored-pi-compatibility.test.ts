@@ -34,8 +34,8 @@ describe("vendored Pi compatibility module", () => {
       writeFileSync(manager, managerSource);
       writeFileSync(types, managerTypes);
 
-      expect(applyVendoredPiCompatibility(root)).toEqual({ changedFiles: 3, patches: 5 });
-      expect(applyVendoredPiCompatibility(root)).toEqual({ changedFiles: 0, patches: 5 });
+      expect(applyVendoredPiCompatibility(root)).toEqual({ changedFiles: 3, patches: 4 });
+      expect(applyVendoredPiCompatibility(root)).toEqual({ changedFiles: 0, patches: 4 });
       expect(readFileSync(interactive, "utf8")).toContain("picode.input-text-state");
       expect(readFileSync(manager, "utf8")).toContain("persistSessionSeed()");
       expect(readFileSync(types, "utf8")).toContain('"getSessionName" | "persistSessionSeed"');
@@ -51,7 +51,7 @@ describe("vendored Pi compatibility module", () => {
       writeFileSync(join(root, "core", "session-manager.js"), managerSource);
       writeFileSync(join(root, "core", "session-manager.d.ts"), managerTypes);
 
-      expect(() => applyVendoredPiCompatibility(root)).toThrow("Unsupported Pi /import command layout");
+      expect(() => applyVendoredPiCompatibility(root)).toThrow("Unsupported Pi editor onChange layout");
     });
   });
 });

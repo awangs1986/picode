@@ -27,7 +27,7 @@ Usage:
   picode gate <action>           Inspect gate status or evidence
   picode harness get|set         Read or change the session harness tier
   picode permissions get|set     Read or change the session permission tier
-  picode account <action>        List, use, or import accounts
+  picode account <action>        List, use, import, or log out Vault accounts
   picode tools doctor            Inspect capability readiness
   picode tools search            Discover available tools
   picode doctor [tools]          Diagnose the installation
@@ -104,6 +104,7 @@ export interface ControlDriver {
   importAccount(): AsyncIterable<ControlEvent>;
   listAccounts(): Promise<unknown>;
   useAccount(accountId: string): Promise<unknown>;
+  logoutAccount(accountId: string): Promise<unknown>;
   gateStatus(taskId: string): Promise<unknown>;
   evidence(taskId: string): Promise<unknown>;
   doctor(): Promise<unknown>;
@@ -214,7 +215,7 @@ Methods:
   gate: "Usage: picode gate status|evidence --task <id>",
   harness: "Usage: picode harness get|set --session <id> [--tier simple|standard|tdd]",
   permissions: "Usage: picode permissions get|set --session <id> [--tier readonly|auto|full|danger-full-access]",
-  account: "Usage: picode account list|use|import [options]",
+  account: "Usage: picode account list|use|import|logout [options]",
   tools: "Usage: picode tools doctor [--cwd <dir>] [--harness simple|standard|tdd] | picode tools search [--query <text>]",
   doctor: "Usage: picode doctor [tools]",
 };
@@ -461,6 +462,10 @@ export async function executeControlCommand(
     }
     if (subject === "account" && action === "use") {
       emitJson(io, event("account.active", await io.driver.useAccount(required(stringFlag(parsed, "--account"), "--account"))));
+      return CONTROL_EXIT.completed;
+    }
+    if (subject === "account" && action === "logout") {
+      emitJson(io, event("account.logged-out", await io.driver.logoutAccount(required(stringFlag(parsed, "--account"), "--account"))));
       return CONTROL_EXIT.completed;
     }
     if (subject === "tools" && action === "search") {

@@ -26,9 +26,9 @@
 
 **Chat Session** — 持久对话容器，可以跨账号、模型和 Execution Epoch。
 
-**Account Vault** — Store 内账号引用、凭据、Provider 单活跃关系与持久化格式的唯一权威。TUI、Web Wizard、OAuth Adapter 和调试面只能通过其 Interface 读取投影或提交变更，不得直接读写另一份账号状态。
+**Account Vault** — Store 内账号引用、凭据、Provider 单活跃关系与持久化格式的唯一权威。TUI、Web Wizard、OAuth Adapter 和调试面只能通过其 Interface 读取投影或提交变更，不得直接读写另一份账号状态。Vault Logout 清除敏感凭据并把账号标记为 `retired`，但保留账号身份、Chat 和 Provider continuity 元数据；注销活跃账号必须同步撤销当前 Pi Runtime Provider。
 
-**Account Import Wizard** — 由裸 `/import`（主入口）或 `/accounts import`（兼容入口）启动、Adapter Extension 临时托管的本机 Web 深模块；默认自动打开浏览器并在 TUI 打印回退链接。`/import <path.jsonl>` 仍归上游 Pi，执行原生单会话 JSONL 导入。Wizard 只绑定 loopback，使用独立一次性认证，完成、取消、超时或 TUI 退出即销毁；浏览器只承载交互，账号事实仍归 Account Vault。它不是 GUI、独立 Backend 或 `/v1` 自动化客户端。
+**Account Import Wizard** — 由 `/pico-import` 启动、Adapter Extension 临时托管的本机 Web 深模块；默认自动打开浏览器并在 TUI 打印回退链接。裸 `/import` 与 `/import <path.jsonl>` 均归上游 Pi，执行其原生会话导入语义。Wizard 只绑定 loopback，使用独立一次性认证，完成、取消、超时或 TUI 退出即销毁；浏览器只承载交互，账号事实仍归 Account Vault。它不是 GUI、独立 Backend 或 `/v1` 自动化客户端。
 
 **Task Run** — 一项用户工作及其目标、计划、当前 Harness 档位、证据、风险和终态。会话切换 Harness 时必须原子同步 Task 文件权威；`task status` 不得继续显示创建会话时的旧档位。
 
@@ -172,7 +172,7 @@
 
 **Pi Session Lifecycle** — Engine 内封装 Pi Session 创建、seed、首次持久化、解析和重新打开的 deep module。任何成功返回的 Session identity 必须已有真实 Pi JSONL，可被另一进程恢复；Adapter 不得手写 Pi JSONL，也不得接触 `flushed` 等上游私有状态。
 
-**Account Import Wizard** — 裸 `/import` 或 `/accounts import` 启动的临时 loopback 网页。它只负责扫描、预览和收集用户选择；Account Vault 是凭据权威，Wizard 关闭后不保留第二份状态。账号导入与激活是两个动作，导入不会隐式替换当前账号。带路径的 `/import <path.jsonl>` 保留为 Pi 原生会话导入。
+**Account Import Wizard** — `/pico-import` 启动的临时 loopback 网页。它只负责扫描、预览和收集用户选择；Account Vault 是凭据权威，Wizard 关闭后不保留第二份状态。账号导入与激活是两个动作，导入不会隐式替换当前账号。Pi 的 `/import` 保持完全原生。
 
 **Chat Source Discovery** — Web 导入页按当前用户和平台嗅探 Codex、Cursor 与 Claude Code 的受支持 JSONL 历史根，选中来源时预填首个存在目录；用户可以改写路径。它不把尚无 Adapter 的 Cursor SQLite 目录伪装成可导入来源，也不扫描 Picode/Pi 自己的登录凭据。
 

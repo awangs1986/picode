@@ -48,7 +48,7 @@ Control Interface 位于组合层，不是第五个领域模块。增强 Pi TUI 
 
 ### 1.2 Account Import Wizard Seam
 
-裸 `/import`（以及兼容入口 `/accounts import`）进入 Adapter Extension 内的临时 Account Import Wizard；带路径的 `/import <path.jsonl>` 仍进入上游 Pi 原生会话导入。
+`/pico-import` 进入 Adapter Extension 内的临时 Account Import Wizard；上游 Pi 的裸 `/import` 与带路径 `/import <path.jsonl>` 均保持原生行为。
 
 聊天来源由 Adapter Extension 在启动 Wizard 时嗅探：Codex 使用 `CODEX_HOME`/`~/.codex`，Cursor 使用 `~/.cursor/projects` 等受支持 JSONL 根，Claude 使用 `CLAUDE_CONFIG_DIR`/`~/.claude/projects`。页面预填但不锁定路径。账号候选只来自外部 Agent 配置；Picode Account Vault、vendored Pi `auth.json` 和独立 Pi `/login` 库不得回流到导入候选。
 它是深模块，不是新 Backend：调用者只需要启动/取消并观察完成结果；浏览器打开、

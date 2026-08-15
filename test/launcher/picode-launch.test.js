@@ -36,14 +36,13 @@ describe("Picode vendored Pi launch contract", () => {
     }
   });
 
-  it("leaves bare /import for the Picode extension while preserving Pi JSONL import with a path", async () => {
+  it("leaves both bare and path-based /import behavior with upstream Pi", async () => {
     const interactiveMode = await readFile(
       join(process.cwd(), "node_modules", "@earendil-works", "pi-coding-agent", "dist", "modes", "interactive", "interactive-mode.js"),
       "utf8",
     );
 
-    expect(interactiveMode).toContain('if (text.startsWith("/import "))');
-    expect(interactiveMode).not.toContain('if (text === "/import" || text.startsWith("/import "))');
+    expect(interactiveMode).toContain('if (text === "/import" || text.startsWith("/import "))');
   });
 
   it("ships a loadable Pi extension entry", async () => {

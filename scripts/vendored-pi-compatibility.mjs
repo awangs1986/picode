@@ -1,8 +1,6 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-const importOriginal = 'if (text === "/import" || text.startsWith("/import ")) {';
-const importPatched = 'if (text.startsWith("/import ")) {';
 const cursorOriginal = `        this.defaultEditor.onChange = (text) => {
             const wasBashMode = this.isBashMode;
             this.isBashMode = text.trimStart().startsWith("!");
@@ -64,12 +62,6 @@ export function applyVendoredPiCompatibility(piDistRoot) {
     {
       path: join(piDistRoot, "modes", "interactive", "interactive-mode.js"),
       patches: [
-        {
-          original: importOriginal,
-          replacement: importPatched,
-          marker: importPatched,
-          error: "Unsupported Pi /import command layout; review the pinned Pi compatibility patch before upgrading.",
-        },
         {
           original: cursorOriginal,
           replacement: cursorPatched,

@@ -192,7 +192,7 @@ Spike。结论必须写回 Adapter Interface 与兼容矩阵。
 
 ### 已确认补充：TUI 账号导入入口
 
-账号导入采用 `/accounts import` → 本机临时 Web Wizard；默认自动打开系统
+账号导入采用 `/pico-import` → 本机临时 Web Wizard；默认自动打开系统
 浏览器并在 TUI 打印链接回退。Wizard 复用 loopback HTTP 实现但使用独立
 一次性认证和临时生命周期，不建设完整 GUI，不成为 Account Vault 之外的权威。
 该决策已写入 V3 主设计 §3.1、P1 与 MODULES.md §1.1。

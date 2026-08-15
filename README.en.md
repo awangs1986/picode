@@ -220,12 +220,13 @@ Picode pins Pi `0.84.0`. Data defaults to `~/.picode/` and is isolated from the 
 
 ## Accounts and history import
 
-Bare `/import` or `picode account import` opens an ephemeral local Web Wizard. `/import <path.jsonl>` retains Pi's native session-import meaning. The Wizard supports:
+`/pico-import` or `picode account import` opens an ephemeral local Web Wizard. Pi's `/import` keeps its complete native session-import behavior. The Wizard supports:
 
 - local discovery of supported Codex, Cursor, and other supported agent-history sources with editable paths;
 - preview, filtering, deduplication, workspace binding, and selective chat import;
 - OAuth, API keys, OpenAI-compatible, Anthropic, and custom base URLs;
 - multiple stored accounts with one active account per provider and no silent replacement;
+- `/pico-login`, `/pico-logout`, and `/pico-account` manage login, logout, and account selection in the Picode Vault without colliding with Pi's native commands;
 - ImportCompiler translation of historical tool traces without registering schema-polluting fake tools.
 
 The browser is not account authority and does not persist credentials. Completion, cancellation, timeout, or TUI exit destroys temporary Wizard state.

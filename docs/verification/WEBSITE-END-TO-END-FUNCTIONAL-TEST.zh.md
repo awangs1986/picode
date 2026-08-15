@@ -125,8 +125,8 @@ Set-Content .grok\rules\radar.md "Grok marker: GROK-RADAR-42" -Encoding utf8
 
 1. 在隔离状态下运行 `picode`。
 2. 若出现首次引导，分别回答 Herdr 与 CodebaseMemoryProvider 的问题；记录每项说明、选择和最终状态。
-3. 运行 `/accounts`，验证账号列表。
-4. 若专门测试账号导入，运行 `/accounts import`，确认由 loopback Web 页面完成，且秘密不进入聊天记录。
+3. 运行 `/pico-account`，验证账号列表。
+4. 若专门测试账号导入，运行 `/pico-import`，确认由 loopback Web 页面完成，且秘密不进入聊天记录。
 5. 切换一次非当前账号，再切回目标账号；确认聊天上下文不被清空，Cache/Execution Epoch 有可见变化。
 6. 运行 `/subagent-model`，明确选择测试用 Subagent 模型。
 

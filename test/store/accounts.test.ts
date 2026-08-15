@@ -20,6 +20,43 @@ function fakeOAuth(
 }
 
 describe("AccountsManager", () => {
+  it("logs out a Vault account by clearing credentials while preserving its identity", async () => {
+    await withTempPicodeDir(async () => {
+      const onActiveChanged = vi.fn();
+      const mgr = new AccountsManager(onActiveChanged);
+      const imported = await mgr.importMany([{
+        stableId: "cursor-main",
+        provider: "cursor",
+        piProvider: "cursor",
+        label: "Cursor main",
+        authKind: "api_key",
+        chatCompatible: true,
+        credentials: { accessToken: "cursor-secret" },
+        metadata: { integration: "pi-cursor-sdk" },
+      }], "cursor-main");
+      expect(imported.ok).toBe(true);
+      const accountId = imported.ok ? imported.value[0]?.id : undefined;
+      expect(accountId).toBe("cursor:cursor-main");
+
+      const loggedOut = await mgr.logout(accountId!);
+
+      expect(loggedOut).toEqual({
+        ok: true,
+        value: {
+          account: expect.objectContaining({
+            id: "cursor:cursor-main",
+            provider: "cursor",
+            label: "Cursor main",
+            status: "retired",
+            metadata: { integration: "pi-cursor-sdk" },
+          }),
+          wasActive: true,
+        },
+      });
+      expect(mgr.credentialsFor(accountId!).ok).toBe(false);
+      expect(onActiveChanged).toHaveBeenCalledWith("cursor", "cursor:cursor-main");
+    });
+  });
   it("addFromOAuth stores account as stored and returns ref without credentials", async () => {
     await withTempPicodeDir(async () => {
       const onActiveChanged = vi.fn();

@@ -801,6 +801,12 @@ export class RpcControlDriver implements ControlDriver {
     return selected.value;
   }
 
+  async logoutAccount(accountId: string): Promise<unknown> {
+    const loggedOut = await new AccountsManager(() => undefined).logout(accountId);
+    if (!loggedOut.ok) throw new Error(loggedOut.error.message);
+    return loggedOut.value;
+  }
+
   async taskStatus(taskId: string): Promise<unknown> {
     const taskPath = join(this.tasksRoot(), taskId, "task.json");
     if (!existsSync(taskPath)) throw new Error(`task not found: ${taskId}`);

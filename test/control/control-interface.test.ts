@@ -53,6 +53,7 @@ function driver(overrides: Partial<ControlDriver> = {}): ControlDriver {
     listSessions: vi.fn(async () => []),
     listAccounts: vi.fn(async () => []),
     useAccount: vi.fn(async (accountId) => ({ accountId })),
+    logoutAccount: vi.fn(async (accountId) => ({ account: { id: accountId }, wasActive: false })),
     searchTools: vi.fn(async () => []),
     doctorTools: vi.fn(async () => ({ healthy: true, capabilities: [] })),
     ...overrides,
@@ -258,6 +259,27 @@ describe("CLI-first Control Interface", () => {
     expect(await executeControlCommand(["permissions", "set", "--session", "s-1", "--tier", "full"], io)).toBe(0);
     expect(control.permissionTier).toHaveBeenCalledWith("s-1");
     expect(control.setPermissionTier).toHaveBeenCalledWith("s-1", "full");
+  });
+
+  it("logs out a Picode Vault account through the headless Control Interface", async () => {
+    const stdout: string[] = [];
+    const logoutAccount = vi.fn(async (accountId: string) => ({
+      account: { id: accountId, provider: "cursor", label: "Cursor main", status: "retired" },
+      wasActive: true,
+    }));
+    const control = driver({ logoutAccount } as never);
+
+    const code = await executeControlCommand(
+      ["account", "logout", "--account", "cursor:cursor-main"],
+      { driver: control, stdout: (line) => stdout.push(line), stderr: () => undefined },
+    );
+
+    expect(code).toBe(CONTROL_EXIT.completed);
+    expect(logoutAccount).toHaveBeenCalledWith("cursor:cursor-main");
+    expect(JSON.parse(stdout[0] ?? "{}")).toMatchObject({
+      kind: "account.logged-out",
+      payload: { account: { id: "cursor:cursor-main", status: "retired" }, wasActive: true },
+    });
   });
 
   it("reports tool readiness independently from the general doctor", async () => {

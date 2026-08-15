@@ -231,12 +231,13 @@ Picode 固定依赖 Pi `0.84.0`，数据默认写入 `~/.picode/`，不读写系
 
 ## 账号与历史导入
 
-裸 `/import` 或 `picode account import` 会打开一次性的本机 Web Wizard；`/import <path.jsonl>` 保留为 Pi 原生会话导入语义。Wizard 支持：
+`/pico-import` 或 `picode account import` 会打开一次性的本机 Web Wizard；Pi 的 `/import` 保持完整的原生会话导入语义。Wizard 支持：
 
 - 嗅探本机 Codex、Cursor 和其他受支持 Agent 的历史来源，并允许用户修改路径；
 - 预览、筛选、去重、工作区绑定和选择性聊天导入；
 - OAuth、API Key、OpenAI Compatible、Anthropic 和自定义 Base URL；
 - 多账号保存、单 Provider 单活跃账号；导入不会静默替换当前账号；
+- `/pico-login`、`/pico-logout` 与 `/pico-account` 分别负责 Picode Vault 的登录、登出和账号切换；登出会清除凭据并立即撤销活跃 Provider，同时保留聊天和会话连续性资料；
 - 历史 Tool Trace 通过 ImportCompiler 映射到当前语义，不注册污染 Schema 的同名假工具。
 
 浏览器不是账号权威，不持久保存凭据；完成、取消、超时或 TUI 退出都会销毁临时 Wizard 状态。

@@ -45,7 +45,6 @@ import {
   sessionPromptInjection,
   type PromptLevel,
 } from "./prompts.ts";
-import { ForeignChatImportService } from "./foreign-chat-import.ts";
 import { parseToolsMd, registerTaskExtensions, renderTaskExtensionSummary } from "./tools-md.ts";
 import { appendCacheMetric, computePrefixSignals } from "./cache-signals.ts";
 import type { PrefixSignals } from "../shared/types.ts";
@@ -393,7 +392,6 @@ export function registerPicodeBridge(
     (cwd) => candidateSnapshot(pi, cwd),
     (cwd) => workspaceChangedFiles(pi, cwd),
   );
-  const foreignChats = new ForeignChatImportService(runtime);
   const worktrees = new WorktreeRegistry();
   const structuredGit = new StructuredGit();
   const todos = new TodoSessionController(runtime.store);
@@ -868,12 +866,6 @@ export function registerPicodeBridge(
     },
   });
 
-  pi.registerCommand("picode-compact", {
-    description: "Compact the current Pi session through the public extension API",
-    handler: async (_args, ctx) => {
-      ctx.compact();
-    },
-  });
   pi.registerCommand("workspace", {
     description: "Force Picode into another absolute workspace and start a fresh Pi session",
     handler: async (args, ctx) => {
@@ -937,30 +929,6 @@ export function registerPicodeBridge(
         requestId: `slice-defer:${Date.now()}`,
       });
       ctx.ui.notify("Hard Slice boundary deferred once for this session.", "warning");
-    },
-  });
-  pi.registerCommand("chat-import", {
-    description: "Preview or continue a Claude Code, Codex, or Cursor JSONL transcript",
-    handler: async (args, ctx) => {
-      const match = args.trim().match(/^(preview|continue)\s+(claude-code|codex|cursor)\s+(.+)$/i);
-      if (match === null) {
-        ctx.ui.notify("usage: /chat-import <preview|continue> <claude-code|codex|cursor> <jsonl-path>", "error");
-        return;
-      }
-      const action = match[1]?.toLowerCase();
-      const source = match[2]?.toLowerCase();
-      const rawPath = match[3]?.trim();
-      if (action === undefined || source === undefined || rawPath === undefined) return;
-      const file = rawPath.replace(/^(["'])(.*)\1$/, "$2");
-      if (action === "preview") {
-        const preview = await foreignChats.preview(source, file);
-        ctx.ui.notify(preview.ok ? preview.value.reportText : preview.error.message, preview.ok ? "info" : "error");
-        return;
-      }
-      const continued = await foreignChats.continue(source, file, ctx);
-      if (!continued.ok && continued.error.code !== "import/cancelled") {
-        ctx.ui.notify(continued.error.message, "error");
-      }
     },
   });
   pi.registerCommand("harness", {
@@ -1083,18 +1051,12 @@ export function registerPicodeBridge(
       await options.onReinstall(ctx);
     },
   });
-  pi.registerCommand("accounts", {
-    description: "List, select, label, or import Picode accounts",
-    handler: async (args, ctx) => {
+  const handlePicoAccount = async (args: string, ctx: ExtensionCommandContext): Promise<void> => {
       const argv = args.trim() === "" ? [] : args.trim().split(/\s+/);
-      if (argv[0] === "import" && options.startAccountImport !== undefined) {
-        await openAccountImport(ctx);
-        return;
-      }
       if (argv[0] === "login") {
         const providerId = argv[1];
         if (providerId === undefined) {
-          ctx.ui.notify("usage: /accounts login <provider>", "error");
+          ctx.ui.notify("usage: /pico-login <provider>", "error");
           return;
         }
         const provider = ctx.modelRegistry.getProvider(providerId);
@@ -1110,16 +1072,69 @@ export function registerPicodeBridge(
         );
         ctx.ui.notify(
           login.ok
-            ? `stored account ${login.value.id}; use /accounts use ${login.value.id} to activate it`
+            ? `stored account ${login.value.id}; use /pico-account use ${login.value.id} to activate it`
             : `error: ${login.error.message}`,
           login.ok ? "info" : "error",
+        );
+        return;
+      }
+      if (argv[0] === "logout") {
+        const listed = runtime.accounts.list();
+        if (!listed.ok) {
+          ctx.ui.notify(`error: ${listed.error.message}`, "error");
+          return;
+        }
+        const candidates = listed.value.filter((candidate) => candidate.status !== "retired");
+        let accountId = argv[1];
+        if (accountId === undefined) {
+          if (candidates.length === 0) {
+            ctx.ui.notify("no Picode Vault accounts are currently logged in", "info");
+            return;
+          }
+          const choices = candidates.map((candidate) =>
+            `${candidate.status === "active" ? "*" : " "} ${candidate.label} [${candidate.provider}] · ${candidate.id}`
+          );
+          const selected = await ctx.ui.select("Picode Vault account to log out", choices);
+          const selectedIndex = selected === undefined ? -1 : choices.indexOf(selected);
+          if (selectedIndex < 0) {
+            ctx.ui.notify("logout cancelled", "info");
+            return;
+          }
+          accountId = candidates[selectedIndex]?.id;
+        }
+        const account = listed.value.find((candidate) => candidate.id === accountId);
+        if (account === undefined) {
+          ctx.ui.notify(`error: no account: ${accountId}`, "error");
+          return;
+        }
+        if (account.status === "retired") {
+          ctx.ui.notify(`account is already logged out: ${account.label}`, "info");
+          return;
+        }
+        const confirmed = await ctx.ui.confirm(
+          `Log out ${account.label}?`,
+          "Picode will permanently remove this account's credentials. Chat history and Cursor session continuity metadata will be preserved.",
+        );
+        if (!confirmed) {
+          ctx.ui.notify("logout cancelled", "info");
+          return;
+        }
+        const loggedOut = await runtime.accounts.logout(account.id);
+        if (!loggedOut.ok) {
+          ctx.ui.notify(`error: ${loggedOut.error.message}`, "error");
+          return;
+        }
+        if (loggedOut.value.wasActive) pi.unregisterProvider(loggedOut.value.account.provider);
+        ctx.ui.notify(
+          `Logged out ${loggedOut.value.account.label}. Credentials were removed; chats and continuity metadata were preserved.`,
+          "info",
         );
         return;
       }
       if (argv[0] === "use") {
         const accountId = argv[1];
         if (accountId === undefined) {
-          ctx.ui.notify("usage: /accounts use <account-id>", "error");
+          ctx.ui.notify("usage: /pico-account use <account-id>", "error");
           return;
         }
         const listed = runtime.accounts.list();
@@ -1167,10 +1182,21 @@ export function registerPicodeBridge(
       }
       const output = await handleAccountsCommand(runtime.accounts, argv);
       ctx.ui.notify(output, output.startsWith("error:") ? "error" : "info");
-    },
+  };
+  pi.registerCommand("pico-login", {
+    description: "Log in a provider and store it in the Picode Account Vault",
+    handler: async (args, ctx) => handlePicoAccount(`login ${args}`.trim(), ctx),
   });
-  pi.registerCommand("import", {
-    description: "Open the Picode Web import wizard",
+  pi.registerCommand("pico-logout", {
+    description: "Log out a Picode Vault account while preserving its chats",
+    handler: async (args, ctx) => handlePicoAccount(`logout ${args}`.trim(), ctx),
+  });
+  pi.registerCommand("pico-account", {
+    description: "List or switch Picode Vault accounts",
+    handler: async (args, ctx) => handlePicoAccount(args, ctx),
+  });
+  pi.registerCommand("pico-import", {
+    description: "Open the Picode account and chat import center",
     handler: async (_args, ctx) => openAccountImport(ctx),
   });
   pi.registerCommand("subagent-model", {

@@ -25,7 +25,7 @@ picode 命令 = 启动自带的 pi（预装扩展套件，PI_CODING_AGENT_DIR=~/
           ├─ store / engine / guard / devloop（TS 库）
           ├─ 状态部件：缓存命中率
           ├─ 工具：search_tools（能力目录两阶段发现）
-          ├─ 命令：/harness /accounts /plan …
+          ├─ 命令：/harness /pico-account /plan …
           └─ Control Interface（TUI 与无头 CLI 共用；HTTP 仅内部调试传输）
 ```
 
@@ -53,7 +53,7 @@ picode 命令 = 启动自带的 pi（预装扩展套件，PI_CODING_AGENT_DIR=~/
 | 导入工具契约 | 权威流水线：来源 Adapter（解析）→ Import Contract（IR+签名）→ Store ImportCompiler（语义映射）→ Guard Catalog（live 解析）→ Devloop（渲染）→ Engine（追加）；Bridge Note 白名单事实；**不做同名 stub** | §3.5（R3 修正） |
 | 首次引导 | 仅两项运行时推荐（Herdr、CodebaseMemoryProvider）逐项 Y/N、本地化介绍、跳过不重复打扰、设置可重开；mattpocock/skills 不进入首次引导 | §3.7 |
 | Herdr / code-by-wire | Herdr 保留为可选多任务终端 Runtime；code-by-wire 不作替代，只进入未来桌面 cockpit 候选池，**不属于 P0–P5 开发计划**；若未来立项，只能走 Control Interface Adapter | `research/code-by-wire-vs-herdr-for-picode-2026-08-07.md` |
-| 账号 | V2/cockpit-tools 模式：JSON+OAuth（0600）；同 Provider 多账号存储、单账号活跃；切换不动上下文，只记新 Execution Epoch；TUI `/accounts import` 打开本机临时 Web Wizard | Q4/Q14 + §3.1（2026-08-07） |
+| 账号 | V2/cockpit-tools 模式：JSON+OAuth（0600）；同 Provider 多账号存储、单账号活跃；切换不动上下文，只记新 Execution Epoch；TUI `/pico-import` 打开本机临时 Web Wizard | Q4/Q14 + §3.1（2026-08-07） |
 | 模块 | 四模块 Store/Engine/Guard/Devloop + 两条保留条款 | MODULES.md |
 | TUI | 不自建；pi TUI + 扩展部件；鼠标/图片内联放弃 | ADR-0003 |
 | 配置 | JSON（读取兼容 JSONC）；全局 `~/.picode/config.json` + 项目 `.picode/`；MCP 用生态标准 `.mcp.json` | ADR-0002 修订、ADR-0005 |
@@ -74,8 +74,8 @@ picode 命令 = 启动自带的 pi（预装扩展套件，PI_CODING_AGENT_DIR=~/
 
 V2/cockpit-tools 模式：**Picode 自己管理 OAuth 流与凭据**，存 `~/.picode/accounts.json`（0600）。因为 pi 是 vendored 专属实例，其认证存储也归 Picode 环境所有，无双权威问题。
 
-- 同一 Provider 可**存多个账号**，同时**只有一个活跃**；`/accounts` 列出、切换活跃、打标签、发起 OAuth 登录。
-- `/accounts import` 启动本机 **Account Import Wizard**：默认自动打开系统浏览器，同时在 TUI 打印可复制的回退链接；浏览器打开失败不阻断导入。
+- 同一 Provider 可**存多个账号**，同时**只有一个活跃**；`/pico-account` 列出、切换活跃、打标签，`/pico-login` 与 `/pico-logout` 管理 Picode Vault 认证。
+- `/pico-import` 启动本机 **Account Import Wizard**：默认自动打开系统浏览器，同时在 TUI 打印可复制的回退链接；浏览器打开失败不阻断导入。Pi 原生 `/import` 不被占用。
 - **切换不影响上下文**：无缝换活跃账号继续当前会话；Devloop 只记新 **Execution Epoch**，缓存部件显式另起 Cache Epoch（前缀失效可见化）。
 - 不支持同 Provider 双账号同时在线（避免配额与身份混淆）。
 - Web Wizard 支持本机 Codex/Cursor/Claude 配置扫描、用户选择 JSON、官方 OAuth、OpenAI Compatible、Anthropic 与自定义 Base URL/API Key；先预览候选、冲突和激活影响，再由用户逐项应用。
@@ -295,7 +295,7 @@ Bridge 可行性 Gate 通过后，再执行下面的供应商与平台 Spike：
 | 期 | 主题 | 范围 | 验收界碑 |
 |---|---|---|---|
 | **P0** | 骨架与地基 | **先完成 §4.1 Bridge 可行性 Gate**；再建单包仓库 + 边界检查脚本；vendored pi 启动器；四模块空壳 + 接口 + 组合根注入；供应商与平台 Spike；**Context Governor 在每次 Provider 请求前执行完整预算并强制缩减，原超预算请求不得发送**；建立严格 GateRunner，并把 V2 failure fixtures 移入共享契约语料 | `picode` 能启动 vendored pi；Bridge 有真实原型证据；019ff330 类工具结果突增会在请求前被缩减到有效窗口内；即使普通 auto-compact 关闭也不会把已知超预算请求送给 Provider；GateRunner 自证红测通过 |
-| **P1** | 单人可用核心 | Adapter Extension 组合根实装；在任何 observer、状态投影或 UI 消费前完成统一 Envelope 解码与 Admission，以 `executionEpoch + runId/requestId + terminal state` 隔离 cancel 后迟到结果；账号管理（单一 Account Vault + OAuth + `/accounts`）；`/accounts import` 临时 Web Wizard（自动打开浏览器 + TUI 链接回退 + 本机扫描/JSON/自定义 API）；Execution Epoch 记账；Guard 三档预设 + approval_fingerprint + Grant 分级；缓存方案 v2 全量（部件 + 六信号归因 + pi-cache-optimizer 集成）；Simple 档（pi-web-access）；首次启动引导（§3.7）；固定工具语义 ID vocabulary（契约文档 P1）；能力目录 + search_tools + 三级驻留（含 ActiveCapabilityLease）；Capability 持久格式采用 `{enabled, trustedDigest?}`；移植 V2 P1-03 的可定位错误/锁毒化恢复行为，不保留 Rust owner | 日常单会话开发可用：从 TUI 打开 Wizard 完成账号导入/登录/切号、Simple 档聊天、缓存部件真数据、search_tools 全链路（搜→Activate→Guard→租约）；坏 frame 可记录/重放但不污染状态；重复终态和 cancel 后任意迟到结果均不能到达 observer；Wizard 认证、超时、取消与浏览器打开失败 Gate 全绿 |
+| **P1** | 单人可用核心 | Adapter Extension 组合根实装；在任何 observer、状态投影或 UI 消费前完成统一 Envelope 解码与 Admission，以 `executionEpoch + runId/requestId + terminal state` 隔离 cancel 后迟到结果；账号管理（单一 Account Vault + OAuth + `/pico-account`、`/pico-login`、`/pico-logout`）；`/pico-import` 临时 Web Wizard（自动打开浏览器 + TUI 链接回退 + 本机扫描/JSON/自定义 API，Pi `/import` 保持原生）；Execution Epoch 记账；Guard 三档预设 + approval_fingerprint + Grant 分级；缓存方案 v2 全量（部件 + 六信号归因 + pi-cache-optimizer 集成）；Simple 档（pi-web-access）；首次启动引导（§3.7）；固定工具语义 ID vocabulary（契约文档 P1）；能力目录 + search_tools + 三级驻留（含 ActiveCapabilityLease）；Capability 持久格式采用 `{enabled, trustedDigest?}`；移植 V2 P1-03 的可定位错误/锁毒化恢复行为，不保留 Rust owner | 日常单会话开发可用：从 TUI 打开 Wizard 完成账号导入/登录/切号、Simple 档聊天、缓存部件真数据、search_tools 全链路（搜→Activate→Guard→租约）；坏 frame 可记录/重放但不污染状态；重复终态和 cancel 后任意迟到结果均不能到达 observer；Wizard 认证、超时、取消与浏览器打开失败 Gate 全绿 |
 | **P2** | 二档 Harness 与执行治理 | `/harness` 换档；landstrip、pi-mcp-adapter、pi-subagents；Picode `/plan` 兼容入口（委托 mattpocock/skills）；Slice/Capsule v1；Worktree 规则；§3.2 第一方无头 CLI；TaskIngress 唯一任务入口；扩展/MCP/Subagent 返回统一走 Envelope/Admission | 二档全链路；外部 Agent 只经 CLI 创建/恢复会话、发送并等待回复、观察 Tool/Gate/Evidence、处理授权失败与取消；CLI 不依赖 TUI 且不解析终端输出；真实中型仓库完成一次跨模块 Slice 接续实验 |
 | **P3-A** | TDD 三档 | 三档提示词（Claude Code 移植 + 语义适配）；TDD 状态机 + 预算（**数值本期定稿**）+ Gate/Evidence + Completion Label（verify/ 唯一签发）；pi-lens 接入（三档默认）+ 对抗审查（watchdog 强配置） | TDD 档跑通一个真实小项目（recorded RED → green → gate → Completion Label）；Flaky 不制造无限修复循环 |
 | **P3-B** | 导入编译核心 | Store ImportCompiler（历史映射 + 归一化投影）+ Guard Catalog `resolveLive`；兼容报告与重编译判据 | 契约级 fixture Gate 全绿；不加载来源 Adapter 也能独立测试编译核心 |

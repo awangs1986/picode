@@ -41,7 +41,7 @@ describe("handleAccountsCommand", () => {
     await withTempPicodeDir(async () => {
       const mgr = new AccountsManager(() => {});
       const out = await handleAccountsCommand(mgr, ["use"]);
-      expect(out).toBe("usage: /accounts use <account-id>");
+      expect(out).toBe("usage: /pico-account use <account-id>");
     });
   });
 
@@ -61,7 +61,7 @@ describe("handleAccountsCommand", () => {
     await withTempPicodeDir(async () => {
       const mgr = new AccountsManager(() => {});
       const out = await handleAccountsCommand(mgr, ["label"]);
-      expect(out).toBe("usage: /accounts label <account-id> <label>");
+      expect(out).toBe("usage: /pico-account label <account-id> <label>");
     });
   });
 

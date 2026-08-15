@@ -1,8 +1,9 @@
 import type { AccountsManager } from "../store/index.ts";
 
 /**
- * /accounts 命令处理器（PICODE-V3-DESIGN.md §3.1）：
- * 列出、切换活跃、打标签、发起 OAuth 登录。
+ * /pico-account 命令处理器（PICODE-V3-DESIGN.md §3.1）：
+ * 列出、切换活跃、打标签、发起 OAuth 登录。Vault logout 需要 UI 确认
+ * 和实时 Provider 撤销，因此由 Adapter Extension 在调用此纯逻辑前处理。
  * 纯逻辑；pi 命令注册与交互提示已在 Adapter Extension 组合根接入。
  */
 
@@ -18,7 +19,7 @@ export async function handleAccountsCommand(
       const list = accounts.list();
       if (!list.ok) return `error: ${list.error.message}`;
       if (list.value.length === 0) {
-        return "no accounts. use `/accounts login <provider>` to add one";
+        return "no accounts. use `/pico-login <provider>` to add one";
       }
       return list.value
         .map((a) => {
@@ -30,7 +31,7 @@ export async function handleAccountsCommand(
 
     case "use": {
       const id = rest[0];
-      if (id === undefined) return "usage: /accounts use <account-id>";
+      if (id === undefined) return "usage: /pico-account use <account-id>";
       const switched = await accounts.setActive(id);
       if (!switched.ok) return `error: ${switched.error.message}`;
       return (
@@ -42,7 +43,7 @@ export async function handleAccountsCommand(
     case "label": {
       const [id, ...labelParts] = rest;
       const label = labelParts.join(" ");
-      if (id === undefined || label === "") return "usage: /accounts label <account-id> <label>";
+      if (id === undefined || label === "") return "usage: /pico-account label <account-id> <label>";
       const relabeled = await accounts.relabel(id, label);
       return relabeled.ok ? `labeled ${id}: ${label}` : `error: ${relabeled.error.message}`;
     }
@@ -52,6 +53,6 @@ export async function handleAccountsCommand(
       return "login flows are wired per provider at composition time (see OAuthFlow seam)";
 
     default:
-      return `unknown verb "${verb}" (list | use | label | login)`;
+      return `unknown verb "${verb}" (list | use | label)`;
   }
 }
