@@ -12,6 +12,21 @@ const PERMISSION_NAMES: Record<string, PermissionTier> = {
 
 const AVAILABLE = "readonly | auto | full | danger-full-access";
 
+const PERMISSION_MENU = [
+  { tier: "readonly", label: "readonly — read-only work; ask before side effects" },
+  { tier: "auto", label: "auto — allow routine work; ask before risky operations" },
+  { tier: "full", label: "full — allow routine operations; still ask for destructive and Git ownership actions" },
+  { tier: "danger-full-access", label: "danger-full-access — no approval prompts and no OS sandbox" },
+] as const satisfies ReadonlyArray<{ tier: PermissionTier; label: string }>;
+
+export function permissionMenuChoices(): string[] {
+  return PERMISSION_MENU.map(({ label }) => label);
+}
+
+export function permissionTierFromMenuChoice(choice: string | undefined): PermissionTier | undefined {
+  return PERMISSION_MENU.find(({ label }) => label === choice)?.tier;
+}
+
 export function restorePermissionTier(entries: readonly unknown[]): PermissionTier {
   let tier: PermissionTier = "auto";
   for (const entry of entries) {

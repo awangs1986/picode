@@ -57,7 +57,7 @@ Interface 必须覆盖：
 - request id、execution epoch、session/task/run identity；
 - 流式文本、thinking 元数据（默认折叠）、Tool Intent/Result、Gate/Evidence；
 - cancel、timeout、进程退出和 cancel-late 事件隔离；
-- `once/session/session-full/deny` 审批响应；
+- `once/session/session-full/session-unrestricted/deny` 审批响应；
 - stable error code 与进程退出码；
 - stdout 只有协议，诊断只进 stderr。
 

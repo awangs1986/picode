@@ -61,6 +61,8 @@ import {
 import type { ProjectContextEntry } from "../devloop/index.ts";
 import {
   handlePermissionsCommand,
+  permissionMenuChoices,
+  permissionTierFromMenuChoice,
   PERMISSION_ENTRY_TYPE,
   restorePermissionTier,
 } from "./permissions.ts";
@@ -528,9 +530,16 @@ export function registerPicodeBridge(
     if (typeof ctx.ui.select === "function") {
       const approval = await resolveIntentApproval(ctx.ui, runtime.guard, intent, decision.reason);
       allowed = approval !== "denied";
-      if (approval === "session-full") {
-        pi.appendEntry(PERMISSION_ENTRY_TYPE, { tier: "full" });
-        await options.onPermissionTierReady?.("full", ctx);
+      if (approval === "session-full" || approval === "session-unrestricted") {
+        const tier = approval === "session-unrestricted" ? "danger-full-access" : "full";
+        pi.appendEntry(PERMISSION_ENTRY_TYPE, { tier });
+        await options.onPermissionTierReady?.(tier, ctx);
+        ctx.ui.notify(
+          tier === "danger-full-access"
+            ? "danger-full-access enabled for this session: Picode will not show Operation Intent approval prompts"
+            : "full enabled for this session: routine operations continue automatically; destructive and Git ownership actions still ask",
+          "warning",
+        );
       }
     } else {
       allowed = await ctx.ui.confirm("Picode permission", decision.reason);
@@ -1017,7 +1026,20 @@ export function registerPicodeBridge(
   pi.registerCommand("permissions", {
     description: "Show or switch Picode session permissions: readonly, auto, full, or danger-full-access",
     handler: async (args, ctx) => {
-      const result = handlePermissionsCommand(runtime.guard, args);
+      let requested = args;
+      if (args.trim() === "" && typeof ctx.ui.select === "function") {
+        const selected = await ctx.ui.select(
+          `Picode permissions · current: ${runtime.guard.permissionTier()}`,
+          permissionMenuChoices(),
+        );
+        const selectedTier = permissionTierFromMenuChoice(selected);
+        if (selectedTier === undefined) {
+          ctx.ui.notify(`permission tier unchanged: ${runtime.guard.permissionTier()}`, "info");
+          return;
+        }
+        requested = selectedTier;
+      }
+      const result = handlePermissionsCommand(runtime.guard, requested);
       if (result.changedTo !== undefined) {
         pi.appendEntry(PERMISSION_ENTRY_TYPE, { tier: result.changedTo });
         await options.onPermissionTierReady?.(result.changedTo, ctx);

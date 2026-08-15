@@ -37,6 +37,25 @@ describe("versioned Control RPC", () => {
     expect(driver.respondApproval).toHaveBeenCalledWith("ui-1", "once");
   });
 
+  it("accepts an explicit no-prompt approval response", async () => {
+    const output: unknown[] = [];
+    const driver = rpcDriver();
+    const server = new ControlRpcServer(driver, (message) => output.push(message));
+
+    await server.receive({
+      version: 1,
+      id: "unrestricted",
+      method: "approval.respond",
+      params: { requestId: "ui-1", action: "session-unrestricted" },
+    });
+
+    expect(driver.respondApproval).toHaveBeenCalledWith("ui-1", "session-unrestricted");
+    expect(output).toContainEqual(expect.objectContaining({
+      id: "unrestricted",
+      result: { accepted: true },
+    }));
+  });
+
   it("rejects unsupported protocol versions with a stable error", async () => {
     const output: unknown[] = [];
     const server = new ControlRpcServer(rpcDriver(), (message) => output.push(message));

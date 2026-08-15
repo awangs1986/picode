@@ -263,6 +263,7 @@ describe("no-key real Agent Loop", () => {
     { action: "once" as const, expectedApprovals: 2 },
     { action: "session" as const, expectedApprovals: 1 },
     { action: "session-full" as const, expectedApprovals: 1 },
+    { action: "session-unrestricted" as const, expectedApprovals: 1 },
   ])("enforces $action approval scope across two exact commands", async ({ action, expectedApprovals }) => {
     const driver = new RpcControlDriver({ packageRoot: root, piEntry: join(root, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "cli.js"), cwd: scratch, env: { ...process.env, PICODE_DIR: join(scratch, `approval-${action}`) }, extraExtensions: [join(root, "test", "fixtures", "scripted-model-extension.ts")] });
     const output: Array<{ id: string; event?: string; payload?: unknown }> = [];

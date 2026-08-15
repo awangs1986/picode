@@ -39,13 +39,30 @@ describe("requestIntentApproval", () => {
   it("supports allowing all routine operations for the current session", async () => {
     const guard = new Guard("auto");
     const ui = {
-      select: vi.fn(async () => "Allow routine operations for this session"),
+      select: vi.fn(async () => "Allow routine operations for this session (destructive/Git still ask)"),
     } as unknown as ExtensionUIContext;
 
     expect(await requestIntentApproval(ui, guard, intent, "confirm")).toBe(true);
     expect(guard.permissionTier()).toBe("full");
     expect(guard.decide({ ...intent, command: "npm run build", targets: ["npm run build"] }).verdict)
       .toBe("allow");
+  });
+
+  it("supports explicit unrestricted access for the current session without later prompts", async () => {
+    const guard = new Guard("auto");
+    const ui = {
+      select: vi.fn(async () => "Danger: allow everything for this session (no more prompts)"),
+    } as unknown as ExtensionUIContext;
+
+    expect(await requestIntentApproval(ui, guard, intent, "confirm")).toBe(true);
+    expect(guard.permissionTier()).toBe("danger-full-access");
+    expect(guard.decide({
+      ...intent,
+      category: "git-mutate",
+      command: "git commit -m test",
+      targets: ["git commit -m test"],
+      destructive: true,
+    }).verdict).toBe("allow");
   });
 
   it("supports a persistent global command-prefix grant", async () => {

@@ -75,7 +75,7 @@ export class ControlRpcServer {
         if (this.driver.respondApproval === undefined) throw new Error("approval responses are unavailable");
         const params = request.params ?? {};
         const action = text(params.action, "action");
-        if (action !== "once" && action !== "session" && action !== "session-full" && action !== "deny") throw new Error(`invalid approval action: ${action}`);
+        if (action !== "once" && action !== "session" && action !== "session-full" && action !== "session-unrestricted" && action !== "deny") throw new Error(`invalid approval action: ${action}`);
         this.emit({ version: 1, id: request.id, result: await this.driver.respondApproval(text(params.requestId, "requestId"), action) });
         return;
       }

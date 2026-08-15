@@ -132,7 +132,7 @@
 
 **Operation Intent** — 一次文件、Shell、网络、Git 或外部副作用的结构化请求。
 
-**Permission Tier** — 当前 Pi 会话的 Guard 授权预设：`readonly`、`auto`、`full`。通过 `/permissions` 查看或切换，并作为 Pi 自定义会话条目恢复；`full` 只放行常规操作，破坏性操作与 Git commit/merge/push/重写历史仍须逐次确认。它不关闭 OS 沙箱。
+**Permission Tier** — 当前 Pi 会话的 Guard 授权预设：`readonly`、`auto`、`full`、`danger-full-access`。通过 `/permissions` 的选择菜单查看或切换，并作为 Pi 自定义会话条目恢复；`full` 只放行常规操作，破坏性操作与 Git commit/merge/push/重写历史仍须逐次确认。`danger-full-access` 是用户显式选择的 Codex 对等完全访问档：不再发出 Operation Intent 审批并关闭 OS 沙箱，但仍不越过 TDD Gate 与用户建立的 Workspace Fence。
 
 **Permission Authority** — P0–P4 唯一事前工具授权权威是 Guard。pi-landstrip 的 agent permission 固定为 allow，只保留运行时 OS 沙箱与访问升级职责，避免同一工具先后弹出两套批准框。
 

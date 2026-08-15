@@ -46,7 +46,7 @@ picode run `
 | `--prompt <文本>` | 必填，发送给 Agent 的任务 |
 | `--cwd <路径>` | 工作区；建议始终显式提供 |
 | `--harness simple\|standard\|tdd` | 本次新会话的 Harness 档位 |
-| `--permissions readonly\|auto\|full` | 本次新会话的权限档位 |
+| `--permissions readonly\|auto\|full\|danger-full-access` | 本次新会话的权限档位 |
 | `--provider <id>` | 指定 Provider |
 | `--model <id>` | 指定模型 |
 | `--session <id或jsonl路径>` | 在已有 Pi 会话上继续 |
@@ -323,6 +323,7 @@ picode rpc
 - `once`
 - `session`
 - `session-full`
+- `session-unrestricted`（本会话不再产生 Operation Intent 审批；等同 `danger-full-access`）
 - `deny`
 
 取消运行时使用 `run.started.payload.runId`，不要使用请求 `id`：

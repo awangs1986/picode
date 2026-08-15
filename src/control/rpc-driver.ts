@@ -299,12 +299,13 @@ export class RpcControlDriver implements ControlDriver {
     await execute;
   }
 
-  async respondApproval(requestId: string, action: "once" | "session" | "session-full" | "deny"): Promise<unknown> {
+  async respondApproval(requestId: string, action: "once" | "session" | "session-full" | "session-unrestricted" | "deny"): Promise<unknown> {
     const client = this.approvalClients.get(requestId);
     if (client === undefined) throw new Error(`approval request not found: ${requestId}`);
     const value = action === "once" ? "Allow once"
       : action === "session" ? "Allow exact command for this session"
-      : action === "session-full" ? "Allow routine operations for this session"
+      : action === "session-full" ? "Allow routine operations for this session (destructive/Git still ask)"
+      : action === "session-unrestricted" ? "Danger: allow everything for this session (no more prompts)"
       : "Deny";
     // Pi 0.84 exposes extension_ui_response on the wire but RpcClient has no
     // public responder. Keep this pinned-version compatibility access here.

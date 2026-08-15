@@ -313,6 +313,28 @@ describe("Pi 0.84 Bridge feasibility seam", () => {
     expect(notify).toHaveBeenCalledWith(expect.stringContaining("no approval prompts"), "warning");
   });
 
+  it("offers the no-prompt tier when /permissions is opened without an argument", async () => {
+    const pi = fakePi();
+    const runtime = createRuntime();
+    const permissionReady = vi.fn(async () => {});
+    registerPicodeBridge(pi.api, runtime, { onPermissionTierReady: permissionReady });
+    const notify = vi.fn();
+    const select = vi.fn(async (_title: string, choices: string[]) =>
+      choices.find((choice) => choice.startsWith("danger-full-access"))
+    );
+    const ctx = { ...fakeContext(true), ui: { notify, select } } as unknown as ExtensionContext;
+
+    await pi.commands.get("permissions")?.handler("", ctx);
+
+    expect(select).toHaveBeenCalledWith(
+      expect.stringContaining("current: auto"),
+      expect.arrayContaining([expect.stringContaining("danger-full-access")]),
+    );
+    expect(runtime.guard.permissionTier()).toBe("danger-full-access");
+    expect(pi.appended).toContainEqual(["picode.permission-tier", { tier: "danger-full-access" }]);
+    expect(permissionReady).toHaveBeenCalledWith("danger-full-access", ctx);
+  });
+
   it("keeps the TDD pre-RED write gate active in danger-full-access", async () => {
     const pi = fakePi();
     const runtime = createRuntime();

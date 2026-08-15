@@ -5,6 +5,7 @@ import {
   type McpToolApprovalRequest,
 } from "pi-mcp-adapter/types";
 import { mcpRequestToIntent } from "../guard/mcp-arbitration.ts";
+import type { PermissionTier } from "../shared/types.ts";
 import type { PicodeRuntime } from "./index.ts";
 import { resolveIntentApproval } from "./approval-ui.ts";
 
@@ -15,6 +16,7 @@ export function registerMcpApprovalBridge(
   events: Events,
   runtime: PicodeRuntime,
   getContext: () => ExtensionContext | undefined,
+  onPermissionTierReady?: (tier: PermissionTier, ctx: ExtensionContext) => Promise<void>,
 ): () => void {
   return events.on(MCP_TOOL_APPROVAL_REQUEST_EVENT, (raw) => {
     const request = raw as McpToolApprovalRequest;
@@ -30,7 +32,17 @@ export function registerMcpApprovalBridge(
       const ctx = getContext();
       if (ctx === undefined || !ctx.hasUI) return "deny";
       const approval = await resolveIntentApproval(ctx.ui, runtime.guard, intent, decision.reason);
-      if (approval === "session" || approval === "session-full" || approval === "global") return "allow_for_session";
+      if (approval === "session-full" || approval === "session-unrestricted") {
+        const tier = approval === "session-unrestricted" ? "danger-full-access" : "full";
+        await onPermissionTierReady?.(tier, ctx);
+        ctx.ui.notify(
+          tier === "danger-full-access"
+            ? "danger-full-access enabled for this session: Picode will not show Operation Intent approval prompts"
+            : "full enabled for this session: routine operations continue automatically; destructive and Git ownership actions still ask",
+          "warning",
+        );
+      }
+      if (approval === "session" || approval === "session-full" || approval === "session-unrestricted" || approval === "global") return "allow_for_session";
       return approval === "once" ? "allow_once" : "deny";
     });
   });

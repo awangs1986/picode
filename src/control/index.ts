@@ -64,7 +64,7 @@ export interface ControlDriver {
     permissionTier?: "readonly" | "auto" | "full" | "danger-full-access";
     harnessTier?: "simple" | "standard" | "tdd";
   }): AsyncIterable<ControlEvent>;
-  respondApproval?(requestId: string, action: "once" | "session" | "session-full" | "deny"): Promise<unknown>;
+  respondApproval?(requestId: string, action: "once" | "session" | "session-full" | "session-unrestricted" | "deny"): Promise<unknown>;
   cancelRun?(runId: string): Promise<unknown>;
   steerRun?(runId: string, message: string): Promise<unknown>;
   createSession(input: { id?: string; cwd?: string }): Promise<SessionIdentity>;
@@ -200,7 +200,7 @@ Serve versioned NDJSON requests on stdin and stream correlated events on stdout.
 
 Methods:
   run.start         params: prompt, cwd?, session?, harnessTier?, permissionTier?, timeoutMs?
-  approval.respond  params: requestId, action=once|session|session-full|deny
+  approval.respond  params: requestId, action=once|session|session-full|session-unrestricted|deny
   run.cancel        params: runId
   command.execute   params: argv[]`,
   session: "Usage: picode session list|create|resume|switch|branch|send|events [options]",

@@ -24,7 +24,7 @@ import { piAgentDir, piSessionsDir } from "../shared/paths.ts";
 import { configureSubagentsForSession } from "./subagent-config.ts";
 import { registerSubagentEnvelopeBridge } from "./subagent-envelope-bridge.ts";
 import { startDebugApi } from "../api/server.ts";
-import { err, ok } from "../shared/types.ts";
+import { err, ok, type PermissionTier } from "../shared/types.ts";
 import {
   registerWindowsPowerShellProvider,
   registerWindowsPowerShellTool,
@@ -56,6 +56,7 @@ import { TuiControlDriver } from "./tui-control-driver.ts";
 import { WeixinController } from "./weixin-controller.ts";
 import { compactWeixinReply } from "./weixin-reply-compactor.ts";
 import { ChatWriterLeases } from "../guard/chat-writer-lease.ts";
+import { PERMISSION_ENTRY_TYPE } from "./permissions.ts";
 
 /** Real Pi extension entry. Keep this file as a thin composition adapter. */
 function remoteAdvertisedHost(): string {
@@ -141,7 +142,20 @@ export default function picodeExtension(pi: ExtensionAPI): void {
       });
     },
   });
-  registerMcpApprovalBridge(pi.events, runtime, () => activeContext);
+  const configurePermissionTier = async (permissionTier: PermissionTier, ctx: ExtensionContext): Promise<void> => {
+    const configured = await configureLandstripForSession({
+      harnessTier: runtime.harness.current(),
+      permissionTier,
+      cwd: ctx.cwd,
+      agentDir: piAgentDir(),
+      deniedWriteRoots: runtime.guard.forbiddenWriteRoots(),
+    });
+    if (!configured.ok) ctx.ui.notify(configured.error.message, "error");
+  };
+  registerMcpApprovalBridge(pi.events, runtime, () => activeContext, async (permissionTier, ctx) => {
+    pi.appendEntry(PERMISSION_ENTRY_TYPE, { tier: permissionTier });
+    await configurePermissionTier(permissionTier, ctx);
+  });
   registerSubagentEnvelopeBridge(pi.events, runtime);
   let capabilitySettingsRestored = false;
   let webSsrfPrepared = false;
@@ -220,16 +234,7 @@ export default function picodeExtension(pi: ExtensionAPI): void {
         }
       }
     },
-    onPermissionTierReady: async (permissionTier, ctx) => {
-      const configured = await configureLandstripForSession({
-        harnessTier: runtime.harness.current(),
-        permissionTier,
-        cwd: ctx.cwd,
-        agentDir: piAgentDir(),
-        deniedWriteRoots: runtime.guard.forbiddenWriteRoots(),
-      });
-      if (!configured.ok) ctx.ui.notify(configured.error.message, "error");
-    },
+    onPermissionTierReady: configurePermissionTier,
     onSessionReady: async (ctx) => {
       activeContext = ctx;
       await weixin.onSessionChanged(ctx.sessionManager.getSessionId());

@@ -115,7 +115,7 @@ describe("CLI-first Control Interface", () => {
     expect(runHelp.join("\n")).toContain("--timeout-ms <ms>");
     expect(rpcHelp.join("\n")).toContain("run.start");
     expect(rpcHelp.join("\n")).toContain("approval.respond");
-    expect(rpcHelp.join("\n")).toContain("once|session|session-full|deny");
+    expect(rpcHelp.join("\n")).toContain("once|session|session-full|session-unrestricted|deny");
   });
 
   it("accepts the Codex-equivalent danger-full-access permission tier", async () => {
