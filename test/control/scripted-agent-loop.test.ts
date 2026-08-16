@@ -65,6 +65,34 @@ describe("no-key real Agent Loop", () => {
     expect(await driver.harnessTier(sessionFile as string)).toBe(harnessTier);
   }, 30_000);
 
+  it("turns a structured Task preflight failure into run.failed", async () => {
+    const driver = new RpcControlDriver({
+      packageRoot: root,
+      piEntry: join(root, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "cli.js"),
+      cwd: scratch,
+      env: { ...process.env, PICODE_DIR: join(scratch, "task-failure-data") },
+      extraExtensions: [join(root, "test", "fixtures", "scripted-model-extension.ts")],
+    });
+    const events = [];
+    for await (const event of driver.run({
+      prompt: "TASK:FAIL_PREFLIGHT",
+      provider: "picode-scripted-test",
+      model: "fixture",
+      harnessTier: "standard",
+      nonInteractive: true,
+      timeoutMs: 20_000,
+    })) events.push(event);
+
+    expect(events.some((event) => event.kind === "run.completed")).toBe(false);
+    expect(events.at(-1)).toMatchObject({
+      kind: "run.failed",
+      payload: {
+        outcome: "failed_preflight",
+        summary: "Scripted preflight could not satisfy the required policy",
+      },
+    });
+  }, 30_000);
+
   it("preserves requested run policy and exposes task identity through the public RPC stream", async () => {
     const driver = new RpcControlDriver({
       packageRoot: root,

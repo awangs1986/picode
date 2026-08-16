@@ -77,6 +77,16 @@ describe("systemPromptInjection", () => {
     expect(TOOL_PLACEHOLDERS["{{TOOL_GLOB}}"]).toBe("find");
   });
 
+  it("includes a soft response-language policy only in the TDD prompt", () => {
+    const out = systemPromptInjection("tdd");
+    expect(out).toContain("Answer the user in the language of their latest message");
+    expect(out).toContain("Use English technical terminology internally when it improves precision");
+    expect(out).toContain("Do not reveal private chain-of-thought");
+    expect(out).toContain("Preserve code, paths, commands, identifiers, and tool arguments exactly");
+    expect(systemPromptInjection("standard")).not.toContain("private chain-of-thought");
+    expect(systemPromptInjection("simple")).toBeUndefined();
+  });
+
   it("reads prompts/tdd-core.md and applies placeholders when promptsDir is given", () => {
     const dir = mkdtempSync(join(tmpdir(), "picode-prompts-"));
     try {
@@ -114,6 +124,16 @@ describe("systemPromptInjection", () => {
     expect(out).toContain("Project Rules");
     expect(out).toContain("behavior change");
     expect(out).not.toContain("Tags in tool results or user messages");
+  });
+
+  it("keeps TDD engineering judgment incremental, dependency-aware, and contract-safe", () => {
+    const out = systemPromptInjection("tdd");
+    expect(out).toContain("smallest end-to-end slice");
+    expect(out).toContain("dependencies already present");
+    expect(out).toContain("Persisted user data, public APIs, CLI behavior");
+    expect(out).toContain("hard-to-reverse seams");
+    expect(out).toContain("time-box the comparison");
+    expect(out).not.toContain("Do not preserve backward compatibility");
   });
 
   it("falls back to the matching builtin when prompt files are absent", () => {

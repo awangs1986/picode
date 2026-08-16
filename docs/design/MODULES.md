@@ -92,6 +92,7 @@ Chat、Task、Guard、Account 或 Model 事实。它可以组合 Control、Store
 | Interface / Seam | 唯一拥有者 | 隐藏的复杂性 | 明确禁止 |
 |---|---|---|---|
 | `TaskIngress.accept(input) -> TaskRef` | **Devloop/task** | Agent Inbox、Telegram、HTTP/远程输入的去重、Task 创建和失败语义 | Adapter 自写任务文件、直接向子端口发 prompt、失败后 legacy fallback |
+| `TaskIngress.reportFailure(input) -> TaskControlState` | **Devloop/task** | `failed_preflight`/`blocked` 的结构化终态、证据引用、下一轮 running 重置与 CLI `run.failed` 投影 | 扫描模型回答或任意业务 JSON 推断失败；Control/Adapter 另存第二份终态 |
 | `StateFile<T>` | **Store** | schema、锁、fsync/原子替换、known-good、quarantine、迁移 tombstone 校验 | 各调用方复制恢复逻辑；只因 tombstone 文件“存在”就跳过迁移 |
 | `RuntimeEnvelopeIngress.admit(raw, executionIdentity)` | **Adapter Extension**；Engine 只接收 admitted typed event | 大帧/UTF-8/JSON/枚举校验、malformed 记录、epoch/run/request fence、终态去重 | observer、状态投影、Evidence 或 UI 在 Admission 前消费 raw event |
 | `GateRunner.run(contract) -> GateEvidence` | **Devloop/verify** | 测试发现、匹配计数、超时、红探针、环境 provenance、`not_run` | 仅凭进程退出码判绿；零测试匹配判绿；把 skipped 当 passed |
@@ -257,8 +258,11 @@ narrative         唯一允许摘要的自由段
 ### 3.2 Slice 触发（决策）
 
 三通道并存：用户 `/slice` 可立即请求；模型和 watchdog 可提议；Devloop 根据
-上下文占用、轮次与任务阶段做确定性裁决。软阈值只提醒，硬阈值在当前不可分割
-操作结束后强制切片；用户可显式推迟一次并留下 Evidence，但模型不能无限推迟。
+上下文占用、轮次与范围漂移做确定性裁决。上下文或轮次的软阈值只提醒；模型的
+工具调用 step 不等于用户任务回合，不得仅因 step 数量强制中断工具密集的 TDD。
+硬边界只由实际活动上下文压力触发，并在当前不可分割操作结束后阻止新的副作用；
+所有明确只读的读取、搜索、Web 与代码诊断仍可使用。用户可显式推迟一次并留下
+Evidence，但模型不能无限推迟。
 切片动作 = 从权威源重建事实 → 生成并 seal Capsule → 新会话/子代理
 （context fresh）→ 校验 digest/revision/snapshot 后注入。软硬阈值在 P2 通过
 真实中型仓库实验校准，避免切得过碎导致交接开销和缓存失效。
@@ -280,6 +284,11 @@ task 中。Draft、superseded、版本/快照不符的 Capsule 不得注入；�
 `TddSessionController`、测试计数解析、Gate/Evidence 与 Completion Label 全部归
 **Devloop/verify**；Adapter Extension 只执行命令并翻译 Pi 生命周期事件，不得拥有
 第二套 TDD 状态或测试结果解释器。
+
+Todo 进度与验收事实不得合并：Agent 经 `todo_write` 写入的 `completed` 一律先是
+`unverified`；只有 Devloop/verify 在 Gate/Review 成功后可附 Evidence 引用并升级为
+`verified`。Control 与 UI 只能显示该投影，不能把模型声明当作 Completion Label。
+
 预算默认：2 轮修复 + 1 轮 Reviewer（watchdog 强配置）+ 1 次 Integration
 Smoke + 同 Snapshot 1 次确认重跑；超限 → Flaky / Needs Decision / QA
 Handoff。若代码、Gate Contract、命令和环境均未改变，而确认重跑由红转绿或

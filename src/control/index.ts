@@ -1,5 +1,6 @@
 export const CONTROL_EXIT = {
   completed: 0,
+  failed: 1,
   gateFailed: 2,
   approvalRequired: 3,
   timeout: 4,
@@ -179,6 +180,7 @@ async function emitStream(
   for await (const item of stream) {
     emitJson(io, item);
     if (item.kind === "approval.required") exitCode = CONTROL_EXIT.approvalRequired;
+    else if (item.kind === "run.failed") exitCode = CONTROL_EXIT.failed;
     else if (item.kind === "gate.failed") exitCode = CONTROL_EXIT.gateFailed;
     else if (item.kind === "run.timeout") exitCode = CONTROL_EXIT.timeout;
     else if (item.kind === "run.cancelled") exitCode = CONTROL_EXIT.cancelled;

@@ -13,6 +13,9 @@
   "files": [
     "bin/",
     "scripts/patch-vendored-pi.mjs",
+    "scripts/patch-pi-subagents.mjs",
+    "scripts/pi-subagents-compatibility.mjs",
+    "scripts/pi-subagents-compatibility.d.mts",
     "scripts/vendored-pi-compatibility.mjs",
     "scripts/vendored-pi-compatibility.d.mts",
     "src/",
@@ -27,7 +30,7 @@
     ]
   },
   "scripts": {
-    "postinstall": "node scripts/patch-vendored-pi.mjs",
+    "postinstall": "node scripts/patch-vendored-pi.mjs && node scripts/patch-pi-subagents.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",

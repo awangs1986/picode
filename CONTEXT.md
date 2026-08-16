@@ -32,6 +32,10 @@
 
 **Task Run** — 一项用户工作及其目标、计划、当前 Harness 档位、证据、风险和终态。会话切换 Harness 时必须原子同步 Task 文件权威；`task status` 不得继续显示创建会话时的旧档位。
 
+**Task Outcome** — Devloop/task 拥有的结构化运行终态。Standard/TDD 在必需前置条件不满足或工作被阻塞时必须通过 `task_outcome` 记录 `failed_preflight`/`blocked`、摘要和证据引用；Control Interface 将其投影为 `run.failed` 与非零退出码。模型文本、任意业务 JSON 文件和 Todo 状态都不能自行制造终态；新一轮开始必须把上一轮失败重置为 running。
+
+**Todo Verification** — Todo 的 `completed` 只表示 Agent 声明的进度，默认 `unverified`；只有 Devloop/verify 产生 Gate/Review Evidence 后才能标记 `verified` 并附 verificationRefs。失败回合不得把无证据的 completed 投影为已验收。
+
 **Task Objective** — Task Run 要解决的问题和验收方向；它是任务事实，不等于可自动续跑的 Goal 模式。
 
 **Planning Workflow** — 用户请求规划时采用的协作流程。Picode 的 `/plan` 首次使用会从随包固定快照按需物化 `grill-with-docs` 及其依赖到私有 Pi skill root，重载会话后把请求交给该工作流；不联网、不提供外部安装命令，也不自动续跑。
@@ -54,9 +58,9 @@
 
 **Interjection** — 用户在 Agent 工作时通过 `/insert <message>` 追加的同回合指令。它不取消当前工具；由 Pi 的 steering 安全缝在当前 assistant 工具调用完成后、下一次模型请求前，作为独立 custom-user 会话事件按 FIFO 交付。若提交时回合恰好结束，则自动启动普通新回合，消息不得滞留或丢失。它不同于等待整个 Agent Run 结束的 Follow-up，也不同于 Abort。
 
-**TaskIngress** — Devloop/task 接收 TUI、CLI、Agent Inbox、Telegram 或未来远程输入并创建唯一 Task 权威的深 Interface；负责去重和失败语义。来源 Adapter 不得自行写 Task 状态、直接向子端口发 prompt，或在失败后回退到 legacy 双写链。
+**TaskIngress** — Devloop/task 接收 TUI、CLI、Agent Inbox、Telegram 或未来远程输入并创建唯一 Task 权威的深 Interface；负责去重和失败语义。Pi 新会话尚未命名时，session ID 只能作为临时标题；第一次真实用户请求通过 TaskIngress 原子替换该占位值，之后不得随每轮消息反复改名。来源 Adapter 不得自行写 Task 状态、直接向子端口发 prompt，或在失败后回退到 legacy 双写链。
 
-**Control Interface** — TUI 和自动化 CLI 共同调用的组合层契约；只编排 Store、Engine、Guard 与 Devloop，不拥有领域事实。CLI 是 P0–P4 唯一公开自动化入口，提供版本化 JSON/JSONL、稳定退出码和非交互授权失败语义；不得解析 TUI 输出。
+**Control Interface** — TUI 和自动化 CLI 共同调用的组合层契约；只编排 Store、Engine、Guard 与 Devloop，不拥有领域事实。CLI 是 P0–P4 唯一公开自动化入口，提供版本化 JSON/JSONL、稳定退出码和非交互授权失败语义；结构化 Task Outcome `run.failed` 必须返回非零，且不得通过解析 TUI、模型散文或业务文件猜测成功/失败。
 
 **Headless CLI Run** — 由 CLI 调用进程直接启动并持有 vendored Pi Runtime 的无头执行；不依赖已启动的 TUI 或常驻 Core。进程退出即终止其拥有的未完成 Work。
 

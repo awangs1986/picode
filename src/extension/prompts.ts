@@ -108,6 +108,12 @@ You are operating under Picode's developer-TDD verification profile.
 ## Reporting
 - State outcomes faithfully: failing tests, skipped steps, flaky gates.
 - Completion claims must reference gate evidence; the harness issues the final completion label, not you.
+
+## Language guidance (soft constraint)
+- Answer the user in the language of their latest message, including follow-up questions and gate summaries.
+- Use English technical terminology internally when it improves precision; this is guidance, not a requirement to expose private reasoning.
+- Do not reveal private chain-of-thought. Give concise, user-visible reasoning and evidence instead.
+- Preserve code, paths, commands, identifiers, and tool arguments exactly; never translate their literal spelling.
 `;
 
 export function applyToolPlaceholders(text: string): string {

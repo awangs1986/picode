@@ -19,6 +19,10 @@ export interface PicodeConfig {
   locale: "zh" | "en";
   /** Optional provider/model used by pi-subagents; undefined inherits the parent model. */
   subagentModel?: string;
+  /** Optional thinking level used by pi-subagents; undefined inherits the parent session. */
+  subagentThinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+  /** Distinguishes an explicit "inherit parent" choice from never having configured subagents. */
+  subagentSelectionCompleted: boolean;
   /** Most recently active conversation model; seeds a brand-new project/session only. */
   lastConversationModel?: {
     provider: string;
@@ -31,6 +35,7 @@ export const DEFAULT_CONFIG: PicodeConfig = {
   onboarding: { completed: false },
   residentCapabilities: [],
   locale: "zh",
+  subagentSelectionCompleted: false,
 };
 
 /** 读取兼容 JSONC（剥行注释与块注释；字符串内的 // 经引号态跟踪保留） */
@@ -99,7 +104,10 @@ function normalizeConfig(value: unknown): PicodeConfig | undefined {
       typeof merged.onboarding.completed === "boolean" &&
       Array.isArray(merged.residentCapabilities) &&
       merged.residentCapabilities.every((item) => typeof item === "string") &&
+      typeof merged.subagentSelectionCompleted === "boolean" &&
       (merged.subagentModel === undefined || typeof merged.subagentModel === "string") &&
+      (merged.subagentThinking === undefined ||
+        ["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(merged.subagentThinking)) &&
       (merged.lastConversationModel === undefined ||
         (typeof merged.lastConversationModel === "object" &&
           merged.lastConversationModel !== null &&

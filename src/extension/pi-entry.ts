@@ -198,6 +198,12 @@ export default function picodeExtension(pi: ExtensionAPI): void {
         ...(runtime.config.subagentModel === undefined
           ? {}
           : { defaultModel: runtime.config.subagentModel }),
+        ...(runtime.config.subagentThinking === undefined
+          ? {}
+          : { defaultThinking: runtime.config.subagentThinking }),
+        ...(runtime.config.subagentModel === undefined || ctx.model === undefined
+          ? {}
+          : { fallbackModel: `${ctx.model.provider}/${ctx.model.id}` }),
       });
       if (!subagentsConfigured.ok) ctx.ui.notify(subagentsConfigured.error.message, "error");
       await loadSuiteForTier(

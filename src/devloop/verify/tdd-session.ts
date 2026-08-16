@@ -245,10 +245,24 @@ export class TddSessionController {
   static restore(executor: GateExecutor, value: unknown): TddSessionController | undefined {
     if (!isTddSessionCheckpoint(value)) return undefined;
     const controller = new TddSessionController(executor);
-    controller.run = TddRun.restore(value.run);
+    const technicalReviewHandoff = value.run.outcome === "qa-handoff" &&
+      (value.reviewerTechnicalFailures ?? 0) > 1;
+    if (technicalReviewHandoff) {
+      // QA handoff caused solely by an unavailable reviewer is a process-epoch
+      // decision, not a product verdict. A fresh process may retry the already
+      // passing candidate after credentials, model routing, cwd or shell
+      // adapters are repaired. Flaky, needs-decision and real reviewer blocker
+      // outcomes are intentionally untouched.
+      const { outcome: _technicalOutcome, ...retriableRun } = value.run;
+      controller.run = TddRun.restore(retriableRun);
+    } else {
+      controller.run = TddRun.restore(value.run);
+    }
     controller.contract = value.contract === undefined ? undefined : { ...value.contract };
     controller.gateRuns.push(...value.gateRuns.map((run) => structuredClone(run)));
-    controller.reviewerTechnicalFailures = value.reviewerTechnicalFailures ?? 0;
+    controller.reviewerTechnicalFailures = technicalReviewHandoff
+      ? 0
+      : value.reviewerTechnicalFailures ?? 0;
     controller.lastEvidence = value.lastEvidence === undefined
       ? undefined
       : structuredClone(value.lastEvidence);

@@ -17,8 +17,8 @@ describe("TodoSessionController", () => {
       const restored = new TodoSessionController(new Store());
       await restored.bind("task-1");
       expect(restored.snapshot()).toEqual([
-        { id: "design", content: "Review contract", status: "completed" },
-        { id: "build", content: "Implement adapter", status: "in_progress" },
+        { id: "design", content: "Review contract", status: "completed", verification: "unverified" },
+        { id: "build", content: "Implement adapter", status: "in_progress", verification: "unverified" },
       ]);
     });
   });
@@ -33,6 +33,32 @@ describe("TodoSessionController", () => {
       ]);
       expect(result.ok).toBe(false);
       if (!result.ok) expect(result.error.code).toBe("devloop/todo-multiple-active");
+    });
+  });
+
+  it("keeps model-completed work unverified until Verification supplies evidence", async () => {
+    await withTempPicodeDir(async () => {
+      const todos = new TodoSessionController(new Store());
+      await todos.bind("task-verification");
+
+      const claimed = await todos.replace([
+        { id: "research", content: "Complete the research brief", status: "completed" },
+      ]);
+      expect(claimed).toMatchObject({
+        ok: true,
+        value: [{ id: "research", status: "completed", verification: "unverified" }],
+      });
+
+      const verified = await todos.verifyCompleted(["evidence:quick-review"]);
+      expect(verified).toMatchObject({
+        ok: true,
+        value: [{
+          id: "research",
+          status: "completed",
+          verification: "verified",
+          verificationRefs: ["evidence:quick-review"],
+        }],
+      });
     });
   });
 });

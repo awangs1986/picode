@@ -11,7 +11,13 @@ export class TodoSessionController {
   async bind(taskId: string): Promise<Result<readonly TaskTodoItem[]>> {
     this.taskId = taskId;
     const loaded = await this.store.loadTaskTodos(taskId);
-    this.items = loaded.ok ? loaded.value.items.map((item) => ({ ...item })) : [];
+    this.items = loaded.ok
+      ? loaded.value.items.map((item) => ({
+          ...item,
+          verification: item.verification ?? "unverified",
+          ...(item.verificationRefs === undefined ? {} : { verificationRefs: [...item.verificationRefs] }),
+        }))
+      : [];
     return ok(this.snapshot());
   }
 
@@ -37,7 +43,42 @@ export class TodoSessionController {
       version: 1,
       taskId: this.taskId,
       updatedAt: new Date().toISOString(),
-      items: items.map((item) => ({ ...item, id: item.id.trim(), content: item.content.trim() })),
+      items: items.map((item) => {
+        const id = item.id.trim();
+        const content = item.content.trim();
+        const previous = this.items.find((candidate) => candidate.id === id && candidate.content === content);
+        const keepVerified = item.status === "completed" && previous?.verification === "verified";
+        return {
+          id,
+          content,
+          status: item.status,
+          verification: keepVerified ? "verified" as const : "unverified" as const,
+          ...(keepVerified && previous.verificationRefs !== undefined
+            ? { verificationRefs: [...previous.verificationRefs] }
+            : {}),
+        };
+      }),
+    };
+    const saved = await this.store.saveTaskTodos(state);
+    if (!saved.ok) return saved;
+    this.items = state.items;
+    return ok(this.snapshot());
+  }
+
+  async verifyCompleted(evidenceRefs: readonly string[]): Promise<Result<readonly TaskTodoItem[]>> {
+    if (this.taskId === undefined) return err("devloop/todo-task-unbound", "Todo verification requires an active task");
+    const refs = [...new Set(evidenceRefs.map((ref) => ref.trim()).filter((ref) => ref !== ""))];
+    if (refs.length === 0) return err("devloop/todo-evidence-required", "Todo verification requires evidence");
+    if (!this.items.some((item) => item.status === "completed")) {
+      return err("devloop/todo-nothing-completed", "there are no completed Todo items to verify");
+    }
+    const state: TaskTodoState = {
+      version: 1,
+      taskId: this.taskId,
+      updatedAt: new Date().toISOString(),
+      items: this.items.map((item) => item.status === "completed"
+        ? { ...item, verification: "verified", verificationRefs: refs }
+        : { ...item, verification: "unverified" }),
     };
     const saved = await this.store.saveTaskTodos(state);
     if (!saved.ok) return saved;

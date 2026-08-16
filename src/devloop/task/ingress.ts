@@ -1,8 +1,12 @@
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import type { HarnessTier, Result } from "../../shared/types.ts";
-import { ok } from "../../shared/types.ts";
-import { isTaskControlState, type TaskControlState } from "./control.ts";
+import { err, ok } from "../../shared/types.ts";
+import {
+  isTaskControlState,
+  type TaskControlState,
+  type TaskFailureOutcome,
+} from "./control.ts";
 
 export interface TaskIngressInput {
   source: string;
@@ -74,6 +78,19 @@ export class TaskIngress {
     return written.ok ? ok(updated) : written;
   }
 
+  async updateTitle(taskId: string, title: string): Promise<Result<TaskRecord>> {
+    const state = this.options.stateFile(
+      join(this.options.tasksRoot, taskId, "task.json"),
+      isTaskRecord,
+    );
+    const current = await state.read();
+    if (!current.ok) return current;
+    if (current.value.title === title) return current;
+    const updated: TaskRecord = { ...current.value, title };
+    const written = await state.write(updated);
+    return written.ok ? ok(updated) : written;
+  }
+
   readControl(taskId: string): Promise<Result<TaskControlState>> {
     return this.options.stateFile(
       join(this.options.tasksRoot, taskId, "control.json"),
@@ -86,6 +103,37 @@ export class TaskIngress {
       join(this.options.tasksRoot, taskId, "control.json"),
       isTaskControlState,
     ).write({ version: 1, taskId, state, updatedAt: new Date().toISOString() });
+  }
+
+  beginRun(taskId: string): Promise<Result<void>> {
+    return this.writeControl(taskId, "running");
+  }
+
+  reportFailure(taskId: string, input: {
+    outcome: TaskFailureOutcome;
+    summary: string;
+    evidenceRefs?: readonly string[];
+  }): Promise<Result<void>> {
+    const summary = input.summary.trim();
+    if (summary === "") return Promise.resolve(err(
+      "devloop/task-failure-summary-required",
+      "a structured Task failure requires a non-empty summary",
+    ));
+    const evidenceRefs = [...(input.evidenceRefs ?? [])]
+      .map((ref) => ref.trim())
+      .filter((ref) => ref !== "");
+    return this.options.stateFile(
+      join(this.options.tasksRoot, taskId, "control.json"),
+      isTaskControlState,
+    ).write({
+      version: 1,
+      taskId,
+      state: "failed",
+      outcome: input.outcome,
+      summary,
+      ...(evidenceRefs.length === 0 ? {} : { evidenceRefs }),
+      updatedAt: new Date().toISOString(),
+    });
   }
 
   cancellationRequested(taskId: string): Promise<boolean> {

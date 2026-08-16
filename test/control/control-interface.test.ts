@@ -164,6 +164,33 @@ describe("CLI-first Control Interface", () => {
     });
   });
 
+  it("maps a structured Task failure to a stable non-zero exit code", async () => {
+    const stdout: string[] = [];
+    const control = driver({
+      async *run() {
+        yield {
+          version: 1,
+          kind: "run.failed",
+          payload: {
+            outcome: "failed_preflight",
+            summary: "Required reviewer configuration was not satisfied",
+          },
+        };
+      },
+    });
+
+    const exitCode = await executeControlCommand(
+      ["run", "--prompt", "research", "--jsonl", "--non-interactive"],
+      { driver: control, stdout: (line) => stdout.push(line), stderr: () => undefined },
+    );
+
+    expect(exitCode).toBe(CONTROL_EXIT.failed);
+    expect(JSON.parse(stdout[0] ?? "{}")).toMatchObject({
+      kind: "run.failed",
+      payload: { outcome: "failed_preflight" },
+    });
+  });
+
   it("creates a named session through the same machine contract", async () => {
     const stdout: string[] = [];
     const control = driver();

@@ -311,7 +311,12 @@ function isTaskTodoState(value: unknown): value is TaskTodoState {
     typeof row.updatedAt !== "string" || !Array.isArray(row.items)) return false;
   return row.items.every((item) => typeof item === "object" && item !== null &&
     typeof item.id === "string" && typeof item.content === "string" &&
-    ["pending", "in_progress", "completed"].includes(String(item.status)));
+    ["pending", "in_progress", "completed"].includes(String(item.status)) &&
+    (item.verification === undefined || item.verification === "unverified" || item.verification === "verified") &&
+    (item.verificationRefs === undefined ||
+      (Array.isArray(item.verificationRefs) && item.verificationRefs.every((ref) => typeof ref === "string"))) &&
+    (item.verification !== "verified" ||
+      (item.status === "completed" && Array.isArray(item.verificationRefs) && item.verificationRefs.length > 0)));
 }
 
 function isEndpointContextProfile(value: unknown): value is EndpointContextProfile {

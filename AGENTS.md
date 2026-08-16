@@ -24,14 +24,12 @@ availability remain Host-authoritative.
 
 ## Engineering principles
 
-- Do not preserve backward compatibility. Remove obsolete paths instead of adding compatibility layers, fallbacks, or migrations.
-- Choose the simplest implementation that fully meets the current requirements. Avoid speculative abstractions, configuration, and indirection.
-- Grow the system in layers. Start from the smallest version that works end to end, and add each new capability on top of a product that already works. Never trade a working product for unfinished complexity.
-- Keep components modular and concerns clearly separated.
-- Prefer established, well-maintained libraries when they reduce overall complexity or improve reliability. Do not reimplement common functionality without a clear reason.
-- Lean on the dependencies already in the project before writing your own implementation or adding packages. Do not assume a library lacks a capability without checking its documentation and types.
-- Make architectural decisions for the long term. Do not accept a stopgap that only works for now and is meant to be replaced later.
-- Study how established products solve the problem before designing a solution. Adopt their proven patterns and conventions rather than inventing an approach from scratch.
+- Build the smallest end-to-end slice that leaves Picode working. Finish it before adding another capability; do not trade a working path for speculative or half-finished infrastructure.
+- Choose the simplest implementation that fully satisfies the current contract. Avoid unrelated cleanup, configuration, indirection, and abstractions for hypothetical future needs.
+- Preserve Store / Engine / Guard / Devloop ownership and keep each fact under one authority. Adapters compose modules; they do not own parallel state or a second lifecycle.
+- Inspect the code and dependencies already present before adding code or packages, including their documentation and types. For consequential or unfamiliar design, follow the capability-source ladder below, time-box the comparison, and adopt only patterns that reduce total complexity.
+- Remove obsolete internal paths instead of leaving parallel legacy shims. Persisted user data, public APIs, CLI behavior, extension contracts, imported sessions, and pinned Pi compatibility are external contracts: preserve or deliberately migrate them unless the user authorizes a breaking change.
+- Invest in durable design at hard-to-reverse seams. For reversible implementation details, prefer the smallest complete choice.
 
 ## Verification
 

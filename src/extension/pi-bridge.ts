@@ -6,7 +6,7 @@ import type {
   ToolCallEvent,
   ToolCallEventResult,
 } from "@earendil-works/pi-coding-agent";
-import type { Model } from "@earendil-works/pi-ai";
+import { getSupportedThinkingLevels, type Model, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
@@ -71,6 +71,7 @@ import { registerToolOutputRetention } from "./tool-output-retention.ts";
 import { applySubagentContextPolicy } from "./subagent-context-policy.ts";
 import type { AccountImportCompleteHandler } from "./account-import-wizard.ts";
 import { prepareWorkspaceSwitch } from "./workspace-switch.ts";
+import { renderSessionUsage } from "./session-usage.ts";
 
 export interface BridgeProbeSnapshot {
   compactionsObserved: number;
@@ -104,6 +105,131 @@ export interface BridgeOptions {
 const READ_ONLY_SHELL_HEAD = /^(?:pwd|Get-Location|Get-ChildItem|Get-Content|Get-Item|Test-Path|Resolve-Path|Select-String|ls|dir|rg|grep|find)(?:\s|$)/i;
 const READ_ONLY_SHELL_PIPE = /^(?:Select-Object|Sort-Object|Format-Table|Format-List|Measure-Object|Group-Object|Out-String|head|tail)(?:\s|$)/i;
 const READ_ONLY_GIT = /^git\s+(?:status|diff|show|log|rev-parse|ls-files|blame|shortlog)(?:\s|$)/i;
+const READ_ONLY_WEB_TOOLS = new Set([
+  "web_search",
+  "source_check",
+  "fetch_content",
+  "get_search_content",
+  "web_fetch",
+  "search_web",
+  "fetch_url",
+]);
+const READ_ONLY_CODE_INTELLIGENCE_TOOLS = new Set([
+  "lens_diagnostics",
+  "ast_grep_search",
+  "lsp_diagnostics",
+  "lsp_navigation",
+  "module_report",
+  "read_symbol",
+  "read_enclosing",
+  "project_report",
+  "symbol_search",
+]);
+
+function thinkingDisplayName(level: ModelThinkingLevel): string {
+  return level === "xhigh" ? "XHigh" : level[0]!.toUpperCase() + level.slice(1);
+}
+
+type AvailableModel = ReturnType<ExtensionContext["modelRegistry"]["getAvailable"]>[number];
+
+interface SubagentSelection {
+  model?: string;
+  thinking?: ModelThinkingLevel;
+}
+
+function availableSubagentModels(
+  ctx: ExtensionContext | ExtensionCommandContext,
+): AvailableModel[] {
+  const modelContext = ctx as Partial<Pick<ExtensionContext, "modelRegistry" | "scopedModels">>;
+  const registry = modelContext.modelRegistry;
+  if (registry === undefined) return [];
+  const scopedModels = modelContext.scopedModels ?? [];
+  return scopedModels.length > 0
+    ? scopedModels.map((entry) => entry.model)
+    : registry.getAvailable();
+}
+
+function subagentSelectionReason(
+  runtime: PicodeRuntime,
+  availableModels: AvailableModel[],
+): "not-configured" | "unavailable" | undefined {
+  if (!runtime.config.subagentSelectionCompleted) return "not-configured";
+  if (runtime.config.subagentModel === undefined) return undefined;
+  const available = new Set(availableModels.map((model) => `${model.provider}/${model.id}`));
+  return available.has(runtime.config.subagentModel) ? undefined : "unavailable";
+}
+
+async function promptSubagentSelection(
+  runtime: PicodeRuntime,
+  ctx: ExtensionContext | ExtensionCommandContext,
+  options: {
+    allowInherit: boolean;
+    requestedModel?: string;
+    reason?: "not-configured" | "unavailable";
+  },
+): Promise<SubagentSelection | undefined> {
+  const ui = (ctx as Partial<Pick<ExtensionContext, "ui">>).ui;
+  if (ui === undefined) return undefined;
+  const inheritModel = "Inherit current session model";
+  const availableModels = availableSubagentModels(ctx);
+  const available = availableModels.map((model) => `${model.provider}/${model.id}`);
+  if (available.length === 0 && !options.allowInherit) {
+    ui.notify?.(
+      "No model is currently available for subagents. Log in or configure a provider, then start this session again.",
+      "warning",
+    );
+    return undefined;
+  }
+  const title = options.reason === "unavailable"
+    ? `Subagent model unavailable · ${runtime.config.subagentModel ?? "unknown"}`
+    : options.reason === "not-configured"
+      ? "Subagent model · choose before Standard/TDD work"
+      : "Subagent model";
+  const choices = options.allowInherit ? [inheritModel, ...available] : available;
+  const requested = options.requestedModel ?? await ui.select(title, choices);
+  if (requested === undefined) return undefined;
+  if (requested !== inheritModel && requested !== "inherit" && !available.includes(requested)) {
+    ui.notify?.(`unknown or unavailable model: ${requested}`, "error");
+    return undefined;
+  }
+  const selected = requested === inheritModel || requested === "inherit" ? undefined : requested;
+  const selectedModel = selected === undefined
+    ? ctx.model
+    : availableModels.find((model) => `${model.provider}/${model.id}` === selected);
+  const inheritThinking = "Inherit parent session thinking";
+  const thinkingLevels = selectedModel === undefined ? [] : getSupportedThinkingLevels(selectedModel);
+  const thinkingOptions = [inheritThinking, ...thinkingLevels.map(thinkingDisplayName)];
+  const requestedThinking = await ui.select(
+    `Subagent thinking · ${selected ?? "inherited model"}`,
+    thinkingOptions,
+  );
+  if (requestedThinking === undefined) return undefined;
+  const selectedThinking = requestedThinking === inheritThinking
+    ? undefined
+    : thinkingLevels[thinkingOptions.indexOf(requestedThinking) - 1];
+  if (requestedThinking !== inheritThinking && selectedThinking === undefined) return undefined;
+
+  const nextConfig = structuredClone(runtime.config);
+  nextConfig.subagentSelectionCompleted = true;
+  if (selected === undefined) delete nextConfig.subagentModel;
+  else nextConfig.subagentModel = selected;
+  if (selectedThinking === undefined) delete nextConfig.subagentThinking;
+  else nextConfig.subagentThinking = selectedThinking;
+  const saved = await saveConfig(nextConfig);
+  if (!saved.ok) {
+    ui.notify?.(saved.error.message, "error");
+    return undefined;
+  }
+  runtime.config.subagentSelectionCompleted = true;
+  if (selected === undefined) delete runtime.config.subagentModel;
+  else runtime.config.subagentModel = selected;
+  if (selectedThinking === undefined) delete runtime.config.subagentThinking;
+  else runtime.config.subagentThinking = selectedThinking;
+  return {
+    ...(selected === undefined ? {} : { model: selected }),
+    ...(selectedThinking === undefined ? {} : { thinking: selectedThinking }),
+  };
+}
 
 /** Prove a narrow shell subset read-only; anything ambiguous remains exec/ask. */
 function readOnlyShellCategory(command: string): "fs-read" | "git-read" | undefined {
@@ -119,7 +245,42 @@ function readOnlyShellCategory(command: string): "fs-read" | "git-read" | undefi
   return "fs-read";
 }
 
-async function requestFreshReview(input: {
+function isReadOnlyIntent(intent: OperationIntent): boolean {
+  return intent.category === "fs-read" ||
+    intent.category === "git-read" ||
+    intent.category === "network" ||
+    intent.category === "capability-read";
+}
+
+interface FreshReviewDecision {
+  passed: boolean;
+  blockers: string[];
+}
+
+function validatedFreshReviewDecision(value: unknown): FreshReviewDecision | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const row = value as Record<string, unknown>;
+  if (Object.keys(row).some((key) => key !== "passed" && key !== "blockers")) return undefined;
+  if (typeof row.passed !== "boolean" || !Array.isArray(row.blockers)) return undefined;
+  if (row.blockers.some((blocker) => typeof blocker !== "string")) return undefined;
+  return { passed: row.passed, blockers: [...row.blockers] as string[] };
+}
+
+async function freshReviewWorkingDirectory(pi: ExtensionAPI, cwd: string): Promise<string> {
+  if (typeof pi.exec !== "function") return cwd;
+  try {
+    const root = await pi.exec("git", ["rev-parse", "--show-toplevel"], {
+      cwd,
+      timeout: 5_000,
+    });
+    const normalized = root.stdout.trim();
+    return root.code === 0 && normalized !== "" ? normalized : cwd;
+  } catch {
+    return cwd;
+  }
+}
+
+export async function requestFreshReview(input: {
   pi: ExtensionAPI;
   ownerRunId: string;
   cwd: string;
@@ -127,6 +288,7 @@ async function requestFreshReview(input: {
   model?: string;
   timeoutMs: number;
 }): Promise<Result<SourceRef>> {
+  const reviewCwd = await freshReviewWorkingDirectory(input.pi, input.cwd);
   const requestId = randomUUID();
   const nodeId = `picode-review-${requestId.slice(0, 8)}`;
   return new Promise((resolveReview) => {
@@ -141,13 +303,25 @@ async function requestFreshReview(input: {
     const unsubscribe = input.pi.events.on(SUBAGENT_DELEGATION_RESPONSE_EVENT, (raw) => {
       const response = raw as SubagentDelegationResponse;
       if (response.requestId !== requestId) return;
-      if (response.status !== "completed" || response.result?.kind !== "structured") {
+      if (
+        (response.status !== "completed" && response.status !== "failed") ||
+        response.result?.kind !== "structured"
+      ) {
         finish(err("devloop/tdd-review-failed", response.error ?? `review ended as ${response.status}`));
         return;
       }
-      const value = response.result.value as { passed?: unknown; blockers?: unknown };
-      if (value.passed !== true) {
-        const blockers = Array.isArray(value.blockers) ? value.blockers.map(String).join("; ") : "reviewer found blockers";
+      // pi-subagents can report `failed` when an earlier read-only tool call
+      // failed even though the reviewer later submitted the requested final
+      // schema. Admit only the exact locally validated decision shape; timeout,
+      // cancellation, budget and malformed structured-output statuses remain
+      // fail-closed above.
+      const value = validatedFreshReviewDecision(response.result.value);
+      if (value === undefined) {
+        finish(err("devloop/tdd-review-failed", "reviewer returned an invalid structured decision"));
+        return;
+      }
+      if (!value.passed) {
+        const blockers = value.blockers.length > 0 ? value.blockers.join("; ") : "reviewer found blockers";
         finish(err("devloop/tdd-review-blockers", blockers));
         return;
       }
@@ -161,7 +335,7 @@ async function requestFreshReview(input: {
       agent: "reviewer",
       task: input.task,
       context: "fresh",
-      cwd: input.cwd,
+      cwd: reviewCwd,
       ...(input.model === undefined ? {} : { model: input.model }),
       timeoutMs: input.timeoutMs,
       // One reviewer round remains the product budget. Twelve internal turns
@@ -188,7 +362,10 @@ async function requestFreshReview(input: {
 
 export function buildFreshReviewTask(gateId: string): string {
   return `Review only the current candidate for gate ${gateId}. ` +
-    "Start with git diff --stat and git diff. Inspect only files in that candidate plus directly imported code when necessary. " +
+    "Your working directory is the Git repository root. Start with git diff --stat and git diff. " +
+    "Paths printed by Git are repository-root-relative; resolve them from the repository root and never append them to the original nested workspace path. " +
+    "On Windows, use PowerShell-compatible commands and native read, grep, find, or ls tools; do not use POSIX shell pipelines or FINDSTR. " +
+    "Inspect only files in that candidate plus directly imported code when necessary. " +
     "Do not inspect .picode-state, .pi-subagents, prior sessions, task history, or harness internals. " +
     "The target gate already passed in the host. Do not broaden scope or modify files. " +
     "Return the required structured {passed, blockers} result as soon as correctness, regression, scope, and test quality are decided.";
@@ -348,7 +525,17 @@ function intentFor(event: ToolCallEvent, cwd: string): OperationIntent {
       return input.action === "search"
         ? { category: "capability-read", targets: [String(input.query ?? "")], cwd }
         : { category: "mcp-tool", targets: [`search_tools:${String(input.action ?? "unknown")}`], cwd };
+    case "task_outcome":
+      // This records a Devloop control fact; it is not a workspace mutation or
+      // an external capability invocation.
+      return { category: "capability-read", targets: ["task:outcome"], cwd };
     default:
+      if (READ_ONLY_WEB_TOOLS.has(event.toolName)) {
+        return { category: "network", targets: [event.toolName], cwd };
+      }
+      if (READ_ONLY_CODE_INTELLIGENCE_TOOLS.has(event.toolName)) {
+        return { category: "fs-read", targets: [event.toolName], cwd };
+      }
       return { category: "mcp-tool", targets: [event.toolName], cwd };
   }
 }
@@ -375,6 +562,58 @@ function knownModels(ctx: ExtensionContext): readonly Model<any>[] {
     return ctx.scopedModels.map((entry) => entry.model);
   }
   return ctx.model === undefined ? [] : [ctx.model];
+}
+
+/**
+ * Reconcile Pi's live provider after a Vault account is logged out.
+ *
+ * The Cursor SDK registers a provider (including its fallback catalog) even
+ * when the Picode account is only stored, not active. Removing credentials
+ * alone therefore leaves those models visible in /model. The Vault remains
+ * authoritative: rebind to the next active compatible account, or remove the
+ * provider entirely when none remains.
+ */
+function reconcileProviderAfterLogout(
+  pi: ExtensionAPI,
+  runtime: PicodeRuntime,
+  accountAdapter: PiAccountAdapter,
+  provider: string,
+  ctx: ExtensionCommandContext,
+): void {
+  const listed = runtime.accounts.list();
+  if (!listed.ok) {
+    pi.unregisterProvider(provider);
+    ctx.ui.notify(`Provider ${provider} was removed because the account vault could not be read.`, "warning");
+    return;
+  }
+
+  const replacement = listed.value.find((candidate) =>
+    (candidate.piProvider ?? candidate.provider) === provider &&
+    candidate.status === "active" &&
+    candidate.chatCompatible !== false,
+  );
+  if (replacement === undefined) {
+    pi.unregisterProvider(provider);
+    return;
+  }
+
+  const credentials = runtime.accounts.credentialsFor(replacement.id);
+  if (!credentials.ok) {
+    pi.unregisterProvider(provider);
+    ctx.ui.notify(`Active ${provider} account could not be restored: ${credentials.error.message}`, "warning");
+    return;
+  }
+
+  const applied = accountAdapter.apply(
+    replacement,
+    credentials.value,
+    ctx.modelRegistry.getProvider(provider) !== undefined,
+    knownModels(ctx),
+  );
+  if (!applied.ok) {
+    pi.unregisterProvider(provider);
+    ctx.ui.notify(`Active ${provider} account could not be restored: ${applied.error.message}`, "warning");
+  }
 }
 
 export function registerPicodeBridge(
@@ -482,10 +721,7 @@ export function registerPicodeBridge(
       ctx.ui.notify?.(`Subagent Capsule was not injected: ${subagentContext.warning}`, "warning");
     }
     const intent = intentFor(event, ctx.cwd);
-    if (
-      runtime.harness.current() !== "simple" && slices.mutationBlocked() &&
-      intent.category !== "fs-read" && intent.category !== "git-read" && intent.category !== "network"
-    ) {
+    if (runtime.harness.current() !== "simple" && slices.mutationBlocked() && !isReadOnlyIntent(intent)) {
       return {
         block: true,
         reason: "hard Slice boundary reached; use /slice <next intent> or /slice-defer once before more mutations",
@@ -507,8 +743,7 @@ export function registerPicodeBridge(
         return { block: true, reason: "TDD requires a recorded RED before shell commands may mutate files" };
       }
     }
-    const needsWriter = runtime.harness.current() !== "simple" &&
-      intent.category !== "fs-read" && intent.category !== "git-read" && intent.category !== "network";
+    const needsWriter = runtime.harness.current() !== "simple" && !isReadOnlyIntent(intent);
     const claimWriterAfterApproval = async (): Promise<ToolCallEventResult | undefined> => {
       if (!needsWriter) return undefined;
       const taskId = slices.currentTaskId();
@@ -645,15 +880,42 @@ export function registerPicodeBridge(
       await worktrees.releaseWriter(claimedWriter.workspace, claimedWriter.taskId);
       claimedWriter = undefined;
     }
+    const isInteractiveSession = ctx.mode === "tui";
+    if (runtime.harness.current() !== "simple" && isInteractiveSession) {
+      const availableModels = availableSubagentModels(ctx);
+      const reason = subagentSelectionReason(runtime, availableModels);
+      if (reason !== undefined) {
+        const selected = await promptSubagentSelection(runtime, ctx, {
+          // A saved preference must never become a hard dependency of the
+          // harness. When it disappears, inheriting the current Pi session is
+          // always a valid escape hatch.
+          allowInherit: reason === "unavailable",
+          reason,
+        });
+        if (selected !== undefined) {
+          ctx.ui.notify?.(
+            `Subagent model: ${selected.model ?? "inherit current session"} · thinking ${selected.thinking ?? "inherit parent session"}`,
+            "info",
+          );
+        } else if (reason === "unavailable") {
+          ctx.ui.notify?.(
+            `Preferred subagent model ${runtime.config.subagentModel ?? "unknown"} is unavailable; this session will fall back to the current session model when delegation runs.`,
+            "warning",
+          );
+        }
+      }
+    }
     await options.onTierReady?.(runtime.harness.current(), ctx);
     if (typeof pi.getActiveTools === "function" && typeof pi.setActiveTools === "function") {
       const active = new Set(pi.getActiveTools());
       if (runtime.harness.current() === "simple") {
         active.delete("todo_write");
+        active.delete("task_outcome");
         active.delete("harness_result");
         active.delete("git");
       } else {
         active.add("todo_write");
+        active.add("task_outcome");
         active.add("git");
         for (const nativeTool of ["grep", "find", "ls"]) active.add(nativeTool);
         if (runtime.harness.current() === "tdd") active.add("harness_result");
@@ -675,7 +937,13 @@ export function registerPicodeBridge(
       else pi.sendUserMessage(prompt.message, delivery);
     }
   });
-  pi.on("before_agent_start", (event, ctx) => {
+  pi.on("before_agent_start", async (event, ctx) => {
+    if (typeof event.prompt === "string") await slices.adoptUserIntent(event.prompt, ctx);
+    const taskId = slices.currentTaskId();
+    if (taskId !== undefined) {
+      const begun = await runtime.taskIngress.beginRun(taskId);
+      if (!begun.ok) throw new Error(begun.error.message);
+    }
     const injection = sessionPromptInjection(runtime.harness.current(), promptOverride);
     const contextEvents: string[] = [];
     const taskToolsIncluded = taskToolsSummaryPending && taskToolsSummary !== undefined;
@@ -761,7 +1029,6 @@ export function registerPicodeBridge(
       cacheWriteTokens: usage.cacheWrite,
     }, currentPrefixSignals);
     tokensSinceTaskState += usage.input + (usage.output ?? 0);
-    ctx.ui.setStatus("picode-cache", runtime.cacheMeter.format());
     const ts = new Date().toISOString();
     try {
       await appendCacheMetric({
@@ -1124,7 +1391,13 @@ export function registerPicodeBridge(
           ctx.ui.notify(`error: ${loggedOut.error.message}`, "error");
           return;
         }
-        if (loggedOut.value.wasActive) pi.unregisterProvider(loggedOut.value.account.provider);
+        reconcileProviderAfterLogout(
+          pi,
+          runtime,
+          accountAdapter,
+          loggedOut.value.account.piProvider ?? loggedOut.value.account.provider,
+          ctx,
+        );
         ctx.ui.notify(
           `Logged out ${loggedOut.value.account.label}. Credentials were removed; chats and continuity metadata were preserved.`,
           "info",
@@ -1199,38 +1472,37 @@ export function registerPicodeBridge(
     description: "Open the Picode account and chat import center",
     handler: async (_args, ctx) => openAccountImport(ctx),
   });
+  pi.registerCommand("pico-price", {
+    description: "Show complete lifetime token, cache, cost, and active-context usage",
+    handler: async (_args, ctx) => {
+      ctx.ui.notify(
+        renderSessionUsage(ctx.sessionManager.getEntries(), ctx.getContextUsage()),
+        "info",
+      );
+    },
+  });
   pi.registerCommand("subagent-model", {
-    description: "Choose the model used by pi-subagents, or inherit the current chat model",
+    description: "Choose the model and thinking level used by pi-subagents",
     handler: async (args, ctx) => {
-      const inherit = "Inherit current session model";
-      const available = ctx.modelRegistry.getAvailable()
-        .map((model) => `${model.provider}/${model.id}`);
-      const requested = args.trim() === ""
-        ? await ctx.ui.select("Subagent model", [inherit, ...available])
-        : args.trim();
-      if (requested === undefined) return;
-      if (requested !== inherit && requested !== "inherit" && !available.includes(requested)) {
-        ctx.ui.notify(`unknown or unavailable model: ${requested}`, "error");
-        return;
-      }
-      const selected = requested === inherit || requested === "inherit" ? undefined : requested;
-      if (selected === undefined) delete runtime.config.subagentModel;
-      else runtime.config.subagentModel = selected;
-      const saved = await saveConfig(runtime.config);
-      if (!saved.ok) {
-        ctx.ui.notify(saved.error.message, "error");
-        return;
-      }
+      const selected = await promptSubagentSelection(runtime, ctx, {
+        allowInherit: true,
+        ...(args.trim() === "" ? {} : { requestedModel: args.trim() }),
+      });
+      if (selected === undefined) return;
       const configured = await configureSubagentsForSession({
         harnessTier: runtime.harness.current(),
         agentDir: piAgentDir(),
-        ...(selected === undefined ? {} : { defaultModel: selected }),
+        ...(selected.model === undefined ? {} : { defaultModel: selected.model }),
+        ...(selected.thinking === undefined ? {} : { defaultThinking: selected.thinking }),
       });
       if (!configured.ok) {
         ctx.ui.notify(configured.error.message, "error");
         return;
       }
-      ctx.ui.notify(`Subagent model: ${selected ?? "inherit current session"}`, "info");
+      ctx.ui.notify(
+        `Subagent model: ${selected.model ?? "inherit current session"} · thinking ${selected.thinking ?? "inherit parent session"}`,
+        "info",
+      );
       await ctx.reload();
     },
   });
@@ -1256,6 +1528,54 @@ export function registerPicodeBridge(
         ? JSON.stringify({ items: result.value }, null, 2)
         : `error: ${result.error.message}`;
       return { content: [{ type: "text", text }], details: result.ok ? result.value : result.error, ...(result.ok ? {} : { isError: true }) };
+    },
+  });
+
+  pi.registerTool({
+    name: "task_outcome",
+    label: "Task Outcome",
+    description:
+      "Record a structured failed_preflight or blocked Task outcome before reporting that the requested work could not run.",
+    promptSnippet:
+      "If a required preflight cannot be satisfied or work is blocked, call task_outcome before the final response so automation receives a failed terminal event.",
+    parameters: Type.Object({
+      outcome: Type.Union([
+        Type.Literal("failed_preflight"),
+        Type.Literal("blocked"),
+      ]),
+      summary: Type.String({ minLength: 1 }),
+      evidenceRefs: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { maxItems: 100 })),
+    }),
+    async execute(_toolCallId, input) {
+      if (runtime.harness.current() === "simple") {
+        return {
+          content: [{ type: "text", text: "task_outcome is available only in standard or tdd harness" }],
+          details: {},
+          isError: true,
+        };
+      }
+      const taskId = slices.currentTaskId();
+      if (taskId === undefined) {
+        return {
+          content: [{ type: "text", text: "task_outcome requires an active Task" }],
+          details: {},
+          isError: true,
+        };
+      }
+      const recorded = await runtime.taskIngress.reportFailure(taskId, input);
+      const details = recorded.ok
+        ? { taskId, state: "failed", ...input }
+        : recorded.error;
+      return {
+        content: [{
+          type: "text",
+          text: recorded.ok
+            ? JSON.stringify(details, null, 2)
+            : `error: ${recorded.error.message}`,
+        }],
+        details,
+        ...(recorded.ok ? {} : { isError: true }),
+      };
     },
   });
 
@@ -1410,6 +1730,17 @@ export function registerPicodeBridge(
         snapshotNow: () => candidateSnapshot(pi, ctx.cwd),
       });
       pi.appendEntry(TDD_STATE_ENTRY_TYPE, tdd.checkpoint());
+      if (completed.ok && todos.snapshot().some((item) => item.status === "completed")) {
+        const refs = completed.value.gatesPassed.map((gateId) => `gate:${gateId}`);
+        const verified = await todos.verifyCompleted(refs);
+        if (!verified.ok) {
+          return {
+            content: [{ type: "text", text: `error: ${verified.error.message}` }],
+            details: tdd.snapshot(),
+            isError: true,
+          };
+        }
+      }
       admit(completed.ok ? "tdd.completed" : "tdd.gate-failed", completed.ok ? completed.value : completed.error);
       return { content: [{ type: "text", text: completed.ok ? JSON.stringify(completed.value, null, 2) : `error: ${completed.error.message}` }], details: tdd.snapshot(), ...(completed.ok ? {} : { isError: true }) };
     },

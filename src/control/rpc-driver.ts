@@ -271,13 +271,31 @@ export class RpcControlDriver implements ControlDriver {
           // cancelRun already emitted the single terminal event.
         } else if (!approvalRequired || !input.nonInteractive) {
           const state = await client.getState();
-          queue.push(asEvent("run.completed", {
-            runId,
-            executionEpoch: 1,
-            sessionId: state.sessionId,
-            sessionFile: state.sessionFile,
-            text: compact === null ? await client.getLastAssistantText() : compactResult,
-          }));
+          const text = compact === null ? await client.getLastAssistantText() : compactResult;
+          const control = taskBinding === undefined
+            ? undefined
+            : await controlTasks(this.tasksRoot()).readControl(taskBinding.taskId);
+          if (control?.ok === true && control.value.state === "failed" && control.value.outcome !== undefined) {
+            queue.push(asEvent("run.failed", {
+              runId,
+              executionEpoch: 1,
+              sessionId: state.sessionId,
+              sessionFile: state.sessionFile,
+              taskId: taskBinding?.taskId,
+              outcome: control.value.outcome,
+              summary: control.value.summary,
+              evidenceRefs: control.value.evidenceRefs ?? [],
+              text,
+            }));
+          } else {
+            queue.push(asEvent("run.completed", {
+              runId,
+              executionEpoch: 1,
+              sessionId: state.sessionId,
+              sessionFile: state.sessionFile,
+              text,
+            }));
+          }
         }
       } catch (cause) {
         const message = cause instanceof Error ? cause.message : String(cause);

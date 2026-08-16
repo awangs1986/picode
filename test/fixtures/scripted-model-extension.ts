@@ -18,7 +18,25 @@ export default function scriptedModel(pi: ExtensionAPI): void {
         ).at(-1);
         const userText = latestUser === undefined ? "" : JSON.stringify(latestUser.content);
         const requestedTool = userText.includes("TOOL:");
+        const requestedTaskFailure = userText.includes("TASK:FAIL_PREFLIGHT");
         const toolResultCount = context.messages.filter((message) => message.role === "toolResult").length;
+        if (requestedTaskFailure && toolResultCount === 0) {
+          const toolCall = {
+            type: "toolCall" as const,
+            id: "scripted-task-failure",
+            name: "task_outcome",
+            arguments: {
+              outcome: "failed_preflight",
+              summary: "Scripted preflight could not satisfy the required policy",
+              evidenceRefs: ["fixture:preflight"],
+            },
+          };
+          const partial = { ...base, content: [toolCall] };
+          stream.push({ type: "toolcall_start", contentIndex: 0, partial: base });
+          stream.push({ type: "toolcall_end", contentIndex: 0, toolCall, partial });
+          stream.push({ type: "done", reason: "toolUse", message: { ...partial, stopReason: "toolUse" } });
+          return;
+        }
         const requestedCalls = userText.includes("TOOL:TWICE") || userText.includes("TOOL:MUTATE") ? 2 : 1;
         if (requestedTool && toolResultCount < requestedCalls) {
           const command = userText.includes("TOOL:WRITE")

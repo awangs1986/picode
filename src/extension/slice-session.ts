@@ -11,6 +11,7 @@ import { PiSessionLifecycle } from "../engine/pi-session-lifecycle.ts";
 export const TASK_BINDING_ENTRY_TYPE = "picode.task-binding";
 export const TASK_CAPSULE_MESSAGE_TYPE = "picode.task-capsule";
 export const MAX_CAPSULE_FILES_TOUCHED = 200;
+const MAX_TASK_TITLE_LENGTH = 160;
 
 export interface TaskBinding {
   taskId: string;
@@ -20,6 +21,12 @@ export interface TaskBinding {
 function sessionIdOf(ctx: Pick<ExtensionContext, "cwd" | "sessionManager">): string {
   const manager = ctx.sessionManager as { getSessionId?: () => string };
   return typeof manager.getSessionId === "function" ? manager.getSessionId() : `ephemeral:${ctx.cwd}`;
+}
+
+function taskTitleFromPrompt(prompt: string): string {
+  const normalized = prompt.replace(/\s+/gu, " ").trim();
+  if (normalized.length <= MAX_TASK_TITLE_LENGTH) return normalized;
+  return `${normalized.slice(0, MAX_TASK_TITLE_LENGTH - 3)}...`;
 }
 
 export function restoreTaskBinding(entries: readonly unknown[]): TaskBinding | undefined {
@@ -42,6 +49,7 @@ export class SliceSessionCoordinator {
   private sessionId: string | undefined;
   private turnCount = 0;
   private taskTitle = "";
+  private taskTitleIsPlaceholder = false;
   private readonly advisedChannels = new Set<string>();
   private hardBoundary = false;
   private hardBoundaryDeferred = false;
@@ -108,10 +116,12 @@ export class SliceSessionCoordinator {
       this.sessionId = sessionIdOf(ctx);
       const task = await this.runtime.taskIngress.read(restored.taskId);
       this.taskTitle = task.ok ? task.value.title : restored.taskId;
+      this.taskTitleIsPlaceholder = !task.ok || task.value.title === task.value.externalId;
       return;
     }
     const manager = ctx.sessionManager as { getSessionName?: () => string | undefined };
-    const title = manager.getSessionName?.() ?? sessionIdOf(ctx);
+    const sessionName = manager.getSessionName?.()?.trim();
+    const title = sessionName === undefined || sessionName === "" ? sessionIdOf(ctx) : sessionName;
     const accepted = await this.runtime.taskIngress.accept({
       source: "pi-session",
       externalId: sessionIdOf(ctx),
@@ -127,6 +137,20 @@ export class SliceSessionCoordinator {
     sessionManager.appendCustomEntry?.(TASK_BINDING_ENTRY_TYPE, this.binding);
     this.sessionId = sessionIdOf(ctx);
     this.taskTitle = title;
+    this.taskTitleIsPlaceholder = sessionName === undefined || sessionName === "";
+  }
+
+  async adoptUserIntent(prompt: string, ctx: ExtensionContext): Promise<void> {
+    if (this.binding === undefined || !this.taskTitleIsPlaceholder) return;
+    const title = taskTitleFromPrompt(prompt);
+    if (title === "") return;
+    const updated = await this.runtime.taskIngress.updateTitle(this.binding.taskId, title);
+    if (!updated.ok) {
+      ctx.ui.notify?.(`Task title was not updated: ${updated.error.message}`, "warning");
+      return;
+    }
+    this.taskTitle = updated.value.title;
+    this.taskTitleIsPlaceholder = false;
   }
 
   observeTurn(ctx: ExtensionContext): void {

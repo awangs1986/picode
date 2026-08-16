@@ -401,6 +401,9 @@ export interface TaskTodoItem {
   id: string;
   content: string;
   status: "pending" | "in_progress" | "completed";
+  /** Agent progress and verification are separate facts. */
+  verification?: "unverified" | "verified";
+  verificationRefs?: string[];
 }
 
 export interface TaskTodoState {

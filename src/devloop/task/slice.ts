@@ -1,5 +1,5 @@
 /**
- * Slice 触发（MODULES.md §3.2）：三通道并存，只建议不强制。
+ * Slice 触发（MODULES.md §3.2）：回合数只建议；真实上下文压力才强制。
  * 切片动作 = 生成 Capsule → 新会话/子代理（context fresh）→ 注入 Capsule。
  * 阈值 P2 校准：常量集中于此，作者实测后调。
  */
@@ -11,14 +11,12 @@ export interface SliceThresholds {
   turnCount: number;
   /** hard boundary; defaults remain active when callers only customize soft thresholds */
   hardContextUsageRatio?: number;
-  hardTurnCount?: number;
 }
 
 export const DEFAULT_SLICE_THRESHOLDS: SliceThresholds = {
   contextUsageRatio: 0.6,
   turnCount: 40,
   hardContextUsageRatio: 0.82,
-  hardTurnCount: 64,
 };
 
 export type SliceChannel = "user-command" | "soft-threshold" | "hard-threshold" | "watchdog-scope-drift";
@@ -44,8 +42,8 @@ export function evaluateSlice(
   thresholds: SliceThresholds = DEFAULT_SLICE_THRESHOLDS,
 ): SliceAdvice {
   const channels: SliceChannel[] = [];
-  const hard = signals.contextUsageRatio >= (thresholds.hardContextUsageRatio ?? DEFAULT_SLICE_THRESHOLDS.hardContextUsageRatio ?? 0.82) ||
-    signals.turnCount >= (thresholds.hardTurnCount ?? DEFAULT_SLICE_THRESHOLDS.hardTurnCount ?? 64);
+  const hard = signals.contextUsageRatio >=
+    (thresholds.hardContextUsageRatio ?? DEFAULT_SLICE_THRESHOLDS.hardContextUsageRatio ?? 0.82);
 
   if (signals.userRequested) channels.push("user-command");
   if (

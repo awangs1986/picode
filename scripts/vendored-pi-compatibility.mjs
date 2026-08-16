@@ -46,6 +46,40 @@ const seedTypesPatched = `    getSessionFile(): string | undefined;
     _persist(entry: SessionEntry): void;`;
 const readonlyManagerOriginal = `"getSessionName">;`;
 const readonlyManagerPatched = `"getSessionName" | "persistSessionSeed">;`;
+const footerLatestCacheOriginal = `                const latestPromptTokens = entry.message.usage.input + entry.message.usage.cacheRead + entry.message.usage.cacheWrite;
+                latestCacheHitRate =
+                    latestPromptTokens > 0 ? (entry.message.usage.cacheRead / latestPromptTokens) * 100 : undefined;`;
+const footerLatestCachePatched = `                const latestPromptTokens = entry.message.usage.input + entry.message.usage.cacheRead + entry.message.usage.cacheWrite;
+                // Picode compatibility seam: retain the latest valid cache hit across zero-usage errors.
+                if (latestPromptTokens > 0) {
+                    latestCacheHitRate = (entry.message.usage.cacheRead / latestPromptTokens) * 100;
+                }`;
+const footerStatsOriginal = `        // Build stats line
+        const statsParts = [];
+        if (usageTotals.input)
+            statsParts.push(\`↑\${formatTokens(usageTotals.input)}\`);
+        if (usageTotals.output)
+            statsParts.push(\`↓\${formatTokens(usageTotals.output)}\`);
+        if (usageTotals.cacheRead)
+            statsParts.push(\`R\${formatTokens(usageTotals.cacheRead)}\`);
+        if (usageTotals.cacheWrite)
+            statsParts.push(\`W\${formatTokens(usageTotals.cacheWrite)}\`);
+        if ((usageTotals.cacheRead > 0 || usageTotals.cacheWrite > 0) && latestCacheHitRate !== undefined) {
+            statsParts.push(\`CH\${latestCacheHitRate.toFixed(1)}%\`);
+        }
+        // Kimi Coding is subscription-backed despite using API-key authentication.
+        const usingSubscription = state.model
+            ? state.model.provider === "kimi-coding" || this.session.modelRuntime.isUsingSubscription(state.model.provider)
+            : false;
+        if (usageTotals.cost || usingSubscription) {
+            const costStr = \`$\${usageTotals.cost.toFixed(3)}\${usingSubscription ? " (sub)" : ""}\`;
+            statsParts.push(costStr);
+        }`;
+const footerStatsPatched = `        // Build stats line. Picode keeps lifetime price totals behind /pico-price.
+        const statsParts = [];
+        if (latestCacheHitRate !== undefined) {
+            statsParts.push(\`CH\${latestCacheHitRate.toFixed(1)}%\`);
+        }`;
 
 function applyPinnedPatch(source, patch) {
   if (source.includes(patch.original)) return source.replace(patch.original, patch.replacement);
@@ -93,6 +127,23 @@ export function applyVendoredPiCompatibility(piDistRoot) {
           replacement: readonlyManagerPatched,
           marker: readonlyManagerPatched,
           error: "Unsupported Pi ReadonlySessionManager layout; review the seeded-session compatibility patch before upgrading.",
+        },
+      ],
+    },
+    {
+      path: join(piDistRoot, "modes", "interactive", "components", "footer.js"),
+      patches: [
+        {
+          original: footerLatestCacheOriginal,
+          replacement: footerLatestCachePatched,
+          marker: "Picode compatibility seam: retain the latest valid cache hit",
+          error: "Unsupported Pi footer cache layout; review the pinned Pi compatibility patch before upgrading.",
+        },
+        {
+          original: footerStatsOriginal,
+          replacement: footerStatsPatched,
+          marker: "Picode keeps lifetime price totals behind /pico-price",
+          error: "Unsupported Pi footer stats layout; review the pinned Pi compatibility patch before upgrading.",
         },
       ],
     },

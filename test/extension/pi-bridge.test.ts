@@ -11,7 +11,14 @@ import {
   buildFreshReviewTask,
   candidateSnapshot,
   registerPicodeBridge,
+  requestFreshReview,
 } from "../../src/extension/pi-bridge.ts";
+import {
+  SUBAGENT_DELEGATION_REQUEST_EVENT,
+  SUBAGENT_DELEGATION_RESPONSE_EVENT,
+  type SubagentDelegationRequest,
+  type SubagentDelegationResponse,
+} from "pi-subagents/delegation";
 import { withTempPicodeDir } from "../helpers/temp-dir.ts";
 import { WorktreeRegistry } from "../../src/engine/worktree.ts";
 
@@ -23,6 +30,137 @@ describe("fresh TDD review scope", () => {
     expect(task).toContain("git diff");
     expect(task).toContain(".picode-state");
     expect(task).toContain("structured {passed, blockers}");
+    expect(task).toContain("repository root");
+    expect(task).toContain("repository-root-relative");
+    expect(task).toContain("PowerShell");
+  });
+
+  it("launches a nested-workspace reviewer from the Git repository root", async () => {
+    let request: SubagentDelegationRequest | undefined;
+    const listeners = new Map<string, Set<(value: unknown) => void>>();
+    const events = {
+      on(name: string, listener: (value: unknown) => void) {
+        const bucket = listeners.get(name) ?? new Set();
+        bucket.add(listener);
+        listeners.set(name, bucket);
+        return () => bucket.delete(listener);
+      },
+      emit(name: string, value: unknown) {
+        if (name === SUBAGENT_DELEGATION_REQUEST_EVENT) {
+          request = value as SubagentDelegationRequest;
+          queueMicrotask(() => events.emit(SUBAGENT_DELEGATION_RESPONSE_EVENT, {
+            requestId: request?.requestId ?? "missing",
+            ownerRunId: request?.ownerRunId ?? "missing",
+            nodeId: request?.nodeId ?? "missing",
+            status: "completed",
+            runId: "review-run",
+            result: { kind: "structured", value: { passed: true, blockers: [] } },
+          } satisfies SubagentDelegationResponse));
+        }
+        for (const listener of listeners.get(name) ?? []) listener(value);
+      },
+    };
+    const pi = {
+      events,
+      exec: vi.fn(async (_command: string, args: string[]) => ({
+        code: 0,
+        stdout: args.includes("--show-toplevel") ? "D:/godot project/pulse.GS\n" : "",
+        stderr: "",
+      })),
+    } as unknown as ExtensionAPI;
+
+    const result = await requestFreshReview({
+      pi,
+      ownerRunId: "owner",
+      cwd: "D:/godot project/pulse.GS/apps/pulse-ui",
+      task: buildFreshReviewTask("pulse-ui"),
+      timeoutMs: 1_000,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(request?.cwd).toBe("D:/godot project/pulse.GS");
+  });
+
+  it("accepts a locally valid final review result after recoverable child tool errors", async () => {
+    const listeners = new Map<string, Set<(value: unknown) => void>>();
+    const events = {
+      on(name: string, listener: (value: unknown) => void) {
+        const bucket = listeners.get(name) ?? new Set();
+        bucket.add(listener);
+        listeners.set(name, bucket);
+        return () => bucket.delete(listener);
+      },
+      emit(name: string, value: unknown) {
+        if (name === SUBAGENT_DELEGATION_REQUEST_EVENT) {
+          const request = value as SubagentDelegationRequest;
+          queueMicrotask(() => events.emit(SUBAGENT_DELEGATION_RESPONSE_EVENT, {
+            requestId: request.requestId,
+            ownerRunId: request.ownerRunId,
+            nodeId: request.nodeId,
+            status: "failed",
+            error: "An earlier read-only tool call failed",
+            runId: "review-run-with-recovered-output",
+            result: { kind: "structured", value: { passed: true, blockers: [] } },
+          } satisfies SubagentDelegationResponse));
+        }
+        for (const listener of listeners.get(name) ?? []) listener(value);
+      },
+    };
+    const pi = {
+      events,
+      exec: vi.fn(async () => ({ code: 1, stdout: "", stderr: "not a git repository" })),
+    } as unknown as ExtensionAPI;
+
+    const result = await requestFreshReview({
+      pi,
+      ownerRunId: "owner",
+      cwd: "C:/workspace",
+      task: buildFreshReviewTask("review"),
+      timeoutMs: 1_000,
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      value: { kind: "evidence", id: "review-run-with-recovered-output" },
+    });
+  });
+
+  it("does not accept structured output from a cancelled reviewer", async () => {
+    const listeners = new Map<string, Set<(value: unknown) => void>>();
+    const events = {
+      on(name: string, listener: (value: unknown) => void) {
+        const bucket = listeners.get(name) ?? new Set();
+        bucket.add(listener);
+        listeners.set(name, bucket);
+        return () => bucket.delete(listener);
+      },
+      emit(name: string, value: unknown) {
+        if (name === SUBAGENT_DELEGATION_REQUEST_EVENT) {
+          const request = value as SubagentDelegationRequest;
+          queueMicrotask(() => events.emit(SUBAGENT_DELEGATION_RESPONSE_EVENT, {
+            requestId: request.requestId,
+            ownerRunId: request.ownerRunId,
+            nodeId: request.nodeId,
+            status: "cancelled",
+            result: { kind: "structured", value: { passed: true, blockers: [] } },
+          } satisfies SubagentDelegationResponse));
+        }
+        for (const listener of listeners.get(name) ?? []) listener(value);
+      },
+    };
+
+    const result = await requestFreshReview({
+      pi: {
+        events,
+        exec: vi.fn(async () => ({ code: 1, stdout: "", stderr: "not a git repository" })),
+      } as unknown as ExtensionAPI,
+      ownerRunId: "owner",
+      cwd: "C:/workspace",
+      task: buildFreshReviewTask("review"),
+      timeoutMs: 1_000,
+    });
+
+    expect(result.ok).toBe(false);
   });
 });
 
@@ -73,6 +211,7 @@ describe("Pi 0.84 Bridge feasibility seam", () => {
       "pico-logout",
       "pico-account",
       "pico-import",
+      "pico-price",
     ]));
     expect([...pi.commands.keys()]).not.toEqual(expect.arrayContaining([
       "accounts",
@@ -665,6 +804,38 @@ describe("Pi 0.84 Bridge feasibility seam", () => {
     });
   });
 
+  it("logs out a stored Cursor account and removes the provider from the live model registry", async () => {
+    await withTempPicodeDir(async () => {
+      const pi = fakePi();
+      const runtime = createRuntime();
+      const imported = await runtime.accounts.importCredentials({
+        stableId: "cursor-stored",
+        provider: "cursor",
+        piProvider: "cursor",
+        label: "Cursor stored",
+        authKind: "api_key",
+        chatCompatible: true,
+        credentials: { accessToken: "cursor-secret" },
+      });
+      expect(imported.ok).toBe(true);
+      // The Cursor SDK registers its fallback/live provider independently of
+      // which Picode Vault account is active. This is the state users see in
+      // /model after importing a stored (not yet active) account.
+      pi.providers.set("cursor", { models: [{ id: "grok-4.6" }] });
+      registerPicodeBridge(pi.api, runtime);
+      const ctx = {
+        ...fakeContext(true),
+        ui: { notify: vi.fn(), confirm: vi.fn(async () => true), select: vi.fn() },
+        modelRegistry: { getProvider: () => ({ id: "cursor" }), getAll: () => [] },
+      } as unknown as ExtensionContext;
+
+      await pi.commands.get("pico-logout")?.handler("cursor:cursor-stored", ctx);
+
+      expect(pi.providers.has("cursor")).toBe(false);
+      expect(runtime.accounts.credentialsFor("cursor:cursor-stored").ok).toBe(false);
+    });
+  });
+
   it("refreshes the live Cursor model catalog after importing and activating an API key", async () => {
     await withTempPicodeDir(async () => {
       const pi = fakePi();
@@ -803,6 +974,45 @@ describe("Pi 0.84 Bridge feasibility seam", () => {
         .map(([, value]) => (value as { capsuleId: string }).capsuleId);
       expect(retriedCapsuleIds).toHaveLength(2);
       expect(new Set(retriedCapsuleIds)).toHaveLength(1);
+    });
+  });
+
+  it("adopts the first real user request when Pi has not named the Task yet", async () => {
+    await withTempPicodeDir(async () => {
+      const pi = fakePi();
+      const runtime = createRuntime();
+      registerPicodeBridge(pi.api, runtime);
+      const ctx = {
+        ...fakeContext(true),
+        sessionManager: {
+          getSessionId: () => "unnamed-session",
+          getSessionName: () => undefined,
+          getBranch: () => [],
+        },
+      } as unknown as ExtensionContext;
+
+      await pi.handlers.get("session_start")?.(
+        { type: "session_start", reason: "startup" } as never,
+        ctx,
+      );
+      await pi.handlers.get("before_agent_start")?.({
+        type: "before_agent_start",
+        prompt: "Implement deterministic note lanes with tests",
+        systemPrompt: "PI BASE",
+        systemPromptOptions: {},
+      } as never, ctx);
+
+      const ref = await runtime.taskIngress.accept({
+        source: "pi-session",
+        externalId: "unnamed-session",
+        title: "ignored retry title",
+        harnessTier: "simple",
+        workspace: "C:/repo",
+      });
+      expect(ref.ok).toBe(true);
+      if (!ref.ok) return;
+      const task = await runtime.taskIngress.read(ref.value.taskId);
+      expect(task.ok && task.value.title).toBe("Implement deterministic note lanes with tests");
     });
   });
 
@@ -1015,29 +1225,302 @@ describe("Pi 0.84 Bridge feasibility seam", () => {
     });
   });
 
-  it("lets the user choose the pi-subagents model from Pi's available model list", async () => {
+  it("lets the user choose the pi-subagents model and a supported thinking level", async () => {
     await withTempPicodeDir(async () => {
       const pi = fakePi();
       const runtime = createRuntime();
       registerPicodeBridge(pi.api, runtime);
       const reload = vi.fn(async () => {});
       const notify = vi.fn();
+      const select = vi.fn()
+        .mockResolvedValueOnce("openai/gpt-5-mini")
+        .mockResolvedValueOnce("High");
       const ctx = {
-        ui: { notify, select: vi.fn(async () => "openai/gpt-5-mini") },
+        ui: { notify, select },
         modelRegistry: {
           getAvailable: () => [
-            { provider: "openai", id: "gpt-5-mini" },
-            { provider: "anthropic", id: "claude-sonnet" },
+            {
+              provider: "openai",
+              id: "gpt-5-mini",
+              reasoning: true,
+              thinkingLevelMap: {
+                off: "none",
+                minimal: "minimal",
+                low: "low",
+                medium: "medium",
+                high: "high",
+                xhigh: null,
+                max: null,
+              },
+            },
+            { provider: "anthropic", id: "claude-sonnet", reasoning: true },
+            { provider: "cursor", id: "retired-catalog-model", reasoning: true },
           ],
+          getProviderAuthStatus: () => ({ configured: true, source: "fallback" }),
         },
+        scopedModels: [{
+          model: {
+            provider: "openai",
+            id: "gpt-5-mini",
+            reasoning: true,
+            thinkingLevelMap: {
+              off: "none",
+              minimal: "minimal",
+              low: "low",
+              medium: "medium",
+              high: "high",
+              xhigh: null,
+              max: null,
+            },
+          },
+        }],
         reload,
       } as unknown as ExtensionContext;
 
       await pi.commands.get("subagent-model")?.handler("", ctx);
 
       expect(runtime.config.subagentModel).toBe("openai/gpt-5-mini");
+      expect(runtime.config.subagentThinking).toBe("high");
+      expect(runtime.config).toMatchObject({ subagentSelectionCompleted: true });
+      expect(select).toHaveBeenNthCalledWith(1, "Subagent model", [
+        "Inherit current session model",
+        "openai/gpt-5-mini",
+      ]);
+      expect(select).toHaveBeenNthCalledWith(2, "Subagent thinking · openai/gpt-5-mini", [
+        "Inherit parent session thinking",
+        "Off",
+        "Minimal",
+        "Low",
+        "Medium",
+        "High",
+      ]);
       expect(reload).toHaveBeenCalledOnce();
-      expect(notify).toHaveBeenCalledWith(expect.stringContaining("openai/gpt-5-mini"), "info");
+      expect(notify).toHaveBeenCalledWith(
+        expect.stringContaining("openai/gpt-5-mini · thinking high"),
+        "info",
+      );
+    });
+  });
+
+  it("uses the same unscoped available models as the ordinary Agent regardless of provider source", async () => {
+    await withTempPicodeDir(async () => {
+      const pi = fakePi();
+      const runtime = createRuntime();
+      const imported = await runtime.accounts.importMany([{
+        stableId: "team-proxy",
+        provider: "team-proxy",
+        piProvider: "openai",
+        label: "Team proxy",
+        authKind: "api_key",
+        chatCompatible: true,
+        credentials: { accessToken: "test-secret" },
+      }], "team-proxy");
+      expect(imported.ok).toBe(true);
+      registerPicodeBridge(pi.api, runtime);
+      const select = vi.fn()
+        .mockResolvedValueOnce("team-proxy/gpt-5.6-terra")
+        .mockResolvedValueOnce("Inherit parent session thinking");
+      const ctx = {
+        ui: { notify: vi.fn(), select },
+        modelRegistry: {
+          getAvailable: () => [
+            { provider: "team-proxy", id: "gpt-5.6-terra", reasoning: true },
+            { provider: "extension-default", id: "shared-model", reasoning: true },
+          ],
+          getProviderAuthStatus: () => ({ configured: true, source: "fallback" }),
+        },
+        scopedModels: [],
+        reload: vi.fn(async () => {}),
+      } as unknown as ExtensionContext;
+
+      await pi.commands.get("subagent-model")?.handler("", ctx);
+
+      expect(select).toHaveBeenNthCalledWith(1, "Subagent model", [
+        "Inherit current session model",
+        "team-proxy/gpt-5.6-terra",
+        "extension-default/shared-model",
+      ]);
+      expect(runtime.config.subagentModel).toBe("team-proxy/gpt-5.6-terra");
+    });
+  });
+
+  it("asks for a subagent model before a Standard session when the user has never selected one", async () => {
+    await withTempPicodeDir(async () => {
+      const pi = fakePi();
+      const runtime = createRuntime();
+      const observedAtTierReady: unknown[] = [];
+      registerPicodeBridge(pi.api, runtime, {
+        onTierReady: async () => { observedAtTierReady.push(structuredClone(runtime.config)); },
+      });
+      const select = vi.fn()
+        .mockResolvedValueOnce("openai/gpt-5-mini")
+        .mockResolvedValueOnce("High");
+      const ctx = {
+        ...fakeContext(true),
+        hasUI: true,
+        mode: "tui",
+        modelRegistry: {
+          getAvailable: () => [{
+            provider: "openai",
+            id: "gpt-5-mini",
+            reasoning: true,
+            thinkingLevelMap: {
+              off: "none",
+              minimal: "minimal",
+              low: "low",
+              medium: "medium",
+              high: "high",
+              xhigh: null,
+              max: null,
+            },
+          }],
+          getProviderAuthStatus: () => ({ configured: true, source: "stored" }),
+        },
+        sessionManager: {
+          getSessionId: () => "subagent-first-selection",
+          getBranch: () => [{
+            type: "custom",
+            customType: "picode.harness-tier",
+            data: { tier: "standard" },
+          }],
+        },
+        ui: { confirm: vi.fn(async () => true), notify: vi.fn(), select },
+      } as unknown as ExtensionContext;
+
+      await pi.handlers.get("session_start")?.(
+        { type: "session_start", reason: "startup" } as never,
+        ctx,
+      );
+
+      expect(select).toHaveBeenNthCalledWith(1, expect.stringContaining("Subagent model"), [
+        "openai/gpt-5-mini",
+      ]);
+      expect(runtime.config).toMatchObject({
+        subagentSelectionCompleted: true,
+        subagentModel: "openai/gpt-5-mini",
+        subagentThinking: "high",
+      });
+      expect(observedAtTierReady).toEqual([expect.objectContaining({
+        subagentSelectionCompleted: true,
+        subagentModel: "openai/gpt-5-mini",
+      })]);
+    });
+  });
+
+  it("asks for a replacement before a TDD session when the selected subagent model is unavailable", async () => {
+    await withTempPicodeDir(async () => {
+      const pi = fakePi();
+      const runtime = createRuntime();
+      Object.assign(runtime.config, {
+        subagentSelectionCompleted: true,
+        subagentModel: "cursor/retired-model",
+        subagentThinking: "xhigh",
+      });
+      registerPicodeBridge(pi.api, runtime);
+      const select = vi.fn()
+        .mockResolvedValueOnce("cursor-live/current-model")
+        .mockResolvedValueOnce("Medium");
+      const ctx = {
+        ...fakeContext(true),
+        hasUI: true,
+        mode: "tui",
+        modelRegistry: {
+          getAvailable: () => [
+            {
+              provider: "cursor",
+              id: "retired-model",
+              reasoning: true,
+              thinkingLevelMap: { medium: "medium", high: "high" },
+            },
+            {
+              provider: "cursor-live",
+              id: "current-model",
+              reasoning: true,
+              thinkingLevelMap: { medium: "medium", high: "high" },
+            },
+          ],
+          getProviderAuthStatus: (provider: string) => provider === "cursor-live"
+            ? { configured: true, source: "runtime" }
+            : { configured: true, source: "fallback" },
+        },
+        scopedModels: [{
+          model: {
+            provider: "cursor-live",
+            id: "current-model",
+            reasoning: true,
+            thinkingLevelMap: { medium: "medium", high: "high" },
+          },
+        }],
+        sessionManager: {
+          getSessionId: () => "subagent-replacement",
+          getBranch: () => [{
+            type: "custom",
+            customType: "picode.harness-tier",
+            data: { tier: "tdd" },
+          }],
+        },
+        ui: { confirm: vi.fn(async () => true), notify: vi.fn(), select },
+      } as unknown as ExtensionContext;
+
+      await pi.handlers.get("session_start")?.(
+        { type: "session_start", reason: "resume" } as never,
+        ctx,
+      );
+
+      expect(select).toHaveBeenNthCalledWith(
+        1,
+        expect.stringContaining("unavailable"),
+        ["Inherit current session model", "cursor-live/current-model"],
+      );
+      expect(runtime.config).toMatchObject({
+        subagentSelectionCompleted: true,
+        subagentModel: "cursor-live/current-model",
+        subagentThinking: "medium",
+      });
+    });
+  });
+
+  it("continues a TDD session when replacement selection is cancelled", async () => {
+    await withTempPicodeDir(async () => {
+      const pi = fakePi();
+      const runtime = createRuntime();
+      Object.assign(runtime.config, {
+        subagentSelectionCompleted: true,
+        subagentModel: "openai/unavailable-reviewer",
+        subagentThinking: "high",
+      });
+      const tierReady = vi.fn(async () => {});
+      registerPicodeBridge(pi.api, runtime, { onTierReady: tierReady });
+      const notify = vi.fn();
+      const ctx = {
+        ...fakeContext(true),
+        hasUI: true,
+        mode: "tui",
+        model: { provider: "openai", id: "gpt-5.6-sol" },
+        scopedModels: [{
+          model: { provider: "openai", id: "gpt-5.6-sol", reasoning: true },
+        }],
+        sessionManager: {
+          getSessionId: () => "subagent-fallback-after-cancel",
+          getBranch: () => [{
+            type: "custom",
+            customType: "picode.harness-tier",
+            data: { tier: "tdd" },
+          }],
+        },
+        ui: { confirm: vi.fn(async () => true), notify, select: vi.fn(async () => undefined) },
+      } as unknown as ExtensionContext;
+
+      await pi.handlers.get("session_start")?.(
+        { type: "session_start", reason: "resume" } as never,
+        ctx,
+      );
+
+      expect(tierReady).toHaveBeenCalledWith("tdd", ctx);
+      expect(notify).toHaveBeenCalledWith(
+        expect.stringContaining("fall back to the current session model"),
+        "warning",
+      );
     });
   });
 
@@ -1211,7 +1694,7 @@ describe("Pi 0.84 Bridge feasibility seam", () => {
     expect(probe.snapshot().toolIntentLatencyMs).toEqual([1]);
   });
 
-  it("projects real Pi usage into the cache status widget", async () => {
+  it("records real Pi cache usage without adding a second footer status row", async () => {
     const pi = fakePi();
     const runtime = createRuntime();
     registerPicodeBridge(pi.api, runtime);
@@ -1225,7 +1708,53 @@ describe("Pi 0.84 Bridge feasibility seam", () => {
       } as never,
       { ui: { setStatus } } as unknown as ExtensionContext,
     );
-    expect(setStatus).toHaveBeenCalledWith("picode-cache", expect.stringContaining("90%"));
+    expect(setStatus).not.toHaveBeenCalled();
+    expect(runtime.cacheMeter.snapshot()).toMatchObject({
+      telemetryAvailable: true,
+      lastTurnHitRate: 0.9,
+    });
+  });
+
+  it("shows complete lifetime usage only when the user requests pico-price", async () => {
+    const pi = fakePi();
+    const runtime = createRuntime();
+    registerPicodeBridge(pi.api, runtime);
+    const notify = vi.fn();
+    const ctx = {
+      getContextUsage: () => ({ tokens: 100_000, contextWindow: 1_000_000, percent: 10 }),
+      sessionManager: {
+        getEntries: () => [{
+          type: "message",
+          message: {
+            role: "assistant",
+            usage: {
+              input: 10_000,
+              output: 2_000,
+              cacheRead: 90_000,
+              cacheWrite: 1_000,
+              cost: { total: 1.234 },
+            },
+          },
+        }],
+      },
+      ui: { notify },
+    } as unknown as ExtensionContext;
+
+    await pi.commands.get("pico-price")?.handler("", ctx);
+
+    expect(notify).toHaveBeenCalledOnce();
+    expect(notify.mock.calls[0]?.[1]).toBe("info");
+    const report = notify.mock.calls[0]?.[0] as string;
+    for (const line of [
+      "Session usage",
+      "Input: 10k",
+      "Output: 2.0k",
+      "Cache read: 90k",
+      "Cache write: 1.0k",
+      "Cache hit: 89.1%",
+      "Estimated cost: $1.234",
+      "Current context: 100k/1.0M (10.0%)",
+    ]) expect(report).toContain(line);
   });
 
   it("records real prefix signals and cache usage without exposing prompt material", async () => {
@@ -1306,6 +1835,59 @@ describe("Pi 0.84 Bridge feasibility seam", () => {
 
     expect(notify).toHaveBeenCalledTimes(1);
     expect(notify).toHaveBeenCalledWith(expect.stringContaining("/slice"), "warning");
+  });
+
+  it("keeps read-only discovery available after a hard Slice boundary while blocking mutations", async () => {
+    await withTempPicodeDir(async () => {
+      const pi = fakePi();
+      const runtime = createRuntime();
+      runtime.harness.switchTo("standard");
+      registerPicodeBridge(pi.api, runtime);
+      const notify = vi.fn();
+      const ctx = {
+        ...fakeContext(true),
+        getContextUsage: () => ({ tokens: 265_000, contextWindow: 320_000, percent: 83 }),
+        ui: { confirm: vi.fn(async () => true), notify, setStatus: vi.fn() },
+      } as unknown as ExtensionContext;
+      const turn = {
+        message: { role: "assistant", usage: { input: 10, output: 2, cacheRead: 0, cacheWrite: 0 } },
+      } as never;
+
+      await pi.handlers.get("turn_end")?.(turn, ctx);
+
+      const searchCatalog = await pi.handlers.get("tool_call")?.({
+        type: "tool_call",
+        toolCallId: "slice-capability-read",
+        toolName: "search_tools",
+        input: { action: "search", query: "web" },
+      } as never, ctx);
+      const searchContent = await pi.handlers.get("tool_call")?.({
+        type: "tool_call",
+        toolCallId: "slice-web-read",
+        toolName: "get_search_content",
+        input: { resultId: "result-1" },
+      } as never, ctx);
+      const readSymbol = await pi.handlers.get("tool_call")?.({
+        type: "tool_call",
+        toolCallId: "slice-symbol-read",
+        toolName: "read_symbol",
+        input: { symbol: "Example" },
+      } as never, ctx);
+      const write = await pi.handlers.get("tool_call")?.({
+        type: "tool_call",
+        toolCallId: "slice-write",
+        toolName: "write",
+        input: { path: "src/example.ts", content: "export {};" },
+      } as never, ctx);
+
+      expect(searchCatalog).toBeUndefined();
+      expect(searchContent).toBeUndefined();
+      expect(readSymbol).toBeUndefined();
+      expect(write).toEqual({
+        block: true,
+        reason: expect.stringContaining("hard Slice boundary reached"),
+      });
+    });
   });
 
   it("registers the existing search_tools domain handler as a real Pi tool", async () => {
@@ -1424,6 +2006,109 @@ describe("Pi 0.84 Bridge feasibility seam", () => {
       expect(prompt?.systemPrompt).toContain("PI BASE");
       expect(prompt?.systemPrompt).toContain("Picode Harness Core (Lean)");
       expect(prompt?.systemPrompt).not.toContain("recorded RED");
+    });
+  });
+
+  it("records an explicit Standard preflight failure through the Task authority", async () => {
+    await withTempPicodeDir(async () => {
+      const pi = fakePi();
+      const runtime = createRuntime();
+      registerPicodeBridge(pi.api, runtime);
+      const ctx = {
+        cwd: "C:/repo",
+        sessionManager: {
+          getSessionId: () => "standard-failed-preflight",
+          getBranch: () => [{
+            type: "custom",
+            customType: "picode.harness-tier",
+            data: { tier: "standard" },
+          }],
+        },
+        ui: { confirm: vi.fn(async () => true), select: vi.fn() },
+      } as unknown as ExtensionContext;
+      await pi.handlers.get("session_start")?.({ type: "session_start", reason: "startup" } as never, ctx);
+
+      expect(pi.activeTools()).toContain("task_outcome");
+      const result = await pi.tools.get("task_outcome")?.execute(
+        "failed-preflight",
+        {
+          outcome: "failed_preflight",
+          summary: "Researcher did not resolve to the requested thinking level",
+          evidenceRefs: ["config:subagents"],
+        },
+        undefined,
+        undefined,
+        ctx,
+      );
+      expect((result as { isError?: boolean } | undefined)?.isError).not.toBe(true);
+
+      const task = await runtime.taskIngress.accept({
+        source: "pi-session",
+        externalId: "standard-failed-preflight",
+        title: "standard-failed-preflight",
+        harnessTier: "standard",
+        workspace: "C:/repo",
+      });
+      expect(task.ok).toBe(true);
+      if (!task.ok) return;
+      expect(await runtime.taskIngress.readControl(task.value.taskId)).toMatchObject({
+        ok: true,
+        value: {
+          state: "failed",
+          outcome: "failed_preflight",
+          evidenceRefs: ["config:subagents"],
+        },
+      });
+    });
+  });
+
+  it("preserves a failed Task while merely reopening the Chat and resets it on the next real turn", async () => {
+    await withTempPicodeDir(async () => {
+      const runtime = createRuntime();
+      const accepted = await runtime.taskIngress.accept({
+        source: "pi-session",
+        externalId: "failed-resume-session",
+        title: "Resume a failed task",
+        harnessTier: "standard",
+        workspace: "C:/repo",
+      });
+      expect(accepted.ok).toBe(true);
+      if (!accepted.ok) return;
+      await runtime.taskIngress.reportFailure(accepted.value.taskId, {
+        outcome: "blocked",
+        summary: "Waiting for a required input",
+      });
+
+      const pi = fakePi();
+      registerPicodeBridge(pi.api, runtime);
+      const ctx = {
+        cwd: "C:/repo",
+        sessionManager: {
+          getSessionId: () => "failed-resume-session",
+          getBranch: () => [
+            { type: "custom", customType: "picode.harness-tier", data: { tier: "standard" } },
+            { type: "custom", customType: "picode.task-binding", data: { taskId: accepted.value.taskId, taskRevision: 1 } },
+          ],
+        },
+        ui: { confirm: vi.fn(async () => true), select: vi.fn() },
+      } as unknown as ExtensionContext;
+
+      await pi.handlers.get("session_start")?.({ type: "session_start", reason: "resume" } as never, ctx);
+      expect(await runtime.taskIngress.readControl(accepted.value.taskId)).toMatchObject({
+        ok: true,
+        value: { state: "failed", outcome: "blocked" },
+      });
+
+      await pi.handlers.get("before_agent_start")?.({
+        type: "before_agent_start",
+        prompt: "continue",
+        systemPrompt: "PI BASE",
+        systemPromptOptions: {},
+      } as never, ctx);
+      expect(await runtime.taskIngress.readControl(accepted.value.taskId)).toMatchObject({
+        ok: true,
+        value: { state: "running" },
+      });
     });
   });
 

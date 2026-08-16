@@ -130,4 +130,18 @@ describe("evaluateSlice", () => {
     expect(advice.enforce).toBe(true);
     expect(advice.channels).toContain("hard-threshold");
   });
+
+  it("keeps a tool-heavy Slice advisory while the real context remains below the hard boundary", () => {
+    const advice = evaluateSlice({
+      userRequested: false,
+      contextUsageRatio: 0.315,
+      turnCount: 65,
+      scopeDriftReported: false,
+    });
+
+    expect(advice.advise).toBe(true);
+    expect(advice.enforce).toBe(false);
+    expect(advice.channels).toEqual(["soft-threshold"]);
+    expect(advice.reason).not.toContain("hard Slice boundary reached");
+  });
 });

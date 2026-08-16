@@ -27,4 +27,48 @@ describe("TaskIngress.accept", () => {
       expect(restored.ok && restored.value.title).toBe("Fix inventory sync");
     });
   });
+
+  it("records a structured failure outcome and resets it for the next run", async () => {
+    await withTempPicodeDir(async (dir) => {
+      const ingress = new TaskIngress({
+        tasksRoot: join(dir, "tasks"),
+        stateFile: (path, validate) => new StateFile(path, validate),
+      });
+      const accepted = await ingress.accept({
+        source: "pi-session",
+        externalId: "failed-preflight-session",
+        title: "Research with configured subagents",
+        harnessTier: "standard",
+      });
+      expect(accepted.ok).toBe(true);
+      if (!accepted.ok) return;
+
+      const failed = await ingress.reportFailure(accepted.value.taskId, {
+        outcome: "failed_preflight",
+        summary: "Researcher thinking did not match the requested policy",
+        evidenceRefs: ["config:subagents"],
+      });
+      expect(failed.ok).toBe(true);
+      expect((await ingress.readControl(accepted.value.taskId))).toMatchObject({
+        ok: true,
+        value: {
+          state: "failed",
+          outcome: "failed_preflight",
+          summary: "Researcher thinking did not match the requested policy",
+          evidenceRefs: ["config:subagents"],
+        },
+      });
+
+      await ingress.beginRun(accepted.value.taskId);
+      expect((await ingress.readControl(accepted.value.taskId))).toMatchObject({
+        ok: true,
+        value: { state: "running" },
+      });
+      const running = await ingress.readControl(accepted.value.taskId);
+      if (running.ok) {
+        expect(running.value.outcome).toBeUndefined();
+        expect(running.value.summary).toBeUndefined();
+      }
+    });
+  });
 });

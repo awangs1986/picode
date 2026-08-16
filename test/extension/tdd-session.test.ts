@@ -180,6 +180,39 @@ describe("TddSessionController", () => {
     expect(controller.snapshot().lastEvidence?.status).toBe("passed");
   });
 
+  it("reopens only a persisted technical reviewer handoff after process restart", async () => {
+    const controller = new TddSessionController(new QueueExecutor([failed, passed, passed]));
+    controller.begin();
+    await controller.proveRed({ gateId: "runtime", command: "npm test", timeoutMs: 1_000 });
+    const contract = { gateId: "runtime", command: "npm test", timeoutMs: 1_000 };
+    const snapshot = { contentDigest: "candidate" };
+    const unavailablePipeline = {
+      review: async () => ({
+        ok: false,
+        error: { code: "devloop/tdd-review-failed", message: "review transport failed" },
+      } as const),
+      integrationContract: { gateId: "integration", command: "npm run smoke", timeoutMs: 1_000 },
+      snapshotNow: async () => snapshot,
+    };
+    await controller.runGate(contract, snapshot, unavailablePipeline);
+    await controller.runGate(contract, snapshot, unavailablePipeline);
+    expect(controller.snapshot().outcome).toBe("qa-handoff");
+
+    const restored = TddSessionController.restore(
+      new QueueExecutor([passed, passed, passed]),
+      controller.checkpoint(),
+    );
+
+    expect(restored?.snapshot().outcome).toBeUndefined();
+    const completed = await restored?.runGate(contract, snapshot, {
+      review: async () => ({ ok: true, value: { kind: "evidence", id: "recovered-review" } } as const),
+      integrationContract: { gateId: "integration", command: "npm run smoke", timeoutMs: 1_000 },
+      snapshotNow: async () => snapshot,
+    });
+    expect(completed?.ok).toBe(true);
+    expect(restored?.state()).toBe("done");
+  });
+
   it("restores a recorded RED checkpoint without rerunning the command", async () => {
     const controller = new TddSessionController(new QueueExecutor([failed]));
     controller.begin();
