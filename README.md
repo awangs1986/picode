@@ -9,7 +9,18 @@
 > [!WARNING]
 > **当前仍是开发测试版，不是稳定发行版。** Windows 主路径和可代码化的 P0–P4 合同已经通过自动化验证；Linux/macOS 实机、真实 Provider 长周期测量、部分第三方组件和强 Windows 沙箱仍需单独验收。
 
-在 TUI 中输入 `/pico-help` 可按分类浏览当前真实可用的 Pi、Picode、扩展和 Skill 命令；`/pico-help all` 显示完整目录，`/pico-help <命令或关键词>` 可直接查询。
+### 当前版本重点
+
+| 方向 | 当前实现 |
+|---|---|
+| 运行主干 | 原版 Pi Agent Loop、TUI、原生工具和 JSONL 会话；无独立 Core、无常驻后台服务 |
+| 开发档位 | `simple / standard / tdd` 会话级切换；提示词强度可独立调整 |
+| 工程闭环 | 权限、Todo、Subagent、Worktree、RED/GREEN、Review、Integration 与 Completion Label |
+| 长上下文 | 完整工具输出外置、请求前 Context Governor、400K 可靠工作上限、自动 Slice/Capsule 接续 |
+| 能力加载 | 核心常驻、可信能力懒发现、专业扩展默认不可见且零进程 |
+| 操作入口 | 原版 Pi TUI、结构化无头 CLI、受 Writer Lease 约束的远程 Adapter |
+
+在 TUI 中输入 `/pico-help` 可按分类浏览**当前真实可用**的 Pi、Picode、扩展和 Skill 命令；未加载的能力不会出现在目录中。
 
 ## 为什么做 Picode
 
@@ -140,10 +151,11 @@ Picode 把上下文当作编译产物，而不是无限增长的聊天字符串�
 - **Append-only Log**：Pi JSONL 会话不就地改写；
 - **Volatile Scratch**：临时计划和推理不成为永久权威；
 - **Tool Output Retention**：大工具输出完整值外置，活动上下文只保留预览和内容指针；
-- **Context Governor**：每次 Provider 请求前计算 system、工具 Schema、消息、Reasoning、工具结果和输出预留；接近有效窗口时先编译有界上下文，禁止原始超预算请求继续发送；
-- **Slice/Capsule**：长任务跨新会话接续时，逐字事实从权威源复制，叙事才允许摘要。
+- **Context Governor**：每次 Provider 请求前计算 system、工具 Schema、消息、Reasoning、工具结果、输出预留和安全余量；接近有效窗口时先编译有界上下文，禁止原始超预算请求继续发送；
+- **可靠工作上限**：模型卡片即使宣称 1M，Picode 仍以 `min(Provider 窗口, 400K)` 作为可靠工作区；大窗口模型在约 320K 的真实请求压力处启动自动 Slice，不等待语义已经严重漂移后才处理；
+- **Slice/Capsule**：当前主模型从仍持有完整上下文的会话提出交接材料，机器验证逐字事实、来源、Task Revision 和工作区快照；旧 Pi JSONL 完整保留，新会话记录父子谱系后接续。
 
-自动压缩可以改变持久会话，但不能关闭 Context Governor 这道防卡死边界。
+自动 Slice 开启时优先替代 Pi 摘要压缩；Pi 压缩保留为失败回退。用户可以关闭自动 Slice，但不能关闭 Context Governor 这道防卡死边界。400K 是可靠工作上限，不是对 Provider 最大窗口的重新声明。
 
 ## 工具与扩展分层
 
@@ -191,6 +203,30 @@ Picode 会警告旧上下文不再适用，在目标 `AGENTS.md` 写入受管边
 - `picode` 启动增强后的 Pi TUI；关闭前台进程会终止其拥有的未完成任务。
 - CLI 是 P0–P4 的稳定自动化接口，输出版本化 JSON/JSONL，不解析 TUI 文案，也不依赖常驻 Core。
 - `/server`、Web/Android 和微信属于传输 Adapter：它们必须连接现有 Host Authority，并遵守 Chat Writer Lease，不能拥有第二套账号、权限或任务状态。
+
+### TUI 命令目录
+
+```text
+/pico-help                    # 交互式分类目录
+/pico-help all                # 完整命令目录
+/pico-help harness            # 查看某一分类
+/pico-help slice              # 查看某条命令
+/pico-help <关键词>           # 搜索当前真实加载的命令
+```
+
+目录同时收录 Pi 原生命令、Picode 命令以及当前会话实际加载的扩展/Skill 命令，并明确显示来源。常用入口包括：
+
+| 目标 | 命令 |
+|---|---|
+| 切换开发档位 | `/harness [simple|standard|tdd]` |
+| 调整提示词强度 | `/harness-prompt [none|lean|full]` |
+| 设置权限 | `/permissions [readonly|auto|full|danger-full-access]` |
+| 选择思考强度 | `/thinking` |
+| 选择子代理模型 | `/subagent-model [provider/model]` |
+| 管理账号 | `/pico-login`、`/pico-account`、`/pico-logout` |
+| 导入账号和聊天 | `/pico-import` |
+| 手动/自动 Slice | `/slice`、`/pico-slice-auto`、`/slice-defer` |
+| 远程与微信 | `/server`、`/weixin` |
 
 常用 CLI：
 
@@ -255,7 +291,7 @@ npm run smoke:package
 当前自动化基线：
 
 - TypeScript 类型、模块边界和锁定依赖检查通过；
-- **111 个测试文件、658 项测试通过**；
+- **120 个测试文件、734 项测试通过**；
 - 真实 Pi RPC、Windows PowerShell/中文路径、TDD RED→GREEN、取消恢复、Writer Lease、MCP/工具边界和全新 npm 安装 Smoke 均有回归测试；
 - Godot 4.7 .NET 纵向故事验证了下载、C# 测试/构建、无头运行、Subagent、LSP Readiness、Slice/Capsule 和 Worktree 主路径。
 
@@ -271,7 +307,8 @@ npm run smoke:package
 2. [CONTEXT.md](CONTEXT.md)：领域术语和唯一权威；
 3. [MODULES.md](docs/design/MODULES.md)：四模块和接口边界；
 4. [ADR](docs/adr)：关键选择的原因；
-5. [Context 风险评审](docs/design/CONTEXT-STRATEGY-RISK-REVIEW-2026-08-12.md)：真实超限证据与 Context Governor。
+5. [Context 风险评审](docs/design/CONTEXT-STRATEGY-RISK-REVIEW-2026-08-12.md)：真实超限证据与 Context Governor；
+6. [Slice/Capsule 实现评审](docs/design/SLICE-CAPSULE-IMPLEMENTATION-REVIEW.md)：400K 上限、Capsule 打包、会话接续与仍待执行的 A/B 实验。
 
 ## 路线图
 

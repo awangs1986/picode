@@ -9,7 +9,18 @@ It uses a pinned [Pi Agent](https://github.com/earendil-works/pi) runtime, TUI, 
 > [!WARNING]
 > **This is a development build, not a stable release.** The Windows primary path and codeable P0–P4 contracts pass automated verification. Linux/macOS hardware validation, long-running real-provider measurements, some optional components, and strong Windows sandboxing still require separate acceptance.
 
-Run `/pico-help` in the TUI to browse the Pi, Picode, extension, and skill commands actually available in the current session. Use `/pico-help all` for the complete directory or `/pico-help <command-or-query>` to search directly.
+### Current release highlights
+
+| Area | Current implementation |
+|---|---|
+| Runtime spine | Native Pi Agent Loop, TUI, tools, and JSONL sessions; no independent Core or resident daemon |
+| Development tiers | Session-level `simple / standard / tdd`, with independently adjustable prompt guidance |
+| Engineering loop | Permissions, Todo, subagents, worktrees, RED/GREEN, Review, Integration, and Completion Labels |
+| Long context | Full tool-output retention, request-boundary Context Governor, a 400K reliable ceiling, and automatic Slice/Capsule continuation |
+| Capability loading | Resident core, lazy trusted discovery, and professional extensions that default to invisible and zero-process |
+| Product surfaces | Native Pi TUI, structured headless CLI, and remote adapters fenced by a Writer Lease |
+
+Run `/pico-help` in the TUI to browse the Pi, Picode, extension, and skill commands **actually available now**. Unloaded capabilities do not appear in the directory.
 
 ## Why Picode exists
 
@@ -141,9 +152,10 @@ Picode treats context as a compiled artifact rather than an endlessly growing ch
 - **Volatile Scratch**: temporary planning and reasoning never become permanent authority;
 - **Tool Output Retention**: complete large outputs move to content-addressed storage while active context keeps a preview and retrieval pointer;
 - **Context Governor**: before every provider request, budgets system text, schemas, messages, reasoning, tool outputs, output reserve, and safety margin; it compiles bounded active context before an over-budget request can be sent;
-- **Slice/Capsule**: when work continues in a fresh session, verbatim facts are copied from authority and only narrative may be summarized.
+- **Reliable working ceiling**: even when a model card advertises 1M, Picode uses `min(provider window, 400K)` as the reliable workspace. Large-window models begin automatic Slice at roughly 320K of real request pressure instead of waiting for severe semantic drift;
+- **Slice/Capsule**: the current primary model proposes handoff material while it still owns the full context; deterministic code verifies verbatim facts, sources, Task Revision, and workspace snapshot. The old Pi JSONL remains complete, and the fresh session records its parent/child lineage.
 
-Automatic compaction may be disabled, but the request-boundary Context Governor cannot be disabled.
+When automatic Slice is enabled it takes precedence over Pi summary compaction; Pi compaction remains a failure fallback. Users may disable automatic Slice, but not the request-boundary Context Governor. The 400K value is a reliability ceiling, not a claim about the provider's maximum window.
 
 ## Tool and extension residency
 
@@ -182,6 +194,30 @@ Picode warns that old context no longer applies, writes a managed boundary into 
 - `picode` launches the enhanced Pi TUI. Closing its foreground process stops unfinished work owned by that process.
 - CLI is the stable P0–P4 automation contract. It emits versioned JSON/JSONL, never parses TUI text, and requires no resident Core.
 - `/server`, Web/Android, and Weixin are transport adapters. They must bind to a Host authority and a Chat Writer Lease rather than owning accounts, permissions, or tasks.
+
+### TUI command directory
+
+```text
+/pico-help                    # Interactive categorized directory
+/pico-help all                # Complete command directory
+/pico-help harness            # Open one category
+/pico-help slice              # Explain one command
+/pico-help <query>            # Search commands loaded right now
+```
+
+The directory includes native Pi commands, Picode commands, and extension/skill commands actually loaded in the current session, with their source made explicit. Common entries include:
+
+| Goal | Command |
+|---|---|
+| Change development tier | `/harness [simple|standard|tdd]` |
+| Adjust prompt guidance | `/harness-prompt [none|lean|full]` |
+| Set permissions | `/permissions [readonly|auto|full|danger-full-access]` |
+| Choose thinking strength | `/thinking` |
+| Choose subagent model | `/subagent-model [provider/model]` |
+| Manage accounts | `/pico-login`, `/pico-account`, `/pico-logout` |
+| Import accounts and chats | `/pico-import` |
+| Manual/automatic Slice | `/slice`, `/pico-slice-auto`, `/slice-defer` |
+| Remote and Weixin | `/server`, `/weixin` |
 
 Common CLI commands:
 
@@ -244,7 +280,7 @@ npm run smoke:package
 Current automated baseline:
 
 - TypeScript, module-boundary, and locked-dependency checks pass;
-- **111 test files and 658 tests pass**;
+- **120 test files and 734 tests pass**;
 - real Pi RPC, Windows PowerShell/Unicode paths, TDD RED→GREEN, interruption recovery, Writer Lease, MCP/tool boundaries, and clean npm install smoke have regression coverage;
 - a Godot 4.7 .NET vertical story exercised download, C# test/build, headless execution, subagents, LSP readiness, Slice/Capsule, and Worktree paths.
 
@@ -258,7 +294,8 @@ Read in this order:
 2. [CONTEXT.md](CONTEXT.md) — domain language and unique authorities;
 3. [MODULES.md](docs/design/MODULES.md) — four modules and interface boundaries;
 4. [ADRs](docs/adr) — reasons behind key decisions;
-5. [Context risk review](docs/design/CONTEXT-STRATEGY-RISK-REVIEW-2026-08-12.md) — real overflow evidence and Context Governor.
+5. [Context risk review](docs/design/CONTEXT-STRATEGY-RISK-REVIEW-2026-08-12.md) — real overflow evidence and Context Governor;
+6. [Slice/Capsule implementation review](docs/design/SLICE-CAPSULE-IMPLEMENTATION-REVIEW.md) — the 400K ceiling, Capsule packaging, session continuation, and the A/B experiment still to run.
 
 ## Roadmap
 
