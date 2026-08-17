@@ -9,6 +9,8 @@ It uses a pinned [Pi Agent](https://github.com/earendil-works/pi) runtime, TUI, 
 > [!WARNING]
 > **This is a development build, not a stable release.** The Windows primary path and codeable P0–P4 contracts pass automated verification. Linux/macOS hardware validation, long-running real-provider measurements, some optional components, and strong Windows sandboxing still require separate acceptance.
 
+Run `/pico-help` in the TUI to browse the Pi, Picode, extension, and skill commands actually available in the current session. Use `/pico-help all` for the complete directory or `/pico-help <command-or-query>` to search directly.
+
 ## Why Picode exists
 
 Upstream Pi is small, fast, and highly extensible without dictating a workflow. Large integrated agents are convenient, but fixed prompts, resident tools, and always-on governance can also make small work unnecessarily heavy. Picode takes a middle path:

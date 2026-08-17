@@ -31,6 +31,7 @@ const builtin: RemoteSlashCommand[] = [
 ];
 
 const picode: RemoteSlashCommand[] = [
+  { name: "pico-help", description: "Browse the categorized Picode command directory", argumentHint: "[all|category|command|query]", remote: false },
   { name: "server", description: "Start Picode Remote Serve Mode from this TUI", remote: false },
   { name: "workspace", description: "Authorize and switch PC workspace", argumentHint: "<absolute-directory>", remote: false },
   { name: "slice", description: "Seal a Task Capsule and continue fresh", argumentHint: "<intent>", remote: false },

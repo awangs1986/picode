@@ -73,6 +73,7 @@ import { applySubagentContextPolicy } from "./subagent-context-policy.ts";
 import type { AccountImportCompleteHandler } from "./account-import-wizard.ts";
 import { prepareWorkspaceSwitch } from "./workspace-switch.ts";
 import { renderSessionUsage } from "./session-usage.ts";
+import { registerPicoHelpCommand } from "./pico-help.ts";
 
 export interface BridgeProbeSnapshot {
   compactionsObserved: number;
@@ -626,6 +627,7 @@ export function registerPicodeBridge(
   runtime: PicodeRuntime,
   options: BridgeOptions = {},
 ): { snapshot(): BridgeProbeSnapshot } {
+  registerPicoHelpCommand(pi, runtime.config.locale);
   const now = options.now ?? (() => performance.now());
   const accountAdapter = new PiAccountAdapter(pi);
   const slices = new SliceSessionCoordinator(

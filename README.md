@@ -9,6 +9,8 @@
 > [!WARNING]
 > **当前仍是开发测试版，不是稳定发行版。** Windows 主路径和可代码化的 P0–P4 合同已经通过自动化验证；Linux/macOS 实机、真实 Provider 长周期测量、部分第三方组件和强 Windows 沙箱仍需单独验收。
 
+在 TUI 中输入 `/pico-help` 可按分类浏览当前真实可用的 Pi、Picode、扩展和 Skill 命令；`/pico-help all` 显示完整目录，`/pico-help <命令或关键词>` 可直接查询。
+
 ## 为什么做 Picode
 
 原版 Pi 的优势是小、快、可扩展，并且不替用户规定工作流。大型一体化 Agent 的优势是开箱即用，但固定提示词、常驻工具和完整治理也可能让小任务变重。Picode 选择中间路线：
