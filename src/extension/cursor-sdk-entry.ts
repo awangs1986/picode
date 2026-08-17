@@ -59,9 +59,32 @@ export async function registerCursorSdkAdapter(
   const loadSdk = options.loadSdk ?? loadPinnedCursorSdk;
   const refreshModels = options.refreshModels ?? refreshCursorModelCatalog;
   const loadModels = options.loadModels ?? loadCursorModelCatalog;
+  const listed = accounts.list();
+  const active = listed.ok
+    ? listed.value.find((candidate) =>
+      candidate.provider === "cursor" &&
+      candidate.authKind === "api_key" &&
+      candidate.status === "active" &&
+      candidate.chatCompatible !== false
+    )
+    : undefined;
+  const credentials = active === undefined ? undefined : accounts.credentialsFor(active.id);
+  const exposeCursorCatalog = credentials?.ok === true;
 
   const sdkApi = new Proxy(pi, {
     get(target, property, receiver) {
+      if (property === "registerProvider") {
+        return (name: string, config: Parameters<ExtensionAPI["registerProvider"]>[1]): void => {
+          if (name === "cursor" && !exposeCursorCatalog) {
+            // Keep the SDK runtime/hooks loaded so a later Picode account import
+            // can activate it in this process, but never expose its bundled
+            // fallback catalog as if the fresh machine had a Cursor account.
+            pi.registerProvider(name, { ...config, models: [] });
+            return;
+          }
+          pi.registerProvider(name, config);
+        };
+      }
       if (property !== "registerCommand") {
         const value = Reflect.get(target, property, receiver) as unknown;
         return typeof value === "function" ? value.bind(target) : value;
@@ -142,17 +165,9 @@ export async function registerCursorSdkAdapter(
   // Vault and would register the bundled fallback list on every restart.
   // Restore the cache-aware live catalog immediately through the same provider
   // seam; transient discovery failures leave the upstream fallback intact.
-  const listed = accounts.list();
   if (!listed.ok) return;
-  const active = listed.value.find((candidate) =>
-    candidate.provider === "cursor" &&
-    candidate.authKind === "api_key" &&
-    candidate.status === "active" &&
-    candidate.chatCompatible !== false
-  );
   if (active === undefined) return;
-  const credentials = accounts.credentialsFor(active.id);
-  if (!credentials.ok) return;
+  if (credentials?.ok !== true) return;
   try {
     const restored = await loadModels(credentials.value.accessToken);
     accountAdapter.apply(

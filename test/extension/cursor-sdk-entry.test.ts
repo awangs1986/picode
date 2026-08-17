@@ -9,6 +9,47 @@ import { registerCursorSdkAdapter } from "../../src/extension/cursor-sdk-entry.t
 import { withTempPicodeDir } from "../helpers/temp-dir.ts";
 
 describe("Picode Cursor SDK adapter", () => {
+  it("does not expose the SDK fallback catalog without an active Cursor account", async () => {
+    await withTempPicodeDir(async () => {
+      const accounts = new AccountsManager(() => {});
+      const providers = new Map<string, ProviderConfig>();
+      const pi = {
+        registerCommand() {},
+        registerProvider(name: string, config: ProviderConfig) {
+          providers.set(name, { ...providers.get(name), ...config });
+        },
+      } as unknown as ExtensionAPI;
+      const loadSdk = vi.fn(async () => async (api: ExtensionAPI) => {
+        api.registerProvider("cursor", {
+          name: "Cursor",
+          baseUrl: "https://cursor.com",
+          apiKey: "pi-cursor-sdk-cursor-api-key-placeholder",
+          api: "cursor-sdk",
+          models: [{
+            id: "grok-fallback-must-not-leak",
+            name: "Fallback model",
+            api: "cursor-sdk",
+            reasoning: true,
+            input: ["text"],
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            contextWindow: 200_000,
+            maxTokens: 16_384,
+          }],
+        });
+      });
+      const loadModels = vi.fn(async () => ({ models: [] }));
+
+      await registerCursorSdkAdapter(pi, { accounts, loadSdk, loadModels });
+
+      expect(loadSdk).toHaveBeenCalledOnce();
+      expect(loadModels).not.toHaveBeenCalled();
+      expect(providers.get("cursor")).toMatchObject({
+        api: "cursor-sdk",
+        models: [],
+      });
+    });
+  });
+
   it("restores the cached live catalog from the active Vault account during startup", async () => {
     await withTempPicodeDir(async () => {
       const accounts = new AccountsManager(() => {});

@@ -37,12 +37,15 @@ export function runRpcBootSmoke({ launcher, cwd, env, timeoutMs = 20_000 }) {
       const failures = [...responses.values()].filter((response) => response.success !== true);
       if (failures.length > 0) return finish(new Error(`RPC command failed: ${JSON.stringify(failures)}`));
       const commandNames = responses.get("commands")?.data?.commands?.map((entry) => entry.name) ?? [];
-      for (const required of ["harness", "accounts", "slice", "chat-import", "subagent-model"]) {
+      for (const required of ["harness", "pico-account", "slice", "pico-import", "subagent-model"]) {
         if (!commandNames.includes(required)) return finish(new Error(`Picode command not loaded: /${required}`));
       }
       const models = responses.get("models")?.data?.models ?? [];
       if (models.some((model) => model.provider === "picode-scripted-test")) {
         return finish(new Error("test-only scripted provider leaked into the product artifact"));
+      }
+      if (models.some((model) => model.provider === "cursor")) {
+        return finish(new Error("Cursor fallback catalog leaked without a Picode Vault account"));
       }
       finish();
     };
