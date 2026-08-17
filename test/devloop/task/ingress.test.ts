@@ -25,6 +25,8 @@ describe("TaskIngress.accept", () => {
       expect(retry.value.created).toBe(false);
       const restored = await ingress.read(first.value.taskId);
       expect(restored.ok && restored.value.title).toBe("Fix inventory sync");
+      expect(restored.ok && restored.value.revision).toBe(1);
+      expect(restored.ok && restored.value.autoSlice).toBe("unset");
     });
   });
 
@@ -69,6 +71,34 @@ describe("TaskIngress.accept", () => {
         expect(running.value.outcome).toBeUndefined();
         expect(running.value.summary).toBeUndefined();
       }
+    });
+  });
+
+  it("increments revision only for deterministic narrative changes and stores auto-Slice opt-in", async () => {
+    await withTempPicodeDir(async (dir) => {
+      const ingress = new TaskIngress({
+        tasksRoot: join(dir, "tasks"),
+        stateFile: (path, validate) => new StateFile(path, validate),
+      });
+      const accepted = await ingress.accept({
+        source: "pi-session",
+        externalId: "revision-session",
+        title: "Old goal",
+        harnessTier: "standard",
+        workspace: "C:/repo",
+      });
+      if (!accepted.ok) throw new Error(accepted.error.message);
+      const unchangedTier = await ingress.updateHarnessTier(accepted.value.taskId, "tdd");
+      expect(unchangedTier.ok && unchangedTier.value.revision).toBe(1);
+      const titled = await ingress.updateTitle(accepted.value.taskId, "New goal");
+      expect(titled.ok && titled.value.revision).toBe(2);
+      const acceptedCriteria = await ingress.updateAcceptance(accepted.value.taskId, ["gate A is green"]);
+      expect(acceptedCriteria.ok && acceptedCriteria.value.revision).toBe(3);
+      const rebound = await ingress.rebindWorkspace(accepted.value.taskId, "D:/repo");
+      expect(rebound.ok && rebound.value.revision).toBe(4);
+      const enabled = await ingress.setAutoSlice(accepted.value.taskId, true);
+      expect(enabled.ok && enabled.value.autoSlice).toBe("enabled");
+      expect(enabled.ok && enabled.value.revision).toBe(4);
     });
   });
 });

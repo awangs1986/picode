@@ -69,6 +69,24 @@ describe("ContextGovernor", () => {
     expect(result.budget.reason).toBe("unverified-third-party-cap");
   });
 
+  it("caps the reliable working context at 400K without falsifying a larger endpoint window", () => {
+    const governor = new ContextGovernor();
+    const result = governor.prepareRequest({
+      messages: [user("small")],
+      systemPrompt: "system",
+      tools: [],
+      declaredContextWindow: 1_000_000,
+      verifiedContextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+      thirdPartyGateway: false,
+    });
+
+    expect(result.budget.effectiveContextWindow).toBe(1_000_000);
+    expect(result.budget.reliableContextCeiling).toBe(400_000);
+    expect(result.budget.triggerInputTokens).toBe(320_000);
+    expect(result.budget.hardInputTokens).toBeLessThan(400_000);
+  });
+
   it("compacts a trace-shaped tool-output burst before the provider request", () => {
     const governor = new ContextGovernor();
     const hugeOutput = "<ui-node>large tool output</ui-node>\n".repeat(32_000);
@@ -231,6 +249,7 @@ describe("ContextGovernor", () => {
       sessionId: "session-manifest",
       sessionRevision: "12:leaf-a",
       action: "compact",
+      reliableContextCeiling: 64_000,
     });
     expect(result.manifest?.inputDigest).toMatch(/^[a-f0-9]{64}$/);
     expect(result.manifest?.outputDigest).toMatch(/^[a-f0-9]{64}$/);

@@ -54,7 +54,7 @@ export function sessionPromptInjection(
  *   作者移植时只改文件不改代码；
  *   工具名经占位符重映射（{{TOOL_*}}），语义不兼容部分在文件内适配。
  *
- * /system prompt 可在当前会话覆盖 none/lean/full，但只改变行为引导，不改变
+ * /harness-prompt 可在当前会话覆盖 none/lean/full，但只改变行为引导，不改变
  * Harness 的工具、权限、沙箱或 Gate。切换 Harness 会清除覆盖并恢复新档位默认值。
  * 任一有效切换都开启新 Cache Epoch，随后保持前缀稳定。
  */

@@ -158,19 +158,42 @@ export function canInject(
 
 /** 注入时渲染 Markdown（强制分节；verbatim facts 禁改写原样输出） */
 export function renderCapsule(capsule: TaskCapsule): string {
+  const integrity = capsule.integrity?.workspaceIdentity ??
+    (capsule.workspaceSnapshot?.head !== undefined && capsule.workspaceSnapshot.contentDigest !== undefined
+      ? "verified"
+      : "degraded");
   const lines: string[] = [
     `# Task Capsule (${capsule.capsuleId})`,
     `Schema: ${capsule.schemaVersion}`,
     `Digest: ${capsule.digest ?? "unsealed"}`,
+    `Workspace identity: ${integrity === "verified" ? "VERIFIED" : "DEGRADED"}`,
+    ...(capsule.integrity?.skippedChecks.map((item) => `- Skipped: ${item}`) ?? []),
+    ...(capsule.lineage === undefined
+      ? []
+      : [`Lineage: ${capsule.lineage.rootSessionId} → ${capsule.lineage.parentSessionId} → slice ${capsule.lineage.sliceIndex}`]),
     "",
     `## Intent`,
     capsule.intent,
+    "",
+    `## Acceptance`,
+    ...(capsule.acceptance ?? []).map((item) => `- ${item}`),
+    "",
+    `## Task State`,
+    ...(capsule.taskState === undefined
+      ? []
+      : [
+        `Harness: ${capsule.taskState.harnessTier} · Phase: ${capsule.taskState.phase}`,
+        ...capsule.taskState.todos.map((item) => `- ${item}`),
+      ]),
     "",
     `## Verbatim Facts`,
     ...capsule.verbatimFacts.map((f) => `- ${f.text} [${f.source.kind}:${f.source.id}]`),
     "",
     `## Decisions`,
     ...capsule.decisions.map((d) => `- ${d.decision} — ${d.rationale}`),
+    "",
+    `## Failed Approaches`,
+    ...(capsule.failedApproaches ?? []).map((item) => `- ${item}`),
     "",
     `## Files Touched`,
     ...capsule.filesTouched.map((f) => `- ${f}`),

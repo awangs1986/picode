@@ -203,6 +203,7 @@ export interface ContextCompilationManifest {
   beforeTokens: number;
   afterTokens: number;
   effectiveContextWindow: number;
+  reliableContextCeiling: number;
   replacements: ContextReplacementRecord[];
 }
 
@@ -395,6 +396,36 @@ export interface TaskCapsule {
   nextSteps: string[];
   /** 唯一允许摘要的自由段 */
   narrative: string;
+  /** Exact task acceptance copied from the Task authority, never summarized. */
+  acceptance?: string[];
+  /** Negative knowledge proposed by the source session model and kept compact. */
+  failedApproaches?: string[];
+  taskState?: {
+    harnessTier: HarnessTier;
+    phase: string;
+    todos: string[];
+  };
+  sourceSession?: {
+    sessionId: string;
+    model?: string;
+    thinking?: string;
+  };
+  lineage?: {
+    relation: "slice-continuation";
+    rootSessionId: string;
+    parentSessionId: string;
+    sliceIndex: number;
+    sourceContextTokens?: number;
+    sourceContextWindow?: number;
+  };
+  integrity?: {
+    workspaceIdentity: "verified" | "degraded";
+    skippedChecks: string[];
+  };
+  packing?: {
+    method: "current-session-model";
+    estimatedTokens: number;
+  };
 }
 
 export interface TaskTodoItem {

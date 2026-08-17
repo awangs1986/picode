@@ -266,7 +266,9 @@ describe("no-key real Agent Loop", () => {
       const reopened = SessionManager.open(completed?.sessionFile as string);
       expect(restoreTaskBinding(reopened.getBranch())).toMatchObject({
         taskId: expect.any(String),
-        taskRevision: 1,
+        // The first real user intent replaces the placeholder session title,
+        // which is a deterministic Task narrative change.
+        taskRevision: 2,
       });
       expect(JSON.stringify(reopened.buildSessionContext().messages)).toContain(intent);
       currentSession = completed?.sessionFile;

@@ -11,6 +11,12 @@ export {
   supersedeCapsule,
 } from "./task/capsule.ts";
 export type { CapsuleDraftInput, CapsuleSourceResolver } from "./task/capsule.ts";
+export {
+  fitCapsuleBudget,
+  parseCapsuleSemanticDraft,
+  redactCapsuleSecrets,
+} from "./task/capsule-packager.ts";
+export type { CapsuleSemanticDraft } from "./task/capsule-packager.ts";
 export { renderBridgeNote } from "./context/bridge-note.ts";
 export type { BridgeNoteInput } from "./context/bridge-note.ts";
 export { discoverProjectContext, renderProjectContext } from "./context/project-context.ts";
@@ -21,8 +27,15 @@ export {
   taskStateDigest,
 } from "./context/task-state-header.ts";
 export type { TaskStateHeader } from "./context/task-state-header.ts";
-export { DEFAULT_SLICE_THRESHOLDS, evaluateSlice } from "./task/slice.ts";
+export { autoSliceThresholdFor, DEFAULT_SLICE_THRESHOLDS, evaluateSlice } from "./task/slice.ts";
 export type { SliceAdvice, SliceChannel, SliceSignals, SliceThresholds } from "./task/slice.ts";
+export { judgeSliceDriftExperiment, scoreSliceDrift } from "./task/slice-drift.ts";
+export type {
+  SliceDriftObservation,
+  SliceDriftPair,
+  SliceDriftResult,
+  SliceDriftVerdict,
+} from "./task/slice-drift.ts";
 export { appendEvidence } from "./verify/evidence.ts";
 export { detectFlaky, effectiveResults } from "./verify/gate.ts";
 export type { CandidateSnapshot, GateRun } from "./verify/gate.ts";

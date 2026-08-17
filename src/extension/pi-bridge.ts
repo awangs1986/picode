@@ -58,6 +58,7 @@ import {
   taskStateDigest,
 } from "../devloop/index.ts";
 import type { ProjectContextEntry } from "../devloop/index.ts";
+import type { CapsuleSemanticDraft } from "../devloop/index.ts";
 import {
   handlePermissionsCommand,
   permissionMenuChoices,
@@ -100,6 +101,10 @@ export interface BridgeOptions {
     fallbackWarning?: string;
   }>;
   gateExecutorFor?: (cwd: string) => GateExecutor;
+  capsulePacker?: (
+    ctx: ExtensionContext,
+    intent: string,
+  ) => Promise<Result<CapsuleSemanticDraft>>;
 }
 
 const READ_ONLY_SHELL_HEAD = /^(?:pwd|Get-Location|Get-ChildItem|Get-Content|Get-Item|Test-Path|Resolve-Path|Select-String|ls|dir|rg|grep|find)(?:\s|$)/i;
@@ -621,16 +626,22 @@ export function registerPicodeBridge(
   runtime: PicodeRuntime,
   options: BridgeOptions = {},
 ): { snapshot(): BridgeProbeSnapshot } {
-  registerCompactionCompatibility(pi);
-  registerContextGovernor(pi, undefined, { store: runtime.store });
-  registerToolOutputRetention(pi, runtime.store);
   const now = options.now ?? (() => performance.now());
   const accountAdapter = new PiAccountAdapter(pi);
   const slices = new SliceSessionCoordinator(
     runtime,
     (cwd) => candidateSnapshot(pi, cwd),
     (cwd) => workspaceChangedFiles(pi, cwd),
+    options.capsulePacker,
   );
+  pi.on("session_before_compact", (event) =>
+    slices.shouldCancelAutomaticPiCompaction(event.reason) ? { cancel: true } : undefined);
+  registerCompactionCompatibility(pi);
+  registerContextGovernor(pi, undefined, {
+    store: runtime.store,
+    onContextPressure: (signal) => slices.observeContextPressure(signal),
+  });
+  registerToolOutputRetention(pi, runtime.store);
   const worktrees = new WorktreeRegistry();
   const structuredGit = new StructuredGit();
   const todos = new TodoSessionController(runtime.store);
@@ -1016,8 +1027,9 @@ export function registerPicodeBridge(
     await worktrees.releaseWriter(claimedWriter.workspace, claimedWriter.taskId);
     claimedWriter = undefined;
   });
-  pi.on("session_tree", () => {
+  pi.on("session_tree", async (_event, ctx) => {
     historyTransitionsObserved += 1;
+    await slices.recordRewind(ctx);
   });
   pi.on("turn_end", async (event, ctx) => {
     if (event.message.role !== "assistant") return;
@@ -1042,7 +1054,7 @@ export function registerPicodeBridge(
       // never interrupt or clutter the user's agent loop.
       console.warn("[picode] cache metric was not saved", cause);
     }
-    slices.observeTurn(ctx);
+    await slices.observeTurn(ctx);
   });
   pi.on("turn_start", async (_event, ctx) => {
     const taskId = slices.currentTaskId();
@@ -1164,6 +1176,7 @@ export function registerPicodeBridge(
         ctx.ui.notify(prepared.error.message, "error");
         return;
       }
+      await slices.rebindWorkspace(prepared.value.targetWorkspace, ctx);
       ctx.ui.notify(
         `Workspace boundary saved. Restarting Picode in ${prepared.value.targetWorkspace}`,
         "info",
@@ -1175,6 +1188,25 @@ export function registerPicodeBridge(
     description: "Seal a Task Capsule and continue in a fresh Pi session",
     handler: async (args, ctx) => {
       await slices.slice(args, ctx);
+    },
+  });
+  pi.on("agent_end", (_event, ctx) => {
+    void slices.onAgentEnd(ctx).catch((cause) => {
+      ctx.ui.notify?.(
+        `Auto Slice failed before session replacement: ${cause instanceof Error ? cause.message : String(cause)}`,
+        "warning",
+      );
+    });
+  });
+  pi.registerCommand("pico-slice-auto", {
+    description: "Enable, disable, or inspect experimental automatic Slice continuation",
+    handler: async (args, ctx) => {
+      const value = args.trim().toLowerCase();
+      if (value !== "on" && value !== "off" && value !== "status") {
+        ctx.ui.notify("usage: /pico-slice-auto on|off|status", "error");
+        return;
+      }
+      await slices.configureAutoSlice(value, ctx);
     },
   });
   pi.registerCommand("slice-defer", {
@@ -1225,12 +1257,12 @@ export function registerPicodeBridge(
       ctx.ui.notify(output, output.startsWith("unknown") ? "error" : "info");
     },
   });
-  pi.registerCommand("system", {
-    description: "Show or switch session prompt guidance: /system prompt [none|lean|full]",
+  pi.registerCommand("harness-prompt", {
+    description: "Show or switch session prompt guidance: /harness-prompt [none|lean|full]",
     handler: async (args, ctx) => {
-      const match = args.trim().match(/^prompt(?:\s+(none|lean|full))?$/i);
+      const match = args.trim().match(/^(?:(none|lean|full))?$/i);
       if (match === null) {
-        ctx.ui.notify("usage: /system prompt [none|lean|full]", "error");
+        ctx.ui.notify("usage: /harness-prompt [none|lean|full]", "error");
         return;
       }
       let level = match[1]?.toLowerCase() as PromptLevel | undefined;
@@ -1694,6 +1726,12 @@ export function registerPicodeBridge(
         command: input.command,
         timeoutMs: input.timeoutMs ?? 120_000,
       };
+      await slices.updateAcceptance([
+        `Target Gate ${contract.gateId}: ${contract.command}`,
+        ...(input.integrationCommand === undefined
+          ? []
+          : [`Integration Gate ${contract.gateId}:integration: ${input.integrationCommand}`]),
+      ], ctx);
       if (input.action === "prove_red") {
         const red = await tdd.proveRed(contract);
         if (red.ok) {

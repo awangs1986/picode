@@ -54,6 +54,18 @@ function sessionRevision(ctx: ExtensionContext, messageCount: number): string {
 
 type ContextGovernorStore = ContextCompilationStorePort & EndpointContextProfileStorePort & ContextLedgerStorePort;
 
+export interface ContextPressureSignal {
+  tokens: number;
+  endpointContextWindow: number;
+  reliableContextCeiling: number;
+  percent: number;
+}
+
+export interface ContextGovernorAdapterOptions {
+  store?: ContextGovernorStore;
+  onContextPressure?: (signal: ContextPressureSignal) => void;
+}
+
 /**
  * Register the request-boundary safety governor. This deliberately remains
  * active when Pi's optional automatic compaction setting is disabled: it is the
@@ -63,7 +75,7 @@ type ContextGovernorStore = ContextCompilationStorePort & EndpointContextProfile
 export function registerContextGovernor(
   pi: ExtensionAPI,
   governor: ContextGovernor = new ContextGovernor(),
-  options: { store?: ContextGovernorStore } = {},
+  options: ContextGovernorAdapterOptions = {},
 ): void {
   let durableCompactionPending = false;
   let durableCompactionRunning = false;
@@ -104,6 +116,12 @@ export function registerContextGovernor(
         ...(baseUrl === undefined ? {} : { baseUrl }),
       }),
     });
+    options.onContextPressure?.({
+      tokens: result.before.totalTokens,
+      endpointContextWindow: result.budget.effectiveContextWindow,
+      reliableContextCeiling: result.budget.reliableContextCeiling,
+      percent: (result.before.totalTokens / result.budget.reliableContextCeiling) * 100,
+    });
     lastRequest = { routeKey: currentRouteKey, inputTokens: result.after.totalTokens, profile };
     if (result.manifest !== undefined) {
       lastManifest = result.manifest;
@@ -124,7 +142,7 @@ export function registerContextGovernor(
       });
     }
     if (result.action === "pass") {
-      ctx.ui.setStatus(STATUS_KEY, `${Math.round(result.before.totalTokens / 1_000)}K / ${Math.round(result.budget.effectiveContextWindow / 1_000)}K`);
+      ctx.ui.setStatus(STATUS_KEY, `${Math.round(result.before.totalTokens / 1_000)}K / ${Math.round(result.budget.reliableContextCeiling / 1_000)}K`);
       return undefined;
     }
     durableCompactionPending = true;

@@ -80,6 +80,132 @@ const footerStatsPatched = `        // Build stats line. Picode keeps lifetime p
         if (latestCacheHitRate !== undefined) {
             statsParts.push(\`CH\${latestCacheHitRate.toFixed(1)}%\`);
         }`;
+const settledSessionOriginal = `            getSystemPrompt: () => {
+                runner.assertActive();
+                return runner.getSystemPromptFn();
+            },
+        };
+    }
+    createCommandContext() {`;
+const settledSessionPatched = `            getSystemPrompt: () => {
+                runner.assertActive();
+                return runner.getSystemPromptFn();
+            },
+            // Picode compatibility seam: replace a session only after the agent has settled.
+            requestNewSession: (options) => {
+                runner.assertActive();
+                if (!runner.sessionReplacementBoundary && !runner.isIdleFn())
+                    return Promise.reject(new Error("requestNewSession requires an idle or agent_end boundary"));
+                return runner.newSessionHandler(options);
+            },
+        };
+    }
+    createCommandContext() {`;
+const settledSessionTypesOriginal = `    /** Get the current effective system prompt. */
+    getSystemPrompt(): string;
+}`;
+const settledSessionTypesPatched = `    /** Get the current effective system prompt. */
+    getSystemPrompt(): string;
+    /** Picode compatibility seam: continue in a child session at a settled agent boundary. */
+    requestNewSession(options?: {
+        parentSession?: string;
+        setup?: (sessionManager: SessionManager) => Promise<void>;
+        withSession?: (ctx: ReplacedSessionContext) => Promise<void>;
+    }): Promise<{
+        cancelled: boolean;
+    }>;
+}`;
+const settledBoundaryPropertyOriginal = `    commandDiagnostics = [];
+    staleMessage;
+    constructor(extensions, runtime, cwd, sessionManager, modelRegistry) {`;
+const settledBoundaryPropertyPatched = `    commandDiagnostics = [];
+    staleMessage;
+    // Picode compatibility seam: true only while settled agent_end handlers run.
+    sessionReplacementBoundary = false;
+    constructor(extensions, runtime, cwd, sessionManager, modelRegistry) {`;
+const settledBoundaryRequestOriginal = `            requestNewSession: (options) => {
+                runner.assertActive();
+                if (!runner.sessionReplacementBoundary)
+                    return Promise.reject(new Error("requestNewSession requires an agent_end boundary"));
+                return runner.newSessionHandler(options);
+            },`;
+const settledBoundaryRequestPatched = `            requestNewSession: (options) => {
+                runner.assertActive();
+                if (!runner.sessionReplacementBoundary && !runner.isIdleFn())
+                    return Promise.reject(new Error("requestNewSession requires an idle or agent_end boundary"));
+                return runner.newSessionHandler(options);
+            },`;
+const settledBoundaryEmitOriginal = `    async emit(event) {
+        const ctx = this.createContext();
+        let result;
+        for (const ext of this.extensions) {
+            const handlers = ext.handlers.get(event.type);
+            if (!handlers || handlers.length === 0)
+                continue;
+            for (const handler of handlers) {
+                try {
+                    const handlerResult = await handler(event, ctx);
+                    if (this.isSessionBeforeEvent(event) && handlerResult) {
+                        result = handlerResult;
+                        if (result.cancel) {
+                            return result;
+                        }
+                    }
+                }
+                catch (err) {
+                    const message = err instanceof Error ? err.message : String(err);
+                    const stack = err instanceof Error ? err.stack : undefined;
+                    this.emitError({
+                        extensionPath: ext.path,
+                        event: event.type,
+                        error: message,
+                        stack,
+                    });
+                }
+            }
+        }
+        return result;
+    }`;
+const settledBoundaryEmitPatched = `    async emit(event) {
+        const ctx = this.createContext();
+        let result;
+        const sessionReplacementBoundary = event.type === "agent_end";
+        if (sessionReplacementBoundary)
+            this.sessionReplacementBoundary = true;
+        try {
+            for (const ext of this.extensions) {
+                const handlers = ext.handlers.get(event.type);
+                if (!handlers || handlers.length === 0)
+                    continue;
+                for (const handler of handlers) {
+                    try {
+                        const handlerResult = await handler(event, ctx);
+                        if (this.isSessionBeforeEvent(event) && handlerResult) {
+                            result = handlerResult;
+                            if (result.cancel) {
+                                return result;
+                            }
+                        }
+                    }
+                    catch (err) {
+                        const message = err instanceof Error ? err.message : String(err);
+                        const stack = err instanceof Error ? err.stack : undefined;
+                        this.emitError({
+                            extensionPath: ext.path,
+                            event: event.type,
+                            error: message,
+                            stack,
+                        });
+                    }
+                }
+            }
+            return result;
+        }
+        finally {
+            if (sessionReplacementBoundary)
+                this.sessionReplacementBoundary = false;
+        }
+    }`;
 
 function applyPinnedPatch(source, patch) {
   if (source.includes(patch.original)) return source.replace(patch.original, patch.replacement);
@@ -146,6 +272,44 @@ export function applyVendoredPiCompatibility(piDistRoot) {
           error: "Unsupported Pi footer stats layout; review the pinned Pi compatibility patch before upgrading.",
         },
       ],
+    },
+    {
+      path: join(piDistRoot, "core", "extensions", "runner.js"),
+      patches: [
+        {
+          original: settledSessionOriginal,
+          replacement: settledSessionPatched,
+          marker: "Picode compatibility seam: replace a session only after the agent has settled",
+          error: "Unsupported Pi ExtensionRunner context layout; review the settled-session compatibility patch before upgrading.",
+        },
+        {
+          original: settledBoundaryPropertyOriginal,
+          replacement: settledBoundaryPropertyPatched,
+          marker: "sessionReplacementBoundary = false",
+          error: "Unsupported Pi ExtensionRunner property layout; review the agent_end boundary patch before upgrading.",
+        },
+        {
+          original: settledBoundaryRequestOriginal,
+          replacement: settledBoundaryRequestPatched,
+          marker: "requestNewSession requires an idle or agent_end boundary",
+          error: "Unsupported Picode requestNewSession seam; review the agent_end boundary patch before upgrading.",
+        },
+        {
+          original: settledBoundaryEmitOriginal,
+          replacement: settledBoundaryEmitPatched,
+          marker: "const sessionReplacementBoundary = event.type === \"agent_end\"",
+          error: "Unsupported Pi ExtensionRunner emit layout; review the agent_end boundary patch before upgrading.",
+        },
+      ],
+    },
+    {
+      path: join(piDistRoot, "core", "extensions", "types.d.ts"),
+      patches: [{
+        original: settledSessionTypesOriginal,
+        replacement: settledSessionTypesPatched,
+        marker: "requestNewSession(options?:",
+        error: "Unsupported Pi ExtensionContext type layout; review the settled-session compatibility patch before upgrading.",
+      }],
     },
   ];
 

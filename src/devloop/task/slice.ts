@@ -19,6 +19,16 @@ export const DEFAULT_SLICE_THRESHOLDS: SliceThresholds = {
   hardContextUsageRatio: 0.82,
 };
 
+/**
+ * Automatic Slice starts no later than 320K, leaving 80K inside Picode's
+ * 400K reliable working ceiling for current-model Capsule packing and output.
+ * Smaller endpoint windows retain the same 80% trigger ratio.
+ */
+export function autoSliceThresholdFor(contextWindow: number): number {
+  if (!Number.isFinite(contextWindow) || contextWindow <= 0) return 0.8;
+  return Math.min(0.8, AUTO_SLICE_START_TOKENS / contextWindow);
+}
+
 export type SliceChannel = "user-command" | "soft-threshold" | "hard-threshold" | "watchdog-scope-drift";
 
 export interface SliceSignals {
@@ -70,3 +80,4 @@ export function evaluateSlice(
   if (channels.includes("hard-threshold")) parts.push("hard Slice boundary reached");
   return { advise: true, enforce: hard, channels, reason: parts.join("; ") };
 }
+import { AUTO_SLICE_START_TOKENS } from "../context/context-governor.ts";

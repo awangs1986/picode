@@ -33,6 +33,8 @@ export interface ContextBudgetBreakdown {
 export interface ContextGovernorBudget {
   declaredContextWindow: number;
   effectiveContextWindow: number;
+  /** Product reliability boundary; may be lower than the endpoint capacity. */
+  reliableContextCeiling: number;
   outputReserveTokens: number;
   safetyMarginTokens: number;
   triggerInputTokens: number;
@@ -72,6 +74,8 @@ export interface ContextGovernorInput {
 }
 
 const UNVERIFIED_THIRD_PARTY_WINDOW = 320_000;
+export const RELIABLE_WORKING_CONTEXT_CEILING = 400_000;
+export const AUTO_SLICE_START_TOKENS = Math.floor(RELIABLE_WORKING_CONTEXT_CEILING * 0.8);
 const MAX_OUTPUT_RESERVE = 16_384;
 const TRIGGER_RATIO = 0.80;
 const TARGET_RATIO = 0.65;
@@ -91,23 +95,28 @@ function resolveBudget(input: ContextGovernorInput): ContextGovernorBudget {
     effectiveContextWindow = Math.min(declared, UNVERIFIED_THIRD_PARTY_WINDOW);
     reason = "unverified-third-party-cap";
   }
+  const reliableContextCeiling = Math.min(
+    effectiveContextWindow,
+    RELIABLE_WORKING_CONTEXT_CEILING,
+  );
   const outputReserveTokens = Math.min(
     Math.max(2_048, Math.floor(input.maxOutputTokens)),
     MAX_OUTPUT_RESERVE,
   );
-  const safetyMarginTokens = Math.max(8_192, Math.floor(effectiveContextWindow * 0.05));
+  const safetyMarginTokens = Math.max(8_192, Math.floor(reliableContextCeiling * 0.05));
   const hardInputTokens = Math.max(
     8_192,
-    effectiveContextWindow - outputReserveTokens - safetyMarginTokens,
+    reliableContextCeiling - outputReserveTokens - safetyMarginTokens,
   );
   return {
     declaredContextWindow: declared,
     effectiveContextWindow,
+    reliableContextCeiling,
     outputReserveTokens,
     safetyMarginTokens,
-    triggerInputTokens: Math.min(hardInputTokens, Math.floor(effectiveContextWindow * TRIGGER_RATIO)),
+    triggerInputTokens: Math.min(hardInputTokens, Math.floor(reliableContextCeiling * TRIGGER_RATIO)),
     hardInputTokens,
-    targetInputTokens: Math.min(hardInputTokens, Math.floor(effectiveContextWindow * TARGET_RATIO)),
+    targetInputTokens: Math.min(hardInputTokens, Math.floor(reliableContextCeiling * TARGET_RATIO)),
     reason,
   };
 }
@@ -337,6 +346,7 @@ export class ContextGovernor {
       beforeTokens: before.totalTokens,
       afterTokens: current.totalTokens,
       effectiveContextWindow: budget.effectiveContextWindow,
+      reliableContextCeiling: budget.reliableContextCeiling,
       replacements,
     });
 

@@ -11,6 +11,41 @@ import { ok } from "../../src/shared/types.ts";
 type Handler = (event: never, ctx: ExtensionContext) => unknown;
 
 describe("Context Governor Pi adapter", () => {
+  it("shows the 400K reliable ceiling instead of the larger provider capacity", async () => {
+    const handlers = new Map<string, Handler>();
+    const pi = {
+      on(name: string, handler: Handler) { handlers.set(name, handler); },
+      getActiveTools: () => [],
+      getAllTools: () => [],
+    } as unknown as ExtensionAPI;
+    const setStatus = vi.fn();
+    const ctx = {
+      model: {
+        id: "large-window-model",
+        provider: "openai",
+        api: "openai-responses",
+        contextWindow: 1_000_000,
+        maxTokens: 128_000,
+      },
+      modelRegistry: { getApiKeyAndHeaders: vi.fn(async () => ({ ok: true, apiKey: "redacted" })) },
+      getSystemPrompt: () => "Pi",
+      ui: { setStatus },
+    } as unknown as ExtensionContext;
+    const onContextPressure = vi.fn();
+    registerContextGovernor(pi, undefined, { onContextPressure });
+
+    await handlers.get("context")?.({
+      type: "context",
+      messages: [{ role: "user", content: [{ type: "text", text: "small" }] }],
+    } as never, ctx);
+
+    expect(setStatus).toHaveBeenCalledWith("picode-context", expect.stringMatching(/\/ 400K$/));
+    expect(onContextPressure).toHaveBeenCalledWith(expect.objectContaining({
+      reliableContextCeiling: 400_000,
+      percent: expect.any(Number),
+    }));
+  });
+
   it("protects a real provider even when its declared window is below 32K", async () => {
     const handlers = new Map<string, Handler>();
     const pi = {

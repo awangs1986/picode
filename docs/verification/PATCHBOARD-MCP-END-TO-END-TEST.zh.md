@@ -18,7 +18,7 @@
 
 - 原版 Pi TUI 启动和会话；
 - `simple / standard / tdd` 三档 Harness 及状态持久化；
-- `/system prompt none|lean|full` 与 Harness 相互独立；
+- `/harness-prompt none|lean|full` 与 Harness 相互独立；
 - 原生文件、搜索、Shell、Todo 与结构化 Git 工具；
 - `readonly / auto / full`、一次允许、会话允许、拒绝、命令变化重新询问；
 - TDD 的 pre-RED 阻止、RED、GREEN、Gate、Review、Integration；
@@ -146,7 +146,7 @@ typescript-language-server --version
 2. 运行 `picode`，确认进入原版 Pi TUI，而不是状态转储页。
 3. 新建 Simple 会话，要求只读复述 marker、列目录、读取规则文件并报告 Git 状态。
 4. 验证 Simple 没有 Picode Harness 行为核、TDD Gate、Todo Nudge 或额外工具强行介入。
-5. 在 TUI 中依次执行 `/system prompt`、`/system prompt lean`、`/system prompt none`，确认只改变提示词引导，不改变 Harness、权限或工具集合。
+5. 在 TUI 中依次执行 `/harness-prompt`、`/harness-prompt lean`、`/harness-prompt none`，确认只改变提示词引导，不改变 Harness、权限或工具集合。
 
 通过条件：TUI 正常；marker 来自项目规则而非模型猜测；`read/ls/find/grep/git status` 有真实成功事件；Simple 仍保持上游 Pi 的精简语义。
 
@@ -326,7 +326,7 @@ typescript-language-server --version
 1. 创建会话并记录 ID；
 2. resume 后继续同一上下文；
 3. 使用 `picode session branch --from <session-id>` 建立分支，父会话不被子分支改写；运行前先以当前 `--help` 为准，不得把不存在的 `--session` 参数误报成产品 Bug；
-4. Standard 下切 `/system prompt none → lean → full`，每次说明只改变引导，不改变 Harness；
+4. Standard 下切 `/harness-prompt none → lean → full`，每次说明只改变引导，不改变 Harness；
 5. 再切 Harness，提示必须说明工具、权限、验证等实际变化，并把 prompt 恢复到该 Harness 默认；
 6. 记录切换前后的 Cache Epoch；
 7. 在有足够历史时执行 `/compact`，成功或明确 `Nothing to compact`，不能把命令发给模型；

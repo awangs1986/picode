@@ -17,6 +17,20 @@ export default function scriptedModel(pi: ExtensionAPI): void {
           message.role === "user" && !JSON.stringify(message.content).includes("<picode_"),
         ).at(-1);
         const userText = latestUser === undefined ? "" : JSON.stringify(latestUser.content);
+        if (context.systemPrompt?.includes("packaging the current Picode conversation") === true) {
+          const text = JSON.stringify({
+            decisions: [],
+            failedApproaches: [],
+            nextSteps: ["Continue the requested Slice intent"],
+            narrative: "",
+          });
+          const partial = { ...base, content: [{ type: "text" as const, text }] };
+          stream.push({ type: "text_start", contentIndex: 0, partial: base });
+          stream.push({ type: "text_delta", contentIndex: 0, delta: text, partial });
+          stream.push({ type: "text_end", contentIndex: 0, content: text, partial });
+          stream.push({ type: "done", reason: "stop", message: { ...partial, stopReason: "stop" } });
+          return;
+        }
         const requestedTool = userText.includes("TOOL:");
         const requestedTaskFailure = userText.includes("TASK:FAIL_PREFLIGHT");
         const toolResultCount = context.messages.filter((message) => message.role === "toolResult").length;

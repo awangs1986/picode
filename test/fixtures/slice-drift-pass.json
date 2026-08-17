@@ -1,0 +1,94 @@
+{
+  "pairs": [
+    {
+      "withoutSlice": {
+        "criticalFactsMissing": 1,
+        "deprecatedRequirementsRevived": 0,
+        "crossModuleContractsMissed": 1,
+        "wrongModuleChanges": 0,
+        "falseCompletionClaims": 0,
+        "repeatedCompletedStages": 0,
+        "outOfScopeFilesChanged": 0,
+        "userCorrections": 1,
+        "capsuleFilesMissing": 0,
+        "capsuleGateOrOpenItemsMissing": 0,
+        "hiddenTestsPassed": 4,
+        "finalGatePassed": true
+      },
+      "withSlice": {
+        "criticalFactsMissing": 0,
+        "deprecatedRequirementsRevived": 0,
+        "crossModuleContractsMissed": 0,
+        "wrongModuleChanges": 0,
+        "falseCompletionClaims": 0,
+        "repeatedCompletedStages": 0,
+        "outOfScopeFilesChanged": 0,
+        "userCorrections": 0,
+        "capsuleFilesMissing": 0,
+        "capsuleGateOrOpenItemsMissing": 0,
+        "hiddenTestsPassed": 4,
+        "finalGatePassed": true
+      }
+    },
+    {
+      "withoutSlice": {
+        "criticalFactsMissing": 0,
+        "deprecatedRequirementsRevived": 1,
+        "crossModuleContractsMissed": 0,
+        "wrongModuleChanges": 0,
+        "falseCompletionClaims": 0,
+        "repeatedCompletedStages": 1,
+        "outOfScopeFilesChanged": 0,
+        "userCorrections": 0,
+        "capsuleFilesMissing": 0,
+        "capsuleGateOrOpenItemsMissing": 0,
+        "hiddenTestsPassed": 4,
+        "finalGatePassed": true
+      },
+      "withSlice": {
+        "criticalFactsMissing": 0,
+        "deprecatedRequirementsRevived": 0,
+        "crossModuleContractsMissed": 0,
+        "wrongModuleChanges": 0,
+        "falseCompletionClaims": 0,
+        "repeatedCompletedStages": 0,
+        "outOfScopeFilesChanged": 0,
+        "userCorrections": 0,
+        "capsuleFilesMissing": 0,
+        "capsuleGateOrOpenItemsMissing": 0,
+        "hiddenTestsPassed": 4,
+        "finalGatePassed": true
+      }
+    },
+    {
+      "withoutSlice": {
+        "criticalFactsMissing": 0,
+        "deprecatedRequirementsRevived": 0,
+        "crossModuleContractsMissed": 0,
+        "wrongModuleChanges": 1,
+        "falseCompletionClaims": 0,
+        "repeatedCompletedStages": 0,
+        "outOfScopeFilesChanged": 1,
+        "userCorrections": 0,
+        "capsuleFilesMissing": 0,
+        "capsuleGateOrOpenItemsMissing": 0,
+        "hiddenTestsPassed": 4,
+        "finalGatePassed": true
+      },
+      "withSlice": {
+        "criticalFactsMissing": 0,
+        "deprecatedRequirementsRevived": 0,
+        "crossModuleContractsMissed": 0,
+        "wrongModuleChanges": 0,
+        "falseCompletionClaims": 0,
+        "repeatedCompletedStages": 0,
+        "outOfScopeFilesChanged": 0,
+        "userCorrections": 0,
+        "capsuleFilesMissing": 0,
+        "capsuleGateOrOpenItemsMissing": 0,
+        "hiddenTestsPassed": 4,
+        "finalGatePassed": true
+      }
+    }
+  ]
+}

@@ -20,6 +20,9 @@ export interface TaskRecord extends TaskIngressInput {
   version: 1;
   taskId: string;
   createdAt: string;
+  revision: number;
+  acceptance: string[];
+  autoSlice: "unset" | "enabled" | "disabled";
 }
 
 export interface TaskRef {
@@ -53,16 +56,29 @@ export class TaskIngress {
       taskId,
       ...input,
       createdAt: new Date().toISOString(),
+      revision: 1,
+      acceptance: [],
+      autoSlice: "unset",
     };
     const written = await state.write(record);
     return written.ok ? ok({ taskId, path, created: true }) : written;
   }
 
-  read(taskId: string): Promise<Result<TaskRecord>> {
-    return this.options.stateFile(
+  async read(taskId: string): Promise<Result<TaskRecord>> {
+    const state = this.options.stateFile(
       join(this.options.tasksRoot, taskId, "task.json"),
       isTaskRecord,
-    ).read();
+    );
+    const value = await state.read();
+    if (!value.ok) return value;
+    const normalized = normalizeTaskRecord(value.value);
+    if (
+      value.value.revision === normalized.revision &&
+      value.value.acceptance === normalized.acceptance &&
+      value.value.autoSlice === normalized.autoSlice
+    ) return ok(normalized);
+    const written = await state.write(normalized);
+    return written.ok ? ok(normalized) : written;
   }
 
   async updateHarnessTier(taskId: string, harnessTier: HarnessTier): Promise<Result<TaskRecord>> {
@@ -70,7 +86,7 @@ export class TaskIngress {
       join(this.options.tasksRoot, taskId, "task.json"),
       isTaskRecord,
     );
-    const current = await state.read();
+    const current = await this.read(taskId);
     if (!current.ok) return current;
     if (current.value.harnessTier === harnessTier) return current;
     const updated: TaskRecord = { ...current.value, harnessTier };
@@ -83,10 +99,51 @@ export class TaskIngress {
       join(this.options.tasksRoot, taskId, "task.json"),
       isTaskRecord,
     );
-    const current = await state.read();
+    const current = await this.read(taskId);
     if (!current.ok) return current;
     if (current.value.title === title) return current;
-    const updated: TaskRecord = { ...current.value, title };
+    const updated: TaskRecord = { ...current.value, title, revision: current.value.revision + 1 };
+    const written = await state.write(updated);
+    return written.ok ? ok(updated) : written;
+  }
+
+  async updateAcceptance(taskId: string, acceptance: readonly string[]): Promise<Result<TaskRecord>> {
+    const state = this.options.stateFile(join(this.options.tasksRoot, taskId, "task.json"), isTaskRecord);
+    const current = await this.read(taskId);
+    if (!current.ok) return current;
+    const normalized = acceptance.map((item) => item.trim()).filter((item) => item !== "");
+    if (JSON.stringify(current.value.acceptance) === JSON.stringify(normalized)) return current;
+    const updated = { ...current.value, acceptance: normalized, revision: current.value.revision + 1 };
+    const written = await state.write(updated);
+    return written.ok ? ok(updated) : written;
+  }
+
+  async rebindWorkspace(taskId: string, workspace: string): Promise<Result<TaskRecord>> {
+    const state = this.options.stateFile(join(this.options.tasksRoot, taskId, "task.json"), isTaskRecord);
+    const current = await this.read(taskId);
+    if (!current.ok) return current;
+    if (current.value.workspace === workspace) return current;
+    const updated = { ...current.value, workspace, revision: current.value.revision + 1 };
+    const written = await state.write(updated);
+    return written.ok ? ok(updated) : written;
+  }
+
+  async bumpRevision(taskId: string): Promise<Result<TaskRecord>> {
+    const state = this.options.stateFile(join(this.options.tasksRoot, taskId, "task.json"), isTaskRecord);
+    const current = await this.read(taskId);
+    if (!current.ok) return current;
+    const updated = { ...current.value, revision: current.value.revision + 1 };
+    const written = await state.write(updated);
+    return written.ok ? ok(updated) : written;
+  }
+
+  async setAutoSlice(taskId: string, enabled: boolean): Promise<Result<TaskRecord>> {
+    const state = this.options.stateFile(join(this.options.tasksRoot, taskId, "task.json"), isTaskRecord);
+    const current = await this.read(taskId);
+    if (!current.ok) return current;
+    const autoSlice = enabled ? "enabled" as const : "disabled" as const;
+    if (current.value.autoSlice === autoSlice) return current;
+    const updated = { ...current.value, autoSlice };
     const written = await state.write(updated);
     return written.ok ? ok(updated) : written;
   }
@@ -150,5 +207,17 @@ function isTaskRecord(value: unknown): value is TaskRecord {
     typeof row.source === "string" && typeof row.externalId === "string" &&
     typeof row.title === "string" &&
     (row.harnessTier === "simple" || row.harnessTier === "standard" || row.harnessTier === "tdd") &&
-    typeof row.createdAt === "string";
+    typeof row.createdAt === "string" &&
+    (row.revision === undefined || (typeof row.revision === "number" && row.revision >= 1)) &&
+    (row.acceptance === undefined || (Array.isArray(row.acceptance) && row.acceptance.every((item) => typeof item === "string"))) &&
+    (row.autoSlice === undefined || row.autoSlice === "unset" || row.autoSlice === "enabled" || row.autoSlice === "disabled");
+}
+
+function normalizeTaskRecord(record: TaskRecord): TaskRecord {
+  return {
+    ...record,
+    revision: typeof record.revision === "number" ? record.revision : 1,
+    acceptance: Array.isArray(record.acceptance) ? record.acceptance : [],
+    autoSlice: record.autoSlice ?? "unset",
+  };
 }

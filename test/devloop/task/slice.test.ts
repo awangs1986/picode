@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  autoSliceThresholdFor,
   DEFAULT_SLICE_THRESHOLDS,
   evaluateSlice,
 } from "../../../src/devloop/task/slice.ts";
@@ -143,5 +144,14 @@ describe("evaluateSlice", () => {
     expect(advice.enforce).toBe(false);
     expect(advice.channels).toEqual(["soft-threshold"]);
     expect(advice.reason).not.toContain("hard Slice boundary reached");
+  });
+
+  it.each([
+    [272_000, 0.8],
+    [400_000, 0.8],
+    [500_000, 0.64],
+    [1_000_000, 0.32],
+  ])("starts automatic Slice by 320K within the reliable working ceiling (%i => %f)", (contextWindow, expected) => {
+    expect(autoSliceThresholdFor(contextWindow)).toBeCloseTo(expected, 8);
   });
 });

@@ -21,8 +21,16 @@ import {
 } from "pi-subagents/delegation";
 import { withTempPicodeDir } from "../helpers/temp-dir.ts";
 import { WorktreeRegistry } from "../../src/engine/worktree.ts";
+import { ok } from "../../src/shared/types.ts";
 
 type Handler = (event: never, ctx: ExtensionContext) => unknown;
+
+const testCapsulePacker = async () => ok({
+  decisions: [{ decision: "Continue in a child Pi session", rationale: "Keep the active context focused" }],
+  failedApproaches: [],
+  nextSteps: ["Continue the requested integration"],
+  narrative: "Test semantic handoff.",
+});
 
 describe("fresh TDD review scope", () => {
   it("keeps the reviewer on the candidate and out of Picode runtime history", () => {
@@ -374,7 +382,7 @@ describe("Pi 0.84 Bridge feasibility seam", () => {
     });
   });
 
-  it("switches only the session prompt level through /system prompt", async () => {
+  it("switches only the session prompt level through /harness-prompt", async () => {
     const pi = fakePi();
     const runtime = createRuntime();
     registerPicodeBridge(pi.api, runtime);
@@ -397,7 +405,8 @@ describe("Pi 0.84 Bridge feasibility seam", () => {
     );
     const toolsBefore = pi.activeTools();
 
-    await pi.commands.get("system")?.handler("prompt full", ctx);
+    expect(pi.commands.has("system")).toBe(false);
+    await pi.commands.get("harness-prompt")?.handler("full", ctx);
     const prompt = await pi.handlers.get("before_agent_start")?.(
       { type: "before_agent_start", systemPrompt: "Pi Base" } as never,
       ctx,
@@ -767,7 +776,7 @@ describe("Pi 0.84 Bridge feasibility seam", () => {
         credentials: { accessToken: "cursor-secret" },
       }], "cursor-main");
       expect(imported.ok).toBe(true);
-      registerPicodeBridge(pi.api, runtime);
+      registerPicodeBridge(pi.api, runtime, { capsulePacker: testCapsulePacker });
       const notify = vi.fn();
       const confirm = vi.fn(async () => true);
       const select = vi.fn(async (_title: string, choices: string[]) =>
@@ -822,7 +831,7 @@ describe("Pi 0.84 Bridge feasibility seam", () => {
       // which Picode Vault account is active. This is the state users see in
       // /model after importing a stored (not yet active) account.
       pi.providers.set("cursor", { models: [{ id: "grok-4.6" }] });
-      registerPicodeBridge(pi.api, runtime);
+      registerPicodeBridge(pi.api, runtime, { capsulePacker: testCapsulePacker });
       const ctx = {
         ...fakeContext(true),
         ui: { notify: vi.fn(), confirm: vi.fn(async () => true), select: vi.fn() },
@@ -908,7 +917,7 @@ describe("Pi 0.84 Bridge feasibility seam", () => {
     await withTempPicodeDir(async () => {
       const pi = fakePi();
       const runtime = createRuntime();
-      registerPicodeBridge(pi.api, runtime);
+      registerPicodeBridge(pi.api, runtime, { capsulePacker: testCapsulePacker });
       const startCtx = {
         cwd: "C:/repo",
         sessionManager: {
@@ -952,6 +961,7 @@ describe("Pi 0.84 Bridge feasibility seam", () => {
 
       await pi.commands.get("slice")?.handler("Implement the next acceptance slice", commandCtx);
 
+      expect(commandCtx.ui.notify).not.toHaveBeenCalled();
       expect(newSession).toHaveBeenCalledOnce();
       expect(persistedEntries).toContainEqual([
         "picode.task-binding",
@@ -981,7 +991,7 @@ describe("Pi 0.84 Bridge feasibility seam", () => {
     await withTempPicodeDir(async () => {
       const pi = fakePi();
       const runtime = createRuntime();
-      registerPicodeBridge(pi.api, runtime);
+      registerPicodeBridge(pi.api, runtime, { capsulePacker: testCapsulePacker });
       const ctx = {
         ...fakeContext(true),
         sessionManager: {
@@ -1043,7 +1053,7 @@ describe("Pi 0.84 Bridge feasibility seam", () => {
         throw new Error(`unexpected git args ${args.join(" ")}`);
       }) as ExtensionAPI["exec"];
       const runtime = createRuntime();
-      registerPicodeBridge(pi.api, runtime);
+      registerPicodeBridge(pi.api, runtime, { capsulePacker: testCapsulePacker });
       const startCtx = {
         cwd: "C:/repo",
         sessionManager: { getSessionId: () => "capsule-facts-session", getBranch: () => [] },
@@ -1316,7 +1326,7 @@ describe("Pi 0.84 Bridge feasibility seam", () => {
         credentials: { accessToken: "test-secret" },
       }], "team-proxy");
       expect(imported.ok).toBe(true);
-      registerPicodeBridge(pi.api, runtime);
+      registerPicodeBridge(pi.api, runtime, { capsulePacker: testCapsulePacker });
       const select = vi.fn()
         .mockResolvedValueOnce("team-proxy/gpt-5.6-terra")
         .mockResolvedValueOnce("Inherit parent session thinking");

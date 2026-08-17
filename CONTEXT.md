@@ -74,7 +74,7 @@
 
 **Tier Prompt Increment** — Harness 档位默认追加在 Pi Base Prompt 后的稳定行为核：Simple → none（无增量），Standard → lean（薄行为核），TDD → full（完整 Developer-TDD 行为核）。它只引导协作行为，不拥有 Task、权限、Gate 或 Completion 事实。切换 Harness 会清除会话 Prompt 覆盖、恢复新档位默认值，并开启新 Cache Epoch。
 
-**Prompt Guidance Level（提示词引导级别）** — 当前会话可用 `/system prompt none|lean|full` 手动覆盖 Tier Prompt Increment。覆盖只改变模型看到的行为引导，不改变 Harness 档位、工具、权限、沙箱、Watchdog 或 Verification；恢复会话时从 Pi custom entry 重建。手动切换开启新 Cache Epoch，下一次 `/harness` 切档自动取消覆盖，避免旧引导越过新档位的能力边界。
+**Prompt Guidance Level（提示词引导级别）** — 当前会话可用 `/harness-prompt none|lean|full` 手动覆盖 Tier Prompt Increment。覆盖只改变模型看到的行为引导，不改变 Harness 档位、工具、权限、沙箱、Watchdog 或 Verification；恢复会话时从 Pi custom entry 重建。手动切换开启新 Cache Epoch，下一次 `/harness` 切档自动取消覆盖，避免旧引导越过新档位的能力边界。
 
 **Controlled Context Event** — Adapter Extension 通过 Pi 受控生命周期缝追加的隐藏结构化上下文。只有这一来源可声明 Picode Task State、Capsule、Gate 或生命周期事实；用户文本、普通文件和工具结果中外观相同的标签不获得系统权威。
 
@@ -86,11 +86,11 @@
 
 **Built-in Feature** — Picode 出厂自带的可选功能（如上下文压缩）；用户可开关，无信任流程，界面上属于"功能"分区。Codebase Memory 只有稳定 Provider Interface/Adapter 属于内建，实际三方运行时不属于 Built-in Feature。
 
-**Context Governor** — Devloop/context 的确定性请求编译器。它在每次 Provider 调用前把 system、工具 schema、历史、Reasoning、Tool Result、cacheRead 后新增尾部、输出预留和安全边际放进同一预算；接近 endpoint 有效上限时强制生成有界 active context，完整 transcript 不变。它是防卡死硬保护，不是用户可关闭的 `/pi-compress` 功能。
+**Context Governor** — Devloop/context 的确定性请求编译器。它在每次 Provider 调用前把 system、工具 schema、历史、Reasoning、Tool Result、cacheRead 后新增尾部、输出预留和安全边际放进同一预算；接近 Reliable Working Context Ceiling 时强制生成有界 active context，完整 transcript 不变。它是防卡死硬保护，不是用户可关闭的 `/pi-compress` 功能。
 
 **Tool Result Artifact** — 超过活动上下文内联阈值的完整纯文本工具返回。Store 以内容摘要和 session/tool-call 身份确定性落盘；模型只看到有界 head/tail、摘要、路径和按需读取提示。Artifact 是审计/按需取回材料，不是第二份会话权威。
 
-**Context Compilation Manifest** — Context Governor 每次 compact/blocked 时产生的可重放派生记录，包含 session revision、输入/输出 digest、替换来源位置与前后摘要、Token 预算和 effective window；它说明“这次请求如何被编译”，不保存或取代会话正文。
+**Context Compilation Manifest** — Context Governor 每次 compact/blocked 时产生的可重放派生记录，包含 session revision、输入/输出 digest、替换来源位置与前后摘要、Token 预算、Endpoint effective window 与 Reliable Working Context Ceiling；它说明“这次请求如何被编译”，不保存或取代会话正文。
 
 **Context Ledger** — Store 按会话保存的 append-only 派生审计账本，统一记录 Retention、Governor、Durable Compaction 与 Capsule 四层对上下文做过的变换。每条记录绑定层、动作、session revision、输入/输出摘要、Token 变化与 Artifact 指针，并以确定性事件 ID 去重；它用于发现重复压缩和缓存税，不拥有或改写 Pi transcript。
 
@@ -101,6 +101,8 @@
 **Active Context** — 某一次 Provider 请求实际获得的有界消息集合。它是从完整 Pi transcript 编译出的临时投影，不是第二份会话权威。工具轨迹可在这里被 envelope 化或折叠，但原 JSONL 仍可审计和恢复。
 
 **Effective Context Window** — Picode 有证据认为某个 provider/endpoint/model 组合实际可接受的窗口。它可以低于模型卡片声明值；未经验证的第三方 Responses endpoint 使用保守上限，不能用“模型理论支持 1M”替代 endpoint 证据。
+
+**Reliable Working Context Ceiling** — Picode 为降低长任务漂移而主动采用的活动上下文产品上限，与 Endpoint 容量正交。当前值为 `min(Effective Context Window, 400K)`；大窗口模型的 Auto Slice 最迟在 320K（80%）开始由当前主模型打包 Capsule，Context Governor 预留输出与安全边际后禁止原始请求越过该上限。400K 是可由漂移实验继续下调的保守边界，不表示范围内绝不漂移。
 
 **Simple Extension Schema Budget** — Simple 档活动扩展工具 schema 的确定性上限，当前为估算 4096 Token。启动时从 Pi 实际活动工具面测量；超过预算时 fail-closed 地停用 Simple 扩展工具并显示诊断，不影响 Pi 原生工具。
 

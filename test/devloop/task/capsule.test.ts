@@ -211,6 +211,34 @@ describe("Capsule v1 lifecycle", () => {
     expect(md).toContain("workspace snapshot remains authoritative");
   });
 
+  it("renders degraded workspace identity visibly instead of silently treating it as verified", () => {
+    const cap = sealedCapsule({
+      integrity: { workspaceIdentity: "degraded", skippedChecks: ["git HEAD unavailable"] },
+    });
+    const rendered = renderCapsule(cap);
+    expect(rendered).toContain("DEGRADED");
+    expect(rendered).toContain("git HEAD unavailable");
+  });
+
+  it("renders lineage, acceptance, task state and failed approaches as first-class handoff facts", () => {
+    const cap = sealedCapsule({
+      acceptance: ["All saves remain readable"],
+      failedApproaches: ["Rewriting the entire file broke v1 migration"],
+      taskState: { harnessTier: "tdd", phase: "red", todos: ["Implement migration"] },
+      lineage: {
+        relation: "slice-continuation",
+        rootSessionId: "root-1",
+        parentSessionId: "parent-1",
+        sliceIndex: 2,
+      },
+    });
+    const rendered = renderCapsule(cap);
+    expect(rendered).toContain("All saves remain readable");
+    expect(rendered).toContain("Rewriting the entire file broke v1 migration");
+    expect(rendered).toContain("Harness: tdd · Phase: red");
+    expect(rendered).toContain("root-1 → parent-1 → slice 2");
+  });
+
   it("preserves Unicode intent and narrative byte-for-byte", () => {
     const cap = sealedCapsule({
       intent: "继续下一阶段：验证缓存模块",

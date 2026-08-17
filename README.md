@@ -93,9 +93,9 @@ Picode 是 **TypeScript-first、Extension-first、无独立 Core** 的单包应�
 切换后 TUI 会明确说明工具、沙箱、MCP、Watchdog、验证和提示词发生了什么变化。提示词强度也可独立调整：
 
 ```text
-/system prompt none
-/system prompt lean
-/system prompt full
+/harness-prompt none
+/harness-prompt lean
+/harness-prompt full
 ```
 
 ## 从需求到完成的开发闭环

@@ -40,6 +40,7 @@
     "smoke:windows-shell": "node scripts/windows-standard-shell-smoke.mjs",
     "smoke:package": "node scripts/package-smoke.mjs",
     "gate:headless": "node scripts/headless-conformance.mjs",
+    "gate:slice-drift": "tsx scripts/slice-drift-gate.ts",
     "check": "npm run typecheck && npm run check:boundaries && npm run check:package-metadata && npm run test"
   },
   "devDependencies": {

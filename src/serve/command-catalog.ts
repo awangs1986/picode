@@ -36,7 +36,7 @@ const picode: RemoteSlashCommand[] = [
   { name: "slice", description: "Seal a Task Capsule and continue fresh", argumentHint: "<intent>", remote: false },
   { name: "slice-defer", description: "Defer the current hard Slice boundary once", remote: false },
   { name: "harness", description: "Show or switch simple/standard/tdd", argumentHint: "[simple|standard|tdd]", remote: true },
-  { name: "system", description: "Show or switch prompt guidance", argumentHint: "prompt [none|lean|full]", remote: false },
+  { name: "harness-prompt", description: "Show or switch prompt guidance", argumentHint: "[none|lean|full]", remote: false },
   { name: "thinking", description: "Show or switch model thinking strength", argumentHint: "[off|minimal|low|medium|high|xhigh]", remote: true },
   { name: "permissions", description: "Show Host permission policy", argumentHint: "[readonly|auto|full]", remote: true },
   { name: "plan", description: "Run the Picode planning workflow", argumentHint: "<goal>", remote: false },

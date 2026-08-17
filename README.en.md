@@ -93,9 +93,9 @@ Domain modules do not import one another directly; a composition root connects n
 The TUI explains changes to tools, sandboxing, MCP, watchdogs, verification, and prompts after every tier switch. Prompt guidance can also be changed independently:
 
 ```text
-/system prompt none
-/system prompt lean
-/system prompt full
+/harness-prompt none
+/harness-prompt lean
+/harness-prompt full
 ```
 
 ## Development loop

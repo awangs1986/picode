@@ -231,6 +231,10 @@ status                     draft → sealed → superseded
                            sealed 后内容不可变；被新 Capsule 取代记 superseded
 supersedes?                当前 Capsule 取代的上一 Capsule ID
 verificationRefs[]         关联的 Gate/Evidence 指针（导入类证据标 Imported/Unverified）
+sourceSession              来源 Pi session、当前模型与 Thinking
+lineage                    root/parent session、sliceIndex、触发时 usage
+integrity                  workspace 身份 verified/degraded 与跳过的校验
+packing                    current-session-model 与估算体积
 digest                     sealed 内容的稳定摘要；注入前必须校验
 ```
 
@@ -239,11 +243,14 @@ digest                     sealed 内容的稳定摘要；注入前必须校验
 ```text
 intent            本 Slice 目标原文
 verbatimFacts[]   命令/路径/错误串/验收标准；禁改写；带通用 SourceRef
+acceptance[]      Task 权威验收条件的结构化投影
 decisions[]       已定决策 + 一句话理由
+failedApproaches[] 已失败路径，避免新 Slice 重复犯错
 filesTouched[]     从 Git 工作区采集；Capsule 最多携带 200 条，tracked 优先
 filesTouchedOmitted? 超限时记录未展开数量；不得静默截断或把依赖目录当业务变更
 openQuestions[]
 nextSteps[]
+taskState         Harness/phase/未完成 Todo 的确定性投影
 narrative         唯一允许摘要的自由段
 ```
 
@@ -257,20 +264,44 @@ narrative         唯一允许摘要的自由段
 
 ### 3.2 Slice 触发（决策）
 
-三通道并存：用户 `/slice` 可立即请求；模型和 watchdog 可提议；Devloop 根据
-上下文占用、轮次与范围漂移做确定性裁决。上下文或轮次的软阈值只提醒；模型的
-工具调用 step 不等于用户任务回合，不得仅因 step 数量强制中断工具密集的 TDD。
-硬边界只由实际活动上下文压力触发，并在当前不可分割操作结束后阻止新的副作用；
-所有明确只读的读取、搜索、Web 与代码诊断仍可使用。用户可显式推迟一次并留下
-Evidence，但模型不能无限推迟。
-切片动作 = 从权威源重建事实 → 生成并 seal Capsule → 新会话/子代理
-（context fresh）→ 校验 digest/revision/snapshot 后注入。软硬阈值在 P2 通过
-真实中型仓库实验校准，避免切得过碎导致交接开销和缓存失效。
+最高产品不变量是：**在尽可能小的 Capsule 体积下，让开启 Slice 的真实漂移
+低于关闭时。** schema 完整、单元测试全绿或机制更复杂都不能替代成对 A/B
+结果。没有稳定净收益前，Auto Slice 必须保持实验性、逐 Task opt-in。
+
+Simple 保持 Pi 原生行为。Standard/TDD 第一次进入 Task 时可选择实验性 Auto
+Slice；也可用 `/pico-slice-auto on|off|status` 修改。模型声明窗口只表示 Endpoint
+容量；可靠工作上限为 `min(Endpoint 实测窗口, 400K)`。Auto Slice 在可靠上限的
+80% 启动：大窗口模型最迟在 320K 打包，小于 400K 的模型按自身窗口 80% 启动。
+触发只在 `turn_end` 记账，真正交接必须等当前 Agent settled，不能在工具链中途
+切换会话。
+
+切片动作 = Host 从 Task/Todo/Git/Evidence 重建确定性事实 → **当前主模型以当前
+Thinking、无工具**提议 decisions/failedApproaches/nextSteps/narrative → 秘密清洗
+与 8K Token 硬预算 → seal → 使用 Pi 原生 parentSession 创建 child JSONL → 校验
+digest/revision/snapshot 后注入并自动继续。旧 JSONL 完整保留，lineage 明确记录
+root/parent/session index；Capsule 不是第二份 transcript。
+
+模型打包、workspace 身份或子会话创建失败时不得卡死：保留父会话和已保存状态，
+诚实通知后请求 Pi durable compaction。Auto Slice 只取代 Pi 的 threshold
+compaction；manual/overflow 与 Context Governor 仍保留为 fallback/防溢出硬底线。
+
+未开启 Auto Slice 时继续保留旧策略：用户 `/slice` 可立即请求；上下文或轮次软
+阈值只提醒，hard boundary 阻止新的副作用但允许明确只读的读取、搜索、Web 与
+诊断；用户可 `/slice-defer` 一次。未知第三方工具在 hard boundary 下默认视为
+possible mutation，除非能够证明只读。
+
+Task Revision 由 Task 标题/验收变更、工作区重绑和成功 rewind/tree change 等
+确定性事件递增，不由模型语义判断。自动切片要求完整 workspace identity；手动
+切片允许 degraded，但必须把跳过的校验直接渲染给用户和下一会话。
 新会话必须在 `/slice` 返回成功前形成可重新打开的 Pi JSONL；仅存在于当前
 进程内存中的 Session 不得作为成功结果。后续无头进程必须能按返回路径恢复，
 并读到 Task Binding 与 Capsule。Capsule 的文件清单排除未跟踪依赖缓存目录，
 超出有界载荷的部分用 `filesTouchedOmitted` 明示，完整代码身份仍由
 `workspaceSnapshot` 负责。
+
+新 Capsule 只有在 child setup、注入和 JSONL seed 持久化成功后，才把上一份
+sealed Capsule 标记为 superseded。确定性 Capsule ID 使失败重试直接复用既有
+交接物，不重复消费模型 Token。
 
 直接调用 pi-subagents 时，省略 `context` 默认写成 `fresh`；只有用户/模型显式
 指定 `fork` 才继承完整父会话。Fresh 直接委派会从 Store 选择当前 Task 最新的

@@ -140,6 +140,37 @@ Context Compilation Manifest。Endpoint Profile 把模型声明窗口与真实�
 
 未经验证的第三方 OpenAI Responses endpoint 不得直接以模型卡片声明的 1M 作为有效窗口。P0 默认使用保守的 320K effective window；后续只有 endpoint 级验证证据才能提高。官方 endpoint 或已有验证值使用各自有效窗口。
 
+#### 3.3.1 Auto Slice / Capsule（2026-08-16 P0–P3 落地）
+
+最高裁决标准不是 Capsule 字段是否完整，而是：**在尽可能小的体积下，开启
+Slice 时的真实任务漂移必须低于关闭时。** 任何新增字段都必须由成对 A/B 样本
+证明有净收益；没有真实数据前 Auto Slice 保持实验性、逐 Task opt-in。
+
+- Simple 不参与；Standard/TDD 首次进入 Task 时可选择，命令为
+  `/pico-slice-auto on|off|status`。
+- Provider/Endpoint 窗口只表示容量，不表示可靠注意力。Picode 的
+  **Reliable Working Context Ceiling** 固定为 `min(Endpoint 实测窗口, 400K)`；
+  Auto Slice 在该可靠上限的 80% 启动，因此大窗口模型最迟在 `320K` 打包，
+  小于 400K 的模型仍按自身窗口 80% 启动。Context Governor 同样按该上限
+  预留输出与安全边际，原始请求不得越过 400K。真正换会话只在 Agent settled
+  后执行，不打断当前工具链。
+- Host 提供 Task/Revision、精确验收、Todo、Git Snapshot/changed files、
+  Gate/Evidence；当前主模型以当前 Thinking、**无工具**提议 decisions、
+  failed approaches、next steps 和最短 narrative。不得委派 Subagent 打包。
+- Capsule 目标约 2–6K Token、硬上限 8K；先舍弃 narrative，必要事实仍超限则
+  失败并回退。不得放入完整旧聊天、reasoning、tool log、diff、Skill 正文或秘密。
+- 新会话使用 Pi 原生 `parentSession` 形成 `slice-continuation` 父子链；旧 JSONL
+  完整保留，child 持久化后自动继续并通知 old ID → new ID。
+- 自动路径要求 workspace HEAD 与 content digest 均可验证；缺失时不静默降级，
+  而是在调用模型前回退 Pi compaction。手动 `/slice` 可诚实标记 DEGRADED。
+- Task Revision 由标题/验收编辑、工作区重绑、成功 rewind/tree change 等确定性
+  事件递增。新 child 已持久化后才 supersede 上一 Capsule；确定性 ID 支持重试。
+- Auto Slice 只取代 Pi threshold compaction。Pi manual/overflow、Context
+  Governor 和 durable compaction 继续作为失败/溢出 fallback。
+
+P0 效果 Gate 至少需要 3 对同模型、同 Thinking 的观测，Slice-on 改善占多数且
+产品质量不得退化。P4 才执行真实中型项目 A/B；单元测试不得冒充效果验证。
+
 ### 3.4 三级工具与 search_tools 发现（2026-08-07 已确认，R4 收敛持久状态）
 
 沿用 V2 三级驻留设计（ADR-0021 / 游戏 Agent 讨论 #28），映射到 pi 现状。**驻留层级与扩展生命周期是两个正交轴**：
@@ -296,14 +327,16 @@ Bridge 可行性 Gate 通过后，再执行下面的供应商与平台 Spike：
 |---|---|---|---|
 | **P0** | 骨架与地基 | **先完成 §4.1 Bridge 可行性 Gate**；再建单包仓库 + 边界检查脚本；vendored pi 启动器；四模块空壳 + 接口 + 组合根注入；供应商与平台 Spike；**Context Governor 在每次 Provider 请求前执行完整预算并强制缩减，原超预算请求不得发送**；建立严格 GateRunner，并把 V2 failure fixtures 移入共享契约语料 | `picode` 能启动 vendored pi；Bridge 有真实原型证据；019ff330 类工具结果突增会在请求前被缩减到有效窗口内；即使普通 auto-compact 关闭也不会把已知超预算请求送给 Provider；GateRunner 自证红测通过 |
 | **P1** | 单人可用核心 | Adapter Extension 组合根实装；在任何 observer、状态投影或 UI 消费前完成统一 Envelope 解码与 Admission，以 `executionEpoch + runId/requestId + terminal state` 隔离 cancel 后迟到结果；账号管理（单一 Account Vault + OAuth + `/pico-account`、`/pico-login`、`/pico-logout`）；`/pico-import` 临时 Web Wizard（自动打开浏览器 + TUI 链接回退 + 本机扫描/JSON/自定义 API，Pi `/import` 保持原生）；Execution Epoch 记账；Guard 三档预设 + approval_fingerprint + Grant 分级；缓存方案 v2 全量（部件 + 六信号归因 + pi-cache-optimizer 集成）；Simple 档（pi-web-access）；首次启动引导（§3.7）；固定工具语义 ID vocabulary（契约文档 P1）；能力目录 + search_tools + 三级驻留（含 ActiveCapabilityLease）；Capability 持久格式采用 `{enabled, trustedDigest?}`；移植 V2 P1-03 的可定位错误/锁毒化恢复行为，不保留 Rust owner | 日常单会话开发可用：从 TUI 打开 Wizard 完成账号导入/登录/切号、Simple 档聊天、缓存部件真数据、search_tools 全链路（搜→Activate→Guard→租约）；坏 frame 可记录/重放但不污染状态；重复终态和 cancel 后任意迟到结果均不能到达 observer；Wizard 认证、超时、取消与浏览器打开失败 Gate 全绿 |
-| **P2** | 二档 Harness 与执行治理 | `/harness` 换档；landstrip、pi-mcp-adapter、pi-subagents；Picode `/plan` 兼容入口（委托 mattpocock/skills）；Slice/Capsule v1；Worktree 规则；§3.2 第一方无头 CLI；TaskIngress 唯一任务入口；扩展/MCP/Subagent 返回统一走 Envelope/Admission | 二档全链路；外部 Agent 只经 CLI 创建/恢复会话、发送并等待回复、观察 Tool/Gate/Evidence、处理授权失败与取消；CLI 不依赖 TUI 且不解析终端输出；真实中型仓库完成一次跨模块 Slice 接续实验 |
+| **P2** | 二档 Harness 与执行治理 | `/harness` 换档；landstrip、pi-mcp-adapter、pi-subagents；Picode `/plan` 兼容入口（委托 mattpocock/skills）；Slice/Capsule v1 + 实验性 Auto Slice（§3.3.1）；Worktree 规则；§3.2 第一方无头 CLI；TaskIngress 唯一任务入口；扩展/MCP/Subagent 返回统一走 Envelope/Admission | 二档全链路；外部 Agent 只经 CLI 创建/恢复会话、发送并等待回复、观察 Tool/Gate/Evidence、处理授权失败与取消；CLI 不依赖 TUI 且不解析终端输出；自动切片形成可 resume 的 Pi 父子 JSONL，失败可回退且不丢父会话 |
 | **P3-A** | TDD 三档 | 三档提示词（Claude Code 移植 + 语义适配）；TDD 状态机 + 预算（**数值本期定稿**）+ Gate/Evidence + Completion Label（verify/ 唯一签发）；pi-lens 接入（三档默认）+ 对抗审查（watchdog 强配置） | TDD 档跑通一个真实小项目（recorded RED → green → gate → Completion Label）；Flaky 不制造无限修复循环 |
 | **P3-B** | 导入编译核心 | Store ImportCompiler（历史映射 + 归一化投影）+ Guard Catalog `resolveLive`；兼容报告与重编译判据 | 契约级 fixture Gate 全绿；不加载来源 Adapter 也能独立测试编译核心 |
 | **P3-C** | 来源 Adapter | Claude/Codex/Cursor 来源 Adapter、桥接注记（Devloop 渲染）、重定向表错误钩子 | 三个来源各自用真实历史样本完成导入 + 继续会话；单一 Adapter 延期不阻塞其他来源和 P3-A/B |
-| **P4** | 整合与验收 | 导入预览/兼容报告 TUI 呈现；真实迁移样本的性能与失真验收；缓存命中率实测调优（归因数据驱动）；跨平台矩阵完整过（Windows AppContainer 全面版、mac/Linux）；TOOLS.md 任务绑定扩展；真实 pi TUI boot/navigation smoke；固定版本与摘要校验后的安装产物启动 smoke（与 package metadata contract 分开）；全量 typecheck/lint/test/红探针；文档 + 发布打包 | 三平台发布件；真实安装产物在三平台启动并完成一轮会话；package smoke 不能用静态正则或 `skipped=true, passed=true` 代替；缓存命中率与抗失真有实测报告；旧 Master 遗留需求清点归零 |
+| **P4** | 整合与验收 | 导入预览/兼容报告 TUI 呈现；真实迁移样本的性能与失真验收；**同一 Picode/Provider/模型/Thinking 的 Auto Slice on/off 成对长任务实验**；缓存命中率实测调优（归因数据驱动）；跨平台矩阵完整过（Windows AppContainer 全面版、mac/Linux）；TOOLS.md 任务绑定扩展；真实 pi TUI boot/navigation smoke；固定版本与摘要校验后的安装产物启动 smoke（与 package metadata contract 分开）；全量 typecheck/lint/test/红探针；文档 + 发布打包 | 三平台发布件；真实安装产物在三平台启动并完成一轮会话；package smoke 不能用静态正则或 `skipped=true, passed=true` 代替；至少 3 对实验中 Slice-on 改善占多数且质量不退化；缓存命中率与抗失真有实测报告；旧 Master 遗留需求清点归零 |
 | **P5** | 远期扩展 | 显式压缩/纠偏模块（/pi-compress、/pi-correct，PICODE-COMPRESS-SKILL-DESIGN.md 为规格）；`picode serve` + 手机/桌面远程端（复用 §3.2 同一 surface，且只能调用 P2 `TaskIngress`、P1 Envelope/Admission 和既有 Store 权威，禁止第二会话/任务数据库与 legacy fallback）；导入 hardening（恶意 payload fuzzing、签名 Adapter）；approval_fingerprint 白名单式 env 摘要评估 | 各件独立验收，互不阻塞；远程端断连、重试和旧客户端事件不能复活已取消任务或绕过唯一 Task 权威 |
 
-跨期纪律：抗失真组合（Slice/Capsule + auto-compact 保底 + watchdog）在 P2 成型、P3 全强度；缓存全局策略从 P1 部件上线起对所有档位生效；每期结束把"已决/未决"清单回写本文决策索引。
+跨期纪律：抗失真组合（实验性 Auto Slice/Capsule + Context Governor + Pi
+compaction fallback）在 P2 成型、P3 加固；watchdog 不以模型自述驱动硬边界；
+缓存全局策略从 P1 部件上线起对所有档位生效；每期结束把"已决/未决"清单回写本文决策索引。
 
 ### 5.2 当前实施状态（2026-08-07）
 

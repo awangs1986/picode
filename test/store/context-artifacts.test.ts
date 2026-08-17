@@ -59,6 +59,7 @@ describe("Store context artifacts", () => {
       beforeTokens: 300_000,
       afterTokens: 180_000,
       effectiveContextWindow: 320_000,
+      reliableContextCeiling: 320_000,
       replacements: [],
     };
     const saved = await store.saveContextCompilation(manifest);
