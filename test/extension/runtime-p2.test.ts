@@ -3,6 +3,16 @@ import { createRuntime } from "../../src/extension/index.ts";
 import { withTempPicodeDir } from "../helpers/temp-dir.ts";
 
 describe("createRuntime P2 wiring", () => {
+  it("keeps Google Search Subagent in third-tier Disabled state by default", () => {
+    const rt = createRuntime();
+    expect(rt.guard.catalog.get("google-search-subagent")?.setting).toBe("disabled");
+    expect(rt.guard.catalog.search("google search", {
+      sessionId: "s",
+      harnessTier: "standard",
+      currentTurn: 1,
+    })).not.toContainEqual(expect.objectContaining({ id: "google-search-subagent" }));
+  });
+
   it("registers suite manifests as trusted in guard catalog", async () => {
     await withTempPicodeDir(async () => {
       const rt = createRuntime();

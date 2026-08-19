@@ -57,6 +57,8 @@ import { WeixinController } from "./weixin-controller.ts";
 import { compactWeixinReply } from "./weixin-reply-compactor.ts";
 import { ChatWriterLeases } from "../guard/chat-writer-lease.ts";
 import { PERMISSION_ENTRY_TYPE } from "./permissions.ts";
+import { GoogleSearchSubagentController } from "./google-search-subagent.ts";
+import { SUITE_ENTRIES } from "./suite.ts";
 
 /** Real Pi extension entry. Keep this file as a thin composition adapter. */
 function remoteAdvertisedHost(): string {
@@ -88,6 +90,45 @@ export default function picodeExtension(pi: ExtensionAPI): void {
   let weixinCommandContext: ExtensionCommandContext | undefined;
   let remoteCommandContext: ExtensionCommandContext | undefined;
   let remoteServe: RemoteServeHandle | undefined;
+  const ensureGoogleDelegation = async (parallelism: number) => {
+    const ctx = activeContext;
+    const configured = await configureSubagentsForSession({
+      harnessTier: runtime.harness.current(),
+      agentDir: piAgentDir(),
+      googleSearchParallelism: parallelism,
+      ...(runtime.config.subagentModel === undefined ? {} : { defaultModel: runtime.config.subagentModel }),
+      ...(runtime.config.subagentThinking === undefined ? {} : { defaultThinking: runtime.config.subagentThinking }),
+      ...(runtime.config.subagentModel === undefined || ctx?.model === undefined
+        ? {}
+        : { fallbackModel: `${ctx.model.provider}/${ctx.model.id}` }),
+    });
+    if (!configured.ok) return configured;
+    if (loadedSuitePackages.has("pi-subagents")) return ok(undefined);
+    try {
+      const entry = SUITE_ENTRIES.find((candidate) => candidate.manifest.id === "pi-subagents");
+      if (entry === undefined) return err("webagent/subagents-missing", "pi-subagents is absent from the pinned suite");
+      const before = new Set(pi.getAllTools().map((tool) => tool.name));
+      const vendor = await import(entry.packageName) as { default: (api: ExtensionAPI) => Promise<void> | void };
+      await vendor.default(pi);
+      loadedSuitePackages.add(entry.packageName);
+      const contributed = pi.getAllTools().map((tool) => tool.name).filter((name) => !before.has(name));
+      toolAdapter.bind(entry.manifest.id, contributed);
+      if (runtime.harness.current() === "simple") {
+        await toolAdapter.deactivate(entry.manifest.id);
+      }
+      return ok(undefined);
+    } catch (cause) {
+      return err("webagent/subagents-load-failed", "failed to load the pinned pi-subagents runtime", cause);
+    }
+  };
+  const googleSearch = new GoogleSearchSubagentController(pi, {
+    runtime,
+    toolAdapter,
+    persistCapabilities: () => saveCapabilitySettings(runtime.guard.catalog.toJSON()),
+    persistConfig: saveConfig,
+    ensureDelegationAvailable: ensureGoogleDelegation,
+  });
+  googleSearch.register();
   const weixin = new WeixinController({
     runtime,
     persistCapabilities: saveCapabilitySettings,
@@ -204,6 +245,7 @@ export default function picodeExtension(pi: ExtensionAPI): void {
         ...(runtime.config.subagentModel === undefined || ctx.model === undefined
           ? {}
           : { fallbackModel: `${ctx.model.provider}/${ctx.model.id}` }),
+        googleSearchParallelism: runtime.config.googleSearchSubagent.parallelism,
       });
       if (!subagentsConfigured.ok) ctx.ui.notify(subagentsConfigured.error.message, "error");
       await loadSuiteForTier(
@@ -261,6 +303,7 @@ export default function picodeExtension(pi: ExtensionAPI): void {
         }
         capabilitySettingsRestored = true;
       }
+      await googleSearch.syncSession(ctx);
       if (ctx.mode !== "tui" || !shouldRunOnboarding(runtime.config)) return;
       const completed = await runOnboardingFlow({
         config: runtime.config,
@@ -353,6 +396,7 @@ export default function picodeExtension(pi: ExtensionAPI): void {
     remoteServe = undefined;
     if (handle !== undefined) void handle.close();
     void weixin.shutdown();
+    void googleSearch.shutdown();
   });
   registerModelContinuity(pi, {
     store: {

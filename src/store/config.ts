@@ -28,6 +28,19 @@ export interface PicodeConfig {
     provider: string;
     modelId: string;
   };
+  /** Options for the opt-in Google Search Subagent. Enable/trust lives only in CapabilityCatalog. */
+  googleSearchSubagent: {
+    accountId?: string;
+    /** Canonical Pi model key: provider/model. */
+    model?: string;
+    thinking: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+    /** Number of independent research branches allowed to run at once. */
+    parallelism: number;
+    /** Per-branch search + researcher deadline. */
+    timeoutMs: number;
+    /** Fall back once to normal pi-web-access search when Google API search fails. */
+    fallback: boolean;
+  };
 }
 
 export const DEFAULT_CONFIG: PicodeConfig = {
@@ -36,6 +49,12 @@ export const DEFAULT_CONFIG: PicodeConfig = {
   residentCapabilities: [],
   locale: "zh",
   subagentSelectionCompleted: false,
+  googleSearchSubagent: {
+    thinking: "high",
+    parallelism: 3,
+    timeoutMs: 15 * 60 * 1_000,
+    fallback: true,
+  },
 };
 
 /** 读取兼容 JSONC（剥行注释与块注释；字符串内的 // 经引号态跟踪保留） */
@@ -98,6 +117,10 @@ function normalizeConfig(value: unknown): PicodeConfig | undefined {
     ...structuredClone(DEFAULT_CONFIG),
     ...row,
     onboarding: { ...structuredClone(DEFAULT_CONFIG.onboarding), ...row.onboarding },
+    googleSearchSubagent: {
+      ...structuredClone(DEFAULT_CONFIG.googleSearchSubagent),
+      ...row.googleSearchSubagent,
+    },
   };
   return merged.version === 1 &&
       (merged.locale === "zh" || merged.locale === "en") &&
@@ -112,7 +135,22 @@ function normalizeConfig(value: unknown): PicodeConfig | undefined {
         (typeof merged.lastConversationModel === "object" &&
           merged.lastConversationModel !== null &&
           typeof merged.lastConversationModel.provider === "string" &&
-          typeof merged.lastConversationModel.modelId === "string"))
+          typeof merged.lastConversationModel.modelId === "string")) &&
+      typeof merged.googleSearchSubagent === "object" &&
+      merged.googleSearchSubagent !== null &&
+      (merged.googleSearchSubagent.accountId === undefined ||
+        typeof merged.googleSearchSubagent.accountId === "string") &&
+      (merged.googleSearchSubagent.model === undefined ||
+        typeof merged.googleSearchSubagent.model === "string") &&
+      ["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(
+        merged.googleSearchSubagent.thinking,
+      ) &&
+      Number.isInteger(merged.googleSearchSubagent.parallelism) &&
+      merged.googleSearchSubagent.parallelism >= 1 &&
+      merged.googleSearchSubagent.parallelism <= 10 &&
+      Number.isInteger(merged.googleSearchSubagent.timeoutMs) &&
+      merged.googleSearchSubagent.timeoutMs >= 1_000 &&
+      typeof merged.googleSearchSubagent.fallback === "boolean"
     ? merged
     : undefined;
 }

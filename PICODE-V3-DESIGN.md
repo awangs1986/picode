@@ -280,7 +280,7 @@ picode/
 - **启用 ≠ 常驻运行**：只进入二级驻留（`enabled=true` 且当前 manifest digest 已信任），需要时才 Activate（§3.4 语义）。
 - Codebase Memory 的稳定 Interface/Adapter 随 Picode 内建；实际 `codebase-memory-mcp` 进程属于 External Extension。回答 Y 表示安装固定版本、启用并信任当前摘要，不把第三方进程伪装成 Built-in Feature。
 - 跳过向导后不在每次启动重复打扰；可在设置中重新打开向导。
-- 启用三项不污染 Simple Task（Simple 档不加载扩展工具的纪律优先）。
+- 启用这两项不污染 Simple Task（Simple 档不加载扩展工具的纪律优先）。
 - **Herdr 不替代 pi-subagents**：pi-subagents 是套件内委派/编排底座，Herdr 是用户可选的上层多任务编排。
 
 `mattpocock/skills` 作为随 Picode 分发的固定快照，不再参与首次引导，也不在启动时整体加载：
@@ -289,6 +289,23 @@ picode/
 - 用户第一次显式使用 `/plan` 时，Picode 只把 `grill-with-docs` 的依赖闭包（`grill-with-docs`、`grilling`、`domain-modeling`）物化到 Picode 私有 Pi skill root，随后重载当前会话并自动提交规划请求。
 - 其它内置 Skills 采用相同的按需物化接口；不把整套 Skills 注入上下文，不污染项目目录，也不自动访问网络。
 - 已存在的用户技能目录不覆盖；快照损坏或物化失败只报告可定位错误，不退回外部安装命令。
+
+### 3.8 Google Search Subagent（第三级专业扩展）
+
+Google Search Subagent 默认 `enabled=false`，不进入首次启动引导；Disabled 时模型不可见、无 Tool Schema、无子进程、无网络请求，也不读取 Account Vault 凭据。用户显式执行 `/pico-webagent on` 后，当前 manifest 进入 Enabled + Trusted；运行轴仍由 `ActiveCapabilityLease` 独立管理。
+
+它复用现有权威而不新建第二套系统：
+
+- Account Vault 保存直接 Google API 账号；配置只引用 `accountId`、`google/<model>`、Thinking、并发、超时与是否允许回退；
+- pi-web-access 的固定版本提供 Gemini API-only Google Grounding 与普通 Web 回退，Picode 只维护一个可审计兼容 seam，不复制搜索客户端；
+- pi-subagents 提供 fresh researcher 生命周期、模型调用、取消和 Evidence；Simple 档启用本能力时只按需加载其事件运行时，Subagent 工具不进入主模型可见面；
+- Devloop 拥有 `ResearchBrief`、Grounding 引用准入与 `ResearchPacket` 契约；Adapter 只组合调用。
+
+一次计划由主 Agent 给出 1–10 个 ResearchBrief（默认并发 3，上限 10）。相同规范化问题在计划内去重。每个分支先取得 Provider Grounding Metadata，再把证据交给同一已选 Gemini 模型的 fresh、零工具 researcher；researcher 只能引用 Metadata 中出现的 URL。完整 Packet 原子写入 `.pi-subagents/artifacts/google-search/`，主上下文只接收约 8K Token 内的紧凑视图。
+
+启用后只替代 `web_search`；`web_fetch` 等抓取工具继续保留。直接 Google 调用失败时，单个查询最多回退一次普通 pi-web-access，禁止递归重试，并记录实际 Provider、回退原因、查询数、延迟、Token 与成本。父任务取消会取消尚未完成的 researcher，取消后不得写最终 Artifact；不自动恢复旧研究计划。
+
+用户入口为 `/pico-webagent on|off|config|status|doctor|test`。`doctor` 只做本地只读检查，不产生付费查询；`test` 明确执行一次真实付费查询。A/B 验收必须使用相同任务、模型、Thinking 与时间窗，各重复三次，按事实正确性、引用支撑、时效性、冷门多语言覆盖和来源多样性评分；延迟、Token、查询数和成本仅作诊断，不能替代质量结论。
 
 ## 4. Spike 清单（实现期第一批要证明的）
 

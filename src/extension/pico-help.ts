@@ -146,6 +146,7 @@ const PICODE_COMMANDS: Record<string, CommandMetadata> = {
   "picode-subagent-rpc": { category: "tools", description: { zh: "内部子代理控制桥；通常不需要手动调用", en: "Internal subagent control bridge; normally not called manually" } },
   reinstall: { category: "tools", description: { zh: "重新提示安装缺失的推荐组件", en: "Offer installation of missing recommended components" } },
   "pico-price": { category: "system", description: { zh: "显示完整 Token、缓存、费用和上下文统计", en: "Show complete token, cache, cost, and context statistics" } },
+  "pico-webagent": { category: "tools", description: { zh: "配置可选的 Google Search 子代理", en: "Configure the optional Google Search Subagent" }, argumentHint: "[on|off|config|status|doctor|test]" },
 };
 
 function commandUsage(name: string, metadata: CommandMetadata): string {

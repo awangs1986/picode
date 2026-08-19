@@ -75,6 +75,7 @@ describe("loadConfig", () => {
       expect(r.value.locale).toBe("en");
       expect(r.value.version).toBe(1);
       expect(r.value.onboarding.completed).toBe(false);
+      expect(r.value.googleSearchSubagent).toEqual(DEFAULT_CONFIG.googleSearchSubagent);
     });
   });
 
@@ -105,6 +106,18 @@ describe("loadConfig", () => {
       expect(r.value.residentCapabilities).toEqual(["cap-a"]);
       expect(r.value.locale).toBe(DEFAULT_CONFIG.locale);
       expect(r.value.version).toBe(1);
+    });
+  });
+
+  it("rejects unsafe Google Search Subagent concurrency", async () => {
+    await withTempPicodeDir(async () => {
+      const path = dataPaths.config();
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, JSON.stringify({
+        googleSearchSubagent: { parallelism: 11 },
+      }), "utf8");
+      const loaded = loadConfig();
+      expect(loaded.ok).toBe(false);
     });
   });
 });

@@ -163,6 +163,12 @@ Codebase Memory 的 Provider Interface/Adapter 是随产品分发的稳定
 Implementation；实际 `codebase-memory-mcp` 进程按 External Extension 治理，
 同样受上述 enabled/trustedDigest 与临时运行轴约束。
 
+Google Search Subagent 也遵守同一设置轴/运行轴。Guard 只拥有其 Manifest 与
+Enabled/Trusted 事实；Store 的 Account Vault 只提供所选 Google 账号凭据；Engine
+复用 pi-subagents 生命周期与取消；Devloop 拥有 ResearchBrief、Grounding 引用准入
+和 ResearchPacket。Adapter 可以在激活时用它替代 `web_search`，但不得隐藏 fetch
+工具、复制 Account/Subagent 状态，或在 Disabled 时读取密钥和发起网络请求。
+
 Simple 档另有确定性的扩展 Tool Schema Gate：组合根只统计当前活动、由 Simple
 套件贡献的扩展工具，预算上限为估算 4096 Token。超限时停用这些扩展工具并显示
 诊断，不能静默继续污染稳定前缀，也不能隐藏 Pi 原生工具。该 Gate 约束的是实际
@@ -354,6 +360,7 @@ ref?}` append 进 `evidence/<yyyymm>.jsonl`。
 | MCP 运行时 | pi-mcp-adapter | 仲裁事件 + 状态事件总线，Trusted 门自持 | 0005 |
 | Subagent/委派/编排 | **pi-subagents**（2026-08-07 改选，取代 landstrip 附赠方案） | 事件总线 RPC v1（spawn/status/steer/stop/resume）；`subagentCommand` 指向 vendored pi；生命周期工件 v3 = Evidence 来源；watchdog 收编为二/三档 AI Review | 0004 修订 |
 | Web 搜索（Simple 档默认工具） | pi-web-access | pin 版本，Simple 档唯一默认加载的扩展工具 | — |
+| Google Search Subagent（第三级、默认 Disabled） | pi-web-access + pi-subagents + Google Gemini API Grounding | 直接 Google 账号来自 Account Vault；同一 Gemini 模型做 Grounding 与 fresh 零工具综合；只替代 `web_search`，API 失败最多回退一次普通 pi-web-access；完整 ResearchPacket 外置、主上下文有界 | ADR-0008 |
 | `/plan`（二档起） | Picode 自有兼容命令 + 随包 mattpocock/skills 快照 | 首次使用按需物化 `grill-with-docs` 依赖闭包到私有 Pi skill root，重载会话后继续；不联网、不覆盖用户目录、不自动续跑 | ADR-0007 |
 | LSP/诊断（三档默认） | pi-lens | 写/编辑即时诊断、影响级联、read-guard；一二档不加载，watchdog LSP 兜底；**待核 C#/GDScript 覆盖** | Q23（2026-08-07） |
 | 缓存 provider 兼容面 | pi-cache-optimizer | pin 采用；关闭提示词重写（前缀结构归 Picode 纪律）；OpenAI `prompt_cache_key` 兜底、session affinity、Anthropic TTL 守卫、compat doctor | V3-DESIGN §3.3 v2 |

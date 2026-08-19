@@ -6,6 +6,13 @@ import {
   registerWindowsPowerShellProvider,
   registerWindowsPowerShellTool,
 } from "./windows-shell-provider.ts";
+import { loadConfig } from "../store/config.ts";
+import { loadCapabilitySettings } from "../store/capabilities.ts";
+import { digestManifest } from "../guard/catalog.ts";
+import {
+  GOOGLE_SEARCH_SUBAGENT_CAPABILITY_ID,
+  GOOGLE_SEARCH_SUBAGENT_MANIFEST,
+} from "./google-search-manifest.ts";
 
 type CursorRegistration = (
   pi: ExtensionAPI,
@@ -21,6 +28,7 @@ const NATIVE_PI_PROVIDERS = new Set([
   "anthropic",
   "openai",
   "openai-codex",
+  "google",
 ]);
 
 /**
@@ -61,8 +69,22 @@ export async function registerSubagentProviderAdapter(
     throw new Error(`Subagent account projection failed: ${listed.error.message}`);
   }
 
+  const [configured, capabilitySettings] = await Promise.all([
+    Promise.resolve(loadConfig()),
+    loadCapabilitySettings(),
+  ]);
+  const googleSetting = capabilitySettings.ok
+    ? capabilitySettings.value.find((entry) => entry.id === GOOGLE_SEARCH_SUBAGENT_CAPABILITY_ID)
+    : undefined;
+  const googleSearchEnabled = googleSetting?.enabled === true &&
+    googleSetting.trustedDigest === digestManifest(GOOGLE_SEARCH_SUBAGENT_MANIFEST);
+  const googleSearchAccountId = configured.ok && googleSearchEnabled
+    ? configured.value.googleSearchSubagent.accountId
+    : undefined;
   const active = listed.value.filter((account) =>
-    account.status === "active" && account.chatCompatible !== false
+    (account.status === "active" || account.id === googleSearchAccountId) &&
+    account.status !== "retired" &&
+    account.chatCompatible !== false
   );
   if (active.some((account) => account.provider === "cursor")) {
     await registerCursor(pi, { accounts });

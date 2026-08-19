@@ -121,4 +121,16 @@ describe("configureSubagentsForSession", () => {
       });
     });
   });
+
+  it("raises the one pi-subagents concurrency ceiling for Google research, capped at ten", async () => {
+    await withTempPicodeDir(async (dir) => {
+      await configureSubagentsForSession({
+        harnessTier: "simple",
+        agentDir: dir,
+        googleSearchParallelism: 10,
+      });
+      const runtime = JSON.parse(readFileSync(`${dir}/extensions/subagent/config.json`, "utf8"));
+      expect(runtime.globalConcurrencyLimit).toBe(10);
+    });
+  });
 });

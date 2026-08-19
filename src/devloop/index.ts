@@ -82,6 +82,24 @@ export { TaskIngress } from "./task/ingress.ts";
 export type { TaskIngressInput, TaskRecord, TaskRef } from "./task/ingress.ts";
 export { isTaskControlState } from "./task/control.ts";
 export type { TaskControlState, TaskFailureOutcome } from "./task/control.ts";
+export {
+  buildResearcherTask,
+  buildGroundingQuery,
+  buildResearchPacket,
+  MAX_RESEARCH_BRANCHES,
+  RESEARCH_SYNTHESIS_SCHEMA,
+  renderResearchPacket,
+  validateResearchBriefs,
+  validateResearchSynthesis,
+} from "./research/google-search.ts";
+export type {
+  GroundedSearchEvidence,
+  GroundingSource,
+  ResearchBranchPacket,
+  ResearchBrief,
+  ResearchPacket,
+  ResearchSynthesis,
+} from "./research/google-search.ts";
 
 /**
  * Devloop：产品核心价值所在。内部三道墙（MODULES.md 保留条款 ①）：

@@ -6,6 +6,13 @@ import {
   registerSubagentWindowsShell,
 } from "../../src/extension/subagent-provider-entry.ts";
 import { withTempPicodeDir } from "../helpers/temp-dir.ts";
+import { DEFAULT_CONFIG, saveConfig } from "../../src/store/config.ts";
+import { saveCapabilitySettings } from "../../src/store/capabilities.ts";
+import { digestManifest } from "../../src/guard/catalog.ts";
+import {
+  GOOGLE_SEARCH_SUBAGENT_CAPABILITY_ID,
+  GOOGLE_SEARCH_SUBAGENT_MANIFEST,
+} from "../../src/extension/google-search-manifest.ts";
 
 describe("subagent provider adapter", () => {
   it("registers the Picode PowerShell tool for a Windows child session", async () => {
@@ -80,6 +87,81 @@ describe("subagent provider adapter", () => {
       );
 
       expect(registerCursor).toHaveBeenCalledOnce();
+    });
+  });
+
+  it("projects the configured stored Google research account without making it globally active", async () => {
+    await withTempPicodeDir(async () => {
+      const accounts = new AccountsManager(() => {});
+      const imported = await accounts.importCredentials({
+        stableId: "research",
+        provider: "google",
+        piProvider: "google",
+        label: "Research Gemini",
+        credentials: { accessToken: "google-test-key" },
+      });
+      expect(imported.ok).toBe(true);
+      if (!imported.ok) return;
+      expect((await saveConfig({
+        ...structuredClone(DEFAULT_CONFIG),
+        googleSearchSubagent: {
+          ...structuredClone(DEFAULT_CONFIG.googleSearchSubagent),
+          accountId: imported.value.id,
+          model: "google/gemini-test",
+        },
+      })).ok).toBe(true);
+      expect((await saveCapabilitySettings([{
+        id: GOOGLE_SEARCH_SUBAGENT_CAPABILITY_ID,
+        enabled: true,
+        trustedDigest: digestManifest(GOOGLE_SEARCH_SUBAGENT_MANIFEST),
+      }])).ok).toBe(true);
+
+      const registerProvider = vi.fn();
+      await registerSubagentProviderAdapter(
+        { registerProvider } as unknown as ExtensionAPI,
+        { accounts, registerCursor: vi.fn(async () => {}) },
+      );
+
+      expect(registerProvider).toHaveBeenCalledWith("google", {
+        name: "Research Gemini",
+        apiKey: "google-test-key",
+      });
+    });
+  });
+
+  it("does not read or project the retained Google account while the capability is Disabled", async () => {
+    await withTempPicodeDir(async () => {
+      const accounts = new AccountsManager(() => {});
+      const imported = await accounts.importCredentials({
+        stableId: "disabled-research",
+        provider: "google",
+        piProvider: "google",
+        label: "Disabled Research Gemini",
+        credentials: { accessToken: "must-not-be-projected" },
+      });
+      expect(imported.ok).toBe(true);
+      if (!imported.ok) return;
+      expect((await saveConfig({
+        ...structuredClone(DEFAULT_CONFIG),
+        googleSearchSubagent: {
+          ...structuredClone(DEFAULT_CONFIG.googleSearchSubagent),
+          accountId: imported.value.id,
+          model: "google/gemini-test",
+        },
+      })).ok).toBe(true);
+      expect((await saveCapabilitySettings([{
+        id: GOOGLE_SEARCH_SUBAGENT_CAPABILITY_ID,
+        enabled: false,
+        trustedDigest: digestManifest(GOOGLE_SEARCH_SUBAGENT_MANIFEST),
+      }])).ok).toBe(true);
+
+      const registerProvider = vi.fn();
+      await registerSubagentProviderAdapter(
+        { registerProvider } as unknown as ExtensionAPI,
+        { accounts, registerCursor: vi.fn(async () => {}) },
+      );
+
+      expect(registerProvider).not.toHaveBeenCalled();
     });
   });
 });

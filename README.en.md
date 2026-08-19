@@ -165,7 +165,7 @@ When automatic Slice is enabled it takes precedence over Pi summary compaction; 
 
 `Enabled ≠ Running`, and `Trusted ≠ elevated permission`. Existence, trust, runtime state, and permission are separate facts.
 
-Major integrations include `pi-subagents`, `pi-landstrip`, `pi-mcp-adapter`, `pi-lens`, `pi-web-access`, `pi-cache-optimizer`, `mattpocock/skills`, and optional Herdr/CodebaseMemoryProvider/Weixin adapters. Their versions and boundaries are pinned and documented.
+Major integrations include `pi-subagents`, `pi-landstrip`, `pi-mcp-adapter`, `pi-lens`, `pi-web-access`, `pi-cache-optimizer`, `mattpocock/skills`, and optional Herdr/CodebaseMemoryProvider/Weixin adapters. The third-tier Google Search Subagent is disabled by default; when explicitly enabled it uses direct Gemini API Google Grounding plus fresh, tool-free researchers, replaces only `web_search`, and falls back to normal `pi-web-access` at most once. Their versions and boundaries are pinned and documented.
 
 ## Permissions and workspaces
 
@@ -217,6 +217,7 @@ The directory includes native Pi commands, Picode commands, and extension/skill 
 | Manage accounts | `/pico-login`, `/pico-account`, `/pico-logout` |
 | Import accounts and chats | `/pico-import` |
 | Manual/automatic Slice | `/slice`, `/pico-slice-auto`, `/slice-defer` |
+| Google Search Subagent | `/pico-webagent on|off|config|status|doctor|test` |
 | Remote and Weixin | `/server`, `/weixin` |
 
 Common CLI commands:

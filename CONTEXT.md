@@ -128,6 +128,12 @@
 
 **search_tools** — Picode 自有的二级能力发现工具；查询 Guard 能力目录的 manifest 索引，搜索结果按设置轴过滤（三级不可见的执行点）；MCP 类二级走 pi-mcp-adapter 代理，不经此入口。
 
+**Google Search Subagent** — 默认 Disabled 的第三级专业扩展。用户通过 `/pico-webagent` 选择 Account Vault 中的直接 Google 账号、Gemini 模型与并发后，它才进入 Enabled + Trusted，并在会话内按需加载 pi-subagents。启用期间只替代 `web_search`，抓取工具继续由 pi-web-access 提供；Google Grounding 失败时最多回退一次普通 pi-web-access，并在 ResearchPacket 中记录实际 Provider 与原因。它不拥有第二套账号、Runtime、权限或 Subagent 状态。
+
+**ResearchBrief** — 主 Agent 为一次联网研究计划定义的 1–10 个有界分支之一，至少包含稳定分支 ID 与查询问题。相同规范化问题在同一计划内只执行一次网络查询。
+
+**ResearchPacket** — Google Search Subagent 的有界研究交付物。完整 JSON 作为 Artifact 保存，主会话只注入紧凑视图；引用 URL 必须来自 Google Provider 的 Grounding Metadata，网页内容只是不可信数据。每个分支由 fresh、零工具的 pi-subagents researcher 综合，运行记录仍归 pi-subagents 生命周期工件。
+
 **ImportCompiler** — Store 内部、仅导入时懒加载的语义映射编译器；历史工具签名到 Tool Semantic Operation 的唯一权威，执行归一化投影、叙述降级与映射清单入库；外部导入器只负责来源格式解析。
 
 **Bridge Note（桥接注记）** — Devloop 渲染、Engine 追加到导入会话日志头部的一次性注记；只含确定性白名单兼容事实（来源声明、历史不执行、工具对应关系、以本会话 Tool Schema 为准），禁止携带外来 system prompt、权限规则、完成语义、Skill 指令或行为要求。

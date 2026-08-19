@@ -172,6 +172,7 @@ Picode 把上下文当作编译产物，而不是无限增长的聊天字符串�
 - `pi-mcp-adapter`：MCP 搜索、描述、调用与审批桥接；
 - `pi-lens`：按语言服务 Readiness 暴露 LSP 能力；
 - `pi-web-access`：Web 搜索和抓取；
+- Google Search Subagent：默认停用的第三级扩展；启用后用直接 Gemini API 的 Google Grounding + fresh researcher 替代搜索入口，抓取工具保留，失败最多回退一次普通 `pi-web-access`；
 - `pi-cache-optimizer`：Provider 缓存兼容与诊断，禁止改写 Picode 提示词；
 - `mattpocock/skills`：`/plan` 首次使用时只物化 `grill-with-docs` 依赖闭包；
 - Herdr、CodebaseMemoryProvider、微信 iLink：可选或默认停用的外部能力。
@@ -226,6 +227,7 @@ Picode 会警告旧上下文不再适用，在目标 `AGENTS.md` 写入受管边
 | 管理账号 | `/pico-login`、`/pico-account`、`/pico-logout` |
 | 导入账号和聊天 | `/pico-import` |
 | 手动/自动 Slice | `/slice`、`/pico-slice-auto`、`/slice-defer` |
+| Google 搜索子代理 | `/pico-webagent on|off|config|status|doctor|test` |
 | 远程与微信 | `/server`、`/weixin` |
 
 常用 CLI：

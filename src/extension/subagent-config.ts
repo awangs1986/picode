@@ -47,6 +47,8 @@ export async function configureSubagentsForSession(input: {
    * back without making Standard/TDD completion depend on that preference.
    */
   fallbackModel?: string;
+  /** Optional Google Search Subagent fanout; pi-subagents remains the one runtime owner. */
+  googleSearchParallelism?: number;
 }): Promise<Result<void>> {
   const path = join(input.agentDir, "settings.json");
   const runtimePath = join(input.agentDir, "extensions", "subagent", "config.json");
@@ -118,7 +120,7 @@ export async function configureSubagentsForSession(input: {
       atomicWriteFile(runtimePath, JSON.stringify({
         ...previous,
         maxSubagentDepth: 1,
-        globalConcurrencyLimit: 4,
+        globalConcurrencyLimit: Math.min(10, Math.max(4, input.googleSearchParallelism ?? 0)),
         artifactDir: "project",
       }, null, 2));
     });

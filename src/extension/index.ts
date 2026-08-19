@@ -21,6 +21,7 @@ import { systemPromptInjection } from "./prompts.ts";
 import { enrichUnknownToolError } from "./unknown-tool-hook.ts";
 import { ONBOARDING_MANIFESTS } from "./onboarding-runner.ts";
 import { WEIXIN_CAPABILITY_MANIFEST } from "./weixin-manifest.ts";
+import { GOOGLE_SEARCH_SUBAGENT_MANIFEST } from "./google-search-manifest.ts";
 import {
   RuntimeEnvelopeIngress,
   type ExecutionIdentity,
@@ -205,6 +206,7 @@ export function createRuntime(opts: RuntimeOptions = {}): PicodeRuntime {
     guard.catalog.register(manifest, "disabled");
   }
   guard.catalog.register(WEIXIN_CAPABILITY_MANIFEST, "disabled");
+  guard.catalog.register(GOOGLE_SEARCH_SUBAGENT_MANIFEST, "disabled");
 
   const runtime: PicodeRuntime = {
     store,
